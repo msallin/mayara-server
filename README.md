@@ -11,7 +11,7 @@ Changing the radar settings is possible, a [JSON Schema](https://json-schema.org
 
 ## Origins
 
-This is basically a rewrite of the [OpenCPN radar plugin](https://github.com/opencpn-radar-pi/radar_pi) that I have worked over ten years or so.
+This is basically a rewrite of the [OpenCPN radar plugin](https://github.com/opencpn-radar-pi/radar_pi) that Kees has worked over ten years or so.
 The problem with that code is that it is written in C++ with wxWidgets, and very much meant to operate as a plugin to OpenCPN. That makes it hard to graft on
 an extra layer that allows it to be used in other contexts.
 
@@ -28,25 +28,29 @@ The code shall:
 
 | Brand | Status | Models |
 |-------|--------|--------|
-| **Furuno** | 🚧 Partial  | DRS4D-NXT, DRS6A-NXT, DRS12A-NXT, FAR series |
-| **Navico** | testers wanted | BR24, 3G, 4G, HALO20, HALO24, HALO3/4/6, HALO3000+ |
-| **Raymarine** | 🚧 Partial | Quantum 2, RD series (untested) |
-| **Garmin** | 📋 Planned | xHD series |
+| **Furuno** | Partial  | DRS4D-NXT, DRS6A-NXT, DRS12A-NXT, FAR series |
+| **Navico** | Nearly complete, testers wanted | BR24, 3G, 4G, HALO20, HALO24, HALO3/4/6, HALO3000+ |
+| **Raymarine** | Partial | Quantum 2, RD series (untested) |
+| **Garmin** | Planned | xHD series |
 
 ## Deployment Modes
 
-Mayara can run in two modes:
+Mayara will run both as a separate binary program and, using WASM, inside a Signal K server. It is the intention to keep both implementation as identical as possible, with the same
+JSON and websocket APIs. The advantage of running as WASM is that it is very easy to distribute to any Signal K server running on any hardware (that is capable enough to run a radar server.)
+
+The two modes are:
 
 ### SignalK Plugin (mayara-signalk-wasm)
 - No need to install the mayara-server
 - Runs as a WASM plugin inside SignalK server 3.0+
 - Integrates with SignalK's data model and notification system
-- Best for boats already running SignalK
+- Simplest for boats already running SignalK
 
 ### Standalone Server (mayara-server)
 - Self-contained binary with built-in web server
-- No SignalK dependency required
+- No SignalK dependency 
 - Same API as SignalK mode - GUIs work unchanged
+- Best for resource utilization, especiall on low end hardware
 
 ## Download
 
