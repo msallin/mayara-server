@@ -77,12 +77,6 @@ GET  /radars/{id}/targets         - List ARPA targets
 POST /radars/{id}/targets         - Manual target acquisition
 ```
 
-## Important Notes
-
-### Furuno Multi-Client Behavior
-
-Furuno radars support multiple TCP clients (multi-master mode). When mayara connects, it actively requests model information via `$R96`, so model detection works regardless of whether other clients (NavNet TZtouch, TimeZero, etc.) are already connected.
-
 ## Status
 
 See [TODO](TODO.md)
