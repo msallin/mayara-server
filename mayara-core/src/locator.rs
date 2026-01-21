@@ -344,7 +344,8 @@ impl RadarLocator {
     ) -> bool {
         if self.multicast_interfaces.is_empty() {
             // No specific interfaces configured - use OS default
-            io.udp_join_multicast(socket, group, Ipv4Addr::UNSPECIFIED).is_ok()
+            io.udp_join_multicast(socket, group, Ipv4Addr::UNSPECIFIED)
+                .is_ok()
         } else {
             // Join on each configured interface
             let mut any_success = false;
@@ -498,7 +499,7 @@ impl RadarLocator {
                             status: "Listening".to_string(),
                             port: Some(garmin::REPORT_PORT),
                             multicast: Some(garmin::REPORT_ADDR.to_string()),
-                            poll: None,
+                            poll: Some(garmin::poll_beacon_packets),
                             socket: Some(socket),
                             interface: None,
                         }

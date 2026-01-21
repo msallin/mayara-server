@@ -436,7 +436,7 @@ fn create_command(packet_type: u32, value: u32) -> Vec<u8> {
     cmd
 }
 
-fn poll_beacon_packets(
+pub(crate) fn poll_beacon_packets(
     brand_status: &BrandStatus,
     _poll_count: u64,
     io: &mut dyn IoProvider,
