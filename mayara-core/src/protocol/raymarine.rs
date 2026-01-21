@@ -1219,4 +1219,150 @@ mod tests {
         let result = parse_beacon_36(&[0u8; 10]);
         assert!(matches!(result, Err(ParseError::TooShort { .. })));
     }
+
+    #[test]
+    fn test_spoke_processor_basic() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // Normal pixel: 0x80 → 0x80/2 = 64
+        let result = processor.process_spoke(&[0x80], DopplerMode::None);
+        assert_eq!(result, vec![64]);
+    }
+
+    #[test]
+    fn test_spoke_processor_doppler_markers() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // 0xFF = approaching, 0xFE = receding in Doppler mode
+        let result = processor.process_spoke(&[0xFF, 0xFE, 0x80], DopplerMode::Both);
+        assert_eq!(result, vec![20, 21, 64]); // approaching, receding, normal/2
+    }
+
+    #[test]
+    fn test_spoke_processor_no_doppler() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // Without Doppler, 0xFF and 0xFE are just normal values divided by 2
+        let result = processor.process_spoke(&[0xFF, 0xFE], DopplerMode::None);
+        assert_eq!(result, vec![127, 127]); // 0xFF/2=127, 0xFE/2=127
+    }
+}
+
+// =============================================================================
+// Spoke Processing with Lookup Tables
+// =============================================================================
+
+/// Number of possible byte values for lookup tables
+pub const BYTE_LOOKUP_LENGTH: usize = 256;
+
+/// Doppler mode for Raymarine spoke processing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DopplerMode {
+    #[default]
+    None = 0,
+    Both = 1,
+}
+
+/// Number of lookup variants for Doppler modes
+const LOOKUP_DOPPLER_LENGTH: usize = 2;
+
+/// Lookup table indices for Doppler processing
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+enum LookupDoppler {
+    Normal = 0,
+    Doppler = 1,
+}
+
+/// Pre-computed lookup table for fast Raymarine spoke processing.
+///
+/// Raymarine spoke processing differs from Navico:
+/// - Pixel values are divided by 2 (8-bit → 7-bit)
+/// - Doppler markers are 0xFF (approaching) and 0xFE (receding)
+///
+/// # Example
+///
+/// ```
+/// use mayara_core::protocol::raymarine::{SpokeProcessor, DopplerMode};
+///
+/// // Create processor with Doppler color indices
+/// let processor = SpokeProcessor::new(16, 17); // approaching=16, receding=17
+///
+/// // Process raw spoke data
+/// let raw_spoke = vec![0x80, 0xFF, 0xFE];
+/// let processed = processor.process_spoke(&raw_spoke, DopplerMode::Both);
+/// assert_eq!(processed, vec![64, 16, 17]); // 0x80/2, approaching, receding
+/// ```
+#[derive(Debug, Clone)]
+pub struct SpokeProcessor {
+    /// Lookup table: [doppler_variant][byte_value] → output_pixel
+    lookup: [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH],
+}
+
+impl SpokeProcessor {
+    /// Create a new spoke processor with Doppler color indices.
+    ///
+    /// # Arguments
+    /// * `doppler_approaching` - Pixel value for approaching targets (0xFF in raw data)
+    /// * `doppler_receding` - Pixel value for receding targets (0xFE in raw data)
+    pub fn new(doppler_approaching: u8, doppler_receding: u8) -> Self {
+        let mut lookup = [[0u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH];
+
+        for j in 0..BYTE_LOOKUP_LENGTH {
+            // Normal mode: divide by 2
+            lookup[LookupDoppler::Normal as usize][j] = (j as u8) / 2;
+
+            // Doppler mode: check for markers, otherwise divide by 2
+            lookup[LookupDoppler::Doppler as usize][j] = match j {
+                0xff => doppler_approaching,
+                0xfe => doppler_receding,
+                _ => (j as u8) / 2,
+            };
+        }
+
+        Self { lookup }
+    }
+
+    /// Process raw spoke data using pre-computed lookup table.
+    ///
+    /// # Arguments
+    /// * `spoke` - Raw spoke data
+    /// * `doppler` - Current Doppler mode
+    ///
+    /// # Returns
+    /// Processed spoke data with pixels divided by 2 and Doppler markers replaced
+    pub fn process_spoke(&self, spoke: &[u8], doppler: DopplerMode) -> Vec<u8> {
+        let mut output = Vec::with_capacity(spoke.len());
+
+        let lookup_index = match doppler {
+            DopplerMode::None => LookupDoppler::Normal,
+            DopplerMode::Both => LookupDoppler::Doppler,
+        } as usize;
+
+        for &pixel in spoke {
+            output.push(self.lookup[lookup_index][pixel as usize]);
+        }
+
+        output
+    }
+
+    /// Get the lookup array for a specific Doppler mode.
+    ///
+    /// This is useful for passing to decompression functions that need
+    /// a flat lookup table.
+    pub fn get_lookup(&self, doppler: DopplerMode) -> [u8; BYTE_LOOKUP_LENGTH] {
+        let lookup_index = match doppler {
+            DopplerMode::None => LookupDoppler::Normal,
+            DopplerMode::Both => LookupDoppler::Doppler,
+        } as usize;
+
+        self.lookup[lookup_index]
+    }
+}
+
+impl Default for SpokeProcessor {
+    /// Create a processor with default Doppler indices (255 for both).
+    fn default() -> Self {
+        Self::new(255, 255)
+    }
 }

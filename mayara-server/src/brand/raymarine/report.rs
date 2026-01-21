@@ -11,13 +11,14 @@ use crate::brand::raymarine::RaymarineModel;
 use crate::network::create_udp_multicast_listen;
 use crate::radar::range::Ranges;
 use crate::radar::trail::TrailBuffer;
-use crate::radar::{Legend, RadarError, RadarInfo, SharedRadars, Statistics, BYTE_LOOKUP_LENGTH};
+use crate::radar::{RadarError, RadarInfo, SharedRadars, Statistics};
 use crate::settings::{ControlUpdate, ControlValue};
 use crate::tokio_io::TokioIoProvider;
 use crate::Session;
 
-// Use unified controller from mayara-core
+// Use unified controller and spoke processor from mayara-core
 use mayara_core::controllers::RaymarineController;
+use mayara_core::protocol::raymarine::SpokeProcessor;
 
 use super::BaseModel;
 
@@ -38,31 +39,6 @@ mod rd;
 
 // Every 5 seconds we ask the radar for reports, so we can update our controls
 const REPORT_REQUEST_INTERVAL: Duration = Duration::from_millis(5000);
-
-// The LookupSpokeEnum is an index into an array, really
-enum LookupDoppler {
-    Normal = 0,
-    Doppler = 1,
-}
-const LOOKUP_DOPPLER_LENGTH: usize = (LookupDoppler::Doppler as usize) + 1;
-
-type PixelToBlobType = [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH];
-
-pub(super) fn pixel_to_blob(legend: &Legend) -> PixelToBlobType {
-    let mut lookup: [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH] =
-        [[0; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH];
-    // Cannot use for() in const expr, so use while instead
-    for j in 0..BYTE_LOOKUP_LENGTH {
-        lookup[LookupDoppler::Normal as usize][j] = j as u8 / 2;
-        lookup[LookupDoppler::Doppler as usize][j] = match j {
-            0xff => legend.doppler_approaching,
-            0xfe => legend.doppler_receding,
-            _ => j as u8 / 2,
-        };
-    }
-    log::info!("Created pixel_to_blob from legend {:?}", legend);
-    lookup
-}
 
 #[derive(PartialEq, PartialOrd, Debug)]
 enum ReceiverState {
@@ -95,7 +71,7 @@ pub(crate) struct RaymarineReportReceiver {
     statistics: Statistics,
     pixel_stats: [u32; 256],
     range_meters: u32,
-    pixel_to_blob: PixelToBlobType,
+    spoke_processor: SpokeProcessor,
     trails: TrailBuffer,
     prev_azimuth: u16,
 }
@@ -146,7 +122,17 @@ impl RaymarineReportReceiver {
 
         let control_update_rx = info.controls.control_update_subscribe();
 
-        let pixel_to_blob = pixel_to_blob(&info.legend);
+        // Use core's SpokeProcessor for Raymarine spoke processing
+        let spoke_processor = SpokeProcessor::new(
+            info.legend.doppler_approaching,
+            info.legend.doppler_receding,
+        );
+        log::debug!(
+            "{}: Created SpokeProcessor with doppler approaching={}, receding={}",
+            key,
+            info.legend.doppler_approaching,
+            info.legend.doppler_receding
+        );
         let trails = TrailBuffer::new(session.clone(), &info);
 
         RaymarineReportReceiver {
@@ -167,7 +153,7 @@ impl RaymarineReportReceiver {
             statistics: Statistics::new(),
             pixel_stats: [0; 256],
             range_meters: 0,
-            pixel_to_blob,
+            spoke_processor,
             trails,
             prev_azimuth: 0,
         }

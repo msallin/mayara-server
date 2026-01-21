@@ -2,10 +2,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mayara_core::protocol::raymarine::{
     decompress_quantum_spoke, parse_quantum_frame_header, parse_quantum_status,
-    QUANTUM_FRAME_HEADER_SIZE,
+    DopplerMode as RaymDopplerMode, QUANTUM_FRAME_HEADER_SIZE,
 };
 
-use crate::brand::raymarine::report::LookupDoppler;
 use crate::brand::raymarine::{hd_to_pixel_values, settings, RaymarineModel};
 use crate::protos::RadarMessage::RadarMessage;
 use crate::radar::range::{Range, Ranges};
@@ -69,9 +68,8 @@ pub(crate) fn process_frame(receiver: &mut RaymarineReportReceiver, data: &[u8])
     let data_len = header.data_len as usize;
     let spoke_data = &data[next_offset..next_offset + data_len];
 
-    // Build doppler lookup table from pixel_to_blob for the core function
-    let doppler = LookupDoppler::Doppler as usize;
-    let doppler_lookup: [u8; 256] = core::array::from_fn(|i| receiver.pixel_to_blob[doppler][i]);
+    // Get doppler lookup from SpokeProcessor for the core decompression function
+    let doppler_lookup = receiver.spoke_processor.get_lookup(RaymDopplerMode::Both);
 
     // Use core decompression
     let unpacked = decompress_quantum_spoke(spoke_data, &doppler_lookup, returns_per_line as usize);

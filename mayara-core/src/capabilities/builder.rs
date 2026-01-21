@@ -47,6 +47,7 @@ pub fn build_capabilities(
             spokes_per_revolution: model_info.spokes_per_revolution,
             max_spoke_length: model_info.max_spoke_length,
             pixel_values: discovery.pixel_values,
+            legend: crate::radar::generate_legend(discovery.pixel_values),
             has_doppler: model_info.has_doppler,
             has_dual_range: model_info.has_dual_range,
             max_dual_range: model_info.max_dual_range,
@@ -87,6 +88,7 @@ pub fn build_capabilities_from_model(
             spokes_per_revolution: model_info.spokes_per_revolution,
             max_spoke_length: model_info.max_spoke_length,
             pixel_values: 64, // Default to 6-bit radar data
+            legend: crate::radar::generate_legend(64),
             has_doppler: model_info.has_doppler,
             has_dual_range: model_info.has_dual_range,
             max_dual_range: model_info.max_dual_range,
@@ -151,6 +153,7 @@ pub fn build_capabilities_from_model_with_key(
             spokes_per_revolution,
             max_spoke_length,
             pixel_values,
+            legend: crate::radar::generate_legend(pixel_values),
             has_doppler: model_info.has_doppler,
             has_dual_range: model_info.has_dual_range,
             max_dual_range: model_info.max_dual_range,

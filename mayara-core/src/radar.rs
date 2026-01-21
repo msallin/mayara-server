@@ -213,4 +213,135 @@ impl std::fmt::Display for RadarStatus {
     }
 }
 
-// ParsedAddress has been removed - use std::net::SocketAddrV4 instead
+// =============================================================================
+// Palette Generation
+// =============================================================================
+
+/// RGBA color for palette generation
+#[derive(Debug, Clone, Copy)]
+pub struct Rgba {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Rgba {
+    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+
+    /// Convert to hex string "#RRGGBBAA"
+    pub fn to_hex(&self) -> String {
+        format!("#{:02x}{:02x}{:02x}{:02x}", self.r, self.g, self.b, self.a)
+    }
+}
+
+/// Generate color palette for radar display based on pixel value count.
+///
+/// Creates a smooth color gradient: Blue → Cyan → Green → Yellow → Red
+/// This is the core palette algorithm used by both server and GUI.
+///
+/// # Arguments
+/// * `pixel_values` - Number of distinct intensity values (e.g., 16 for Navico, 64 for Furuno)
+///
+/// # Returns
+/// Vector of RGBA colors, where index 0 is transparent (noise floor)
+pub fn generate_palette(pixel_values: u8) -> Vec<Rgba> {
+    const MIN_INTENSITY: f64 = 85.0; // Start at 1/3 intensity for visibility
+    const MAX_INTENSITY: f64 = 255.0;
+
+    let mut palette = Vec::with_capacity(pixel_values as usize);
+
+    // Clamp pixel_values to valid range
+    let pixel_values = pixel_values.min(255 - 32 - 2);
+    if pixel_values == 0 {
+        return palette;
+    }
+
+    let pixels_with_color = pixel_values.saturating_sub(1);
+
+    // Index 0: transparent/black (noise floor)
+    palette.push(Rgba::new(0, 0, 0, 0));
+
+    // Generate color gradient for indices 1 to pixel_values-1
+    for v in 1..pixel_values {
+        // Normalize v to 0.0 - 1.0 range
+        let t = (v - 1) as f64 / pixels_with_color.max(1) as f64;
+
+        // Color progression: Blue → Cyan → Green → Yellow → Red
+        let (r, g, b) = if t < 0.25 {
+            // Blue to Cyan: increase green
+            let local_t = t / 0.25;
+            (0.0, local_t, 1.0)
+        } else if t < 0.5 {
+            // Cyan to Green: decrease blue
+            let local_t = (t - 0.25) / 0.25;
+            (0.0, 1.0, 1.0 - local_t)
+        } else if t < 0.75 {
+            // Green to Yellow: increase red
+            let local_t = (t - 0.5) / 0.25;
+            (local_t, 1.0, 0.0)
+        } else {
+            // Yellow to Red: decrease green
+            let local_t = (t - 0.75) / 0.25;
+            (1.0, 1.0 - local_t, 0.0)
+        };
+
+        // Apply intensity scaling
+        let scale = |c: f64| -> u8 {
+            if c > 0.0 {
+                (MIN_INTENSITY + (MAX_INTENSITY - MIN_INTENSITY) * c) as u8
+            } else {
+                0
+            }
+        };
+
+        palette.push(Rgba::new(scale(r), scale(g), scale(b), 255));
+    }
+
+    palette
+}
+
+/// Generate legend entries from a palette.
+///
+/// This converts the raw palette colors to the LegendEntry format
+/// expected by the radar API.
+pub fn generate_legend(pixel_values: u8) -> Vec<LegendEntry> {
+    generate_palette(pixel_values)
+        .into_iter()
+        .enumerate()
+        .map(|(i, rgba)| LegendEntry {
+            pixel_type: format!("level_{}", i),
+            color: rgba.to_hex(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_palette_generation() {
+        // Test with Navico's 16 values
+        let palette = generate_palette(16);
+        assert_eq!(palette.len(), 16);
+        assert_eq!(palette[0].a, 0); // First entry is transparent
+        assert_eq!(palette[1].a, 255); // Others are opaque
+    }
+
+    #[test]
+    fn test_legend_generation() {
+        let legend = generate_legend(16);
+        assert_eq!(legend.len(), 16);
+        assert!(legend[0].color.starts_with("#"));
+        assert_eq!(legend[0].pixel_type, "level_0");
+    }
+
+    #[test]
+    fn test_rgba_to_hex() {
+        let rgba = Rgba::new(255, 128, 0, 255);
+        assert_eq!(rgba.to_hex(), "#ff8000ff");
+    }
+}

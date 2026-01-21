@@ -135,4 +135,5 @@ pub use engine::{ManagedRadar, RadarController, RadarEngine};
 pub use error::ParseError;
 pub use io::{IoError, IoProvider, TcpSocketHandle, UdpSocketHandle};
 pub use locator::{BrandStatus, DiscoveredRadar, LocatorEvent, LocatorStatus, RadarLocator};
+pub use radar::{generate_legend, generate_palette, Rgba};
 pub use state::{ControlValueState, PowerState, RadarState};

@@ -1416,6 +1416,135 @@ pub fn unpack_spoke_data_doppler(
 }
 
 // =============================================================================
+// Spoke Processing with Lookup Tables
+// =============================================================================
+
+/// Number of possible byte values for lookup tables
+pub const BYTE_LOOKUP_LENGTH: usize = 256;
+
+/// Number of lookup variants for Doppler modes (low/high nibble × 3 modes)
+const LOOKUP_DOPPLER_LENGTH: usize = 6;
+
+/// Lookup table indices for Doppler processing
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+enum LookupDoppler {
+    LowNormal = 0,
+    LowBoth = 1,
+    LowApproaching = 2,
+    HighNormal = 3,
+    HighBoth = 4,
+    HighApproaching = 5,
+}
+
+/// Pre-computed lookup table for fast spoke processing.
+///
+/// This struct holds a 256×6 lookup table that enables O(1) per-byte
+/// spoke data conversion with Doppler mode handling.
+///
+/// # Example
+///
+/// ```
+/// use mayara_core::protocol::navico::{SpokeProcessor, DopplerMode};
+///
+/// // Create processor with Doppler color indices
+/// let processor = SpokeProcessor::new(16, 17); // approaching=16, receding=17
+///
+/// // Process raw spoke data (512 bytes → 1024 bytes)
+/// let raw_spoke = vec![0x12, 0x34]; // Example packed data
+/// let processed = processor.process_spoke(&raw_spoke, DopplerMode::Both);
+/// assert_eq!(processed.len(), 4); // 2 bytes → 4 pixels
+/// ```
+#[derive(Debug, Clone)]
+pub struct SpokeProcessor {
+    /// Lookup table: [doppler_variant][byte_value] → output_pixel
+    lookup: [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH],
+}
+
+impl SpokeProcessor {
+    /// Create a new spoke processor with Doppler color indices.
+    ///
+    /// # Arguments
+    /// * `doppler_approaching` - Pixel value for approaching targets (0x0F in raw data)
+    /// * `doppler_receding` - Pixel value for receding targets (0x0E in raw data)
+    pub fn new(doppler_approaching: u8, doppler_receding: u8) -> Self {
+        let mut lookup = [[0u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH];
+
+        for j in 0..BYTE_LOOKUP_LENGTH {
+            let low: u8 = (j as u8) & 0x0f;
+            let high: u8 = ((j as u8) >> 4) & 0x0f;
+
+            // Low nibble variants
+            lookup[LookupDoppler::LowNormal as usize][j] = low;
+            lookup[LookupDoppler::LowBoth as usize][j] = match low {
+                0x0f => doppler_approaching,
+                0x0e => doppler_receding,
+                _ => low,
+            };
+            lookup[LookupDoppler::LowApproaching as usize][j] = match low {
+                0x0f => doppler_approaching,
+                _ => low,
+            };
+
+            // High nibble variants
+            lookup[LookupDoppler::HighNormal as usize][j] = high;
+            lookup[LookupDoppler::HighBoth as usize][j] = match high {
+                0x0f => doppler_approaching,
+                0x0e => doppler_receding,
+                _ => high,
+            };
+            lookup[LookupDoppler::HighApproaching as usize][j] = match high {
+                0x0f => doppler_approaching,
+                _ => high,
+            };
+        }
+
+        Self { lookup }
+    }
+
+    /// Process raw spoke data using pre-computed lookup table.
+    ///
+    /// Converts packed 4-bit pixel data to unpacked bytes with Doppler handling.
+    ///
+    /// # Arguments
+    /// * `spoke` - Raw spoke data (512 bytes for Navico)
+    /// * `doppler` - Current Doppler mode
+    ///
+    /// # Returns
+    /// Processed spoke data (1024 bytes for Navico)
+    pub fn process_spoke(&self, spoke: &[u8], doppler: DopplerMode) -> Vec<u8> {
+        let mut output = Vec::with_capacity(spoke.len() * 2);
+
+        let low_index = match doppler {
+            DopplerMode::None => LookupDoppler::LowNormal,
+            DopplerMode::Both => LookupDoppler::LowBoth,
+            DopplerMode::Approaching => LookupDoppler::LowApproaching,
+        } as usize;
+
+        let high_index = match doppler {
+            DopplerMode::None => LookupDoppler::HighNormal,
+            DopplerMode::Both => LookupDoppler::HighBoth,
+            DopplerMode::Approaching => LookupDoppler::HighApproaching,
+        } as usize;
+
+        for &pixel in spoke {
+            let pixel = pixel as usize;
+            output.push(self.lookup[low_index][pixel]);
+            output.push(self.lookup[high_index][pixel]);
+        }
+
+        output
+    }
+}
+
+impl Default for SpokeProcessor {
+    /// Create a processor with default Doppler indices (255 for both).
+    fn default() -> Self {
+        Self::new(255, 255)
+    }
+}
+
+// =============================================================================
 // Command Generation
 // =============================================================================
 
@@ -1878,5 +2007,48 @@ mod tests {
         let parsed = result.unwrap();
         assert_eq!(parsed.doppler_state, Some(1));
         assert_eq!(parsed.doppler_speed, Some(500));
+    }
+
+    #[test]
+    fn test_spoke_processor_basic() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // Test basic unpacking: 0x12 → low=2, high=1
+        let packed = vec![0x12];
+        let result = processor.process_spoke(&packed, DopplerMode::None);
+        assert_eq!(result, vec![2, 1]);
+    }
+
+    #[test]
+    fn test_spoke_processor_doppler_both() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // 0xEF: low=0xF (approaching), high=0xE (receding)
+        let packed = vec![0xEF];
+        let result = processor.process_spoke(&packed, DopplerMode::Both);
+        assert_eq!(result, vec![20, 21]); // approaching, receding
+    }
+
+    #[test]
+    fn test_spoke_processor_doppler_approaching_only() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // 0xEF: low=0xF (approaching), high=0xE (receding stays as 14)
+        let packed = vec![0xEF];
+        let result = processor.process_spoke(&packed, DopplerMode::Approaching);
+        assert_eq!(result, vec![20, 14]); // approaching, receding stays as 0xE=14
+    }
+
+    #[test]
+    fn test_spoke_processor_matches_unpack_function() {
+        // Verify SpokeProcessor produces same output as unpack_spoke_data_doppler
+        let processor = SpokeProcessor::new(20, 21);
+        let packed = vec![0x12, 0x34, 0xEF, 0xAB];
+
+        for mode in [DopplerMode::None, DopplerMode::Both, DopplerMode::Approaching] {
+            let from_processor = processor.process_spoke(&packed, mode);
+            let from_function = unpack_spoke_data_doppler(&packed, mode, 20, 21);
+            assert_eq!(from_processor, from_function, "Mismatch for mode {:?}", mode);
+        }
     }
 }

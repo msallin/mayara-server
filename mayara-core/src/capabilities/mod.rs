@@ -215,8 +215,12 @@ pub struct Characteristics {
     pub max_spoke_length: u16,
 
     /// Number of distinct pixel intensity values (e.g., 16 for 4-bit, 64 for 6-bit)
-    /// Used by GUI to generate appropriate color palette
     pub pixel_values: u8,
+
+    /// Color palette for rendering pixel values
+    /// Generated from pixel_values using core's gradient algorithm
+    /// Each entry maps a pixel index to an RGBA color
+    pub legend: Vec<crate::radar::LegendEntry>,
 
     /// Whether Doppler processing is available
     pub has_doppler: bool,

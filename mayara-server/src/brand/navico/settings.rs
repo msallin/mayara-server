@@ -239,17 +239,5 @@ pub fn update_when_model_known(controls: &SharedControls, model: Model, radar_in
         );
     }
 
-    controls.insert(
-        "noiseRejection",
-        Control::new_list(
-            "noiseRejection",
-            if model == Model::HALO {
-                &["Off", "Low", "Medium", "High"]
-            } else {
-                &["Off", "Low", "High"]
-            },
-        ),
-    );
-
     log::debug!("update_when_model_known: {:?}", controls);
 }

@@ -33,8 +33,6 @@ pub(crate) const NAUTICAL_MILE_F64: f64 = 1852.; // 1 nautical mile in meters
 // A "native to radar" bearing, usually [0..2048] or [0..4096] or [0..8192]
 pub(crate) type SpokeBearing = u16;
 
-pub(crate) const BYTE_LOOKUP_LENGTH: usize = (u8::MAX as usize) + 1;
-
 #[derive(Error, Debug)]
 pub enum RadarError {
     #[error("I/O operation failed")]
@@ -821,6 +819,11 @@ impl FromStr for Status {
 
 // The actual values are not arbitrary: these are the exact values as reported
 // by HALO radars, simplifying the navico::report code.
+//
+// NOTE: mayara-core also has a DopplerMode enum (in protocol::navico) with
+// identical values. The server version exists for DataUpdate messages and
+// settings. Navico data processing converts between them. A future refactor
+// could unify these, but it would touch DataUpdate, settings, and report code.
 #[derive(Copy, Clone, Debug, Primitive)]
 pub enum DopplerMode {
     None = 0,
@@ -835,7 +838,6 @@ impl fmt::Display for DopplerMode {
 }
 
 pub const BLOB_HISTORY_COLORS: u8 = 32;
-const TRANSPARENT: u8 = 0;
 const OPAQUE: u8 = 255;
 
 fn default_legend(session: Session, doppler: bool, pixel_values: u8) -> Legend {
@@ -848,75 +850,30 @@ fn default_legend(session: Session, doppler: bool, pixel_values: u8) -> Legend {
         strong_return: 255,
     };
 
-    let mut pixel_values = pixel_values;
-    if pixel_values > 255 - 32 - 2 {
-        pixel_values = 255 - 32 - 2;
-    }
-
+    let pixel_values = pixel_values.min(255 - 32 - 2);
     if pixel_values == 0 {
         return legend;
     }
 
-    let pixels_with_color = pixel_values - 1;
+    let pixels_with_color = pixel_values.saturating_sub(1);
     let two_thirds = (pixels_with_color * 2) / 3;
-    legend.strong_return = two_thirds as u8;
+    legend.strong_return = two_thirds;
 
-    // No return is black/transparent
-    legend.pixels.push(Lookup {
-        r#type: PixelType::Normal,
-        color: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: TRANSPARENT,
-        },
-    });
-
-    // Use continuous color blending for better visual distinction,
-    // especially important for low pixel counts like Navico's 16 values.
-    // Color progression: dark blue -> cyan -> green -> yellow -> red
-    // This gives more visual distinction than the previous thirds-based approach.
-    const MIN_INTENSITY: f64 = 85.0; // Start at 1/3 intensity for visibility
-    const MAX_INTENSITY: f64 = 255.0;
-
-    for v in 1..pixel_values {
-        // Normalize v to 0.0 - 1.0 range
-        let t = (v - 1) as f64 / (pixels_with_color - 1).max(1) as f64;
-
-        // Compute RGB using smooth transitions through the color spectrum
-        // This creates: blue (0.0) -> cyan (0.25) -> green (0.5) -> yellow (0.75) -> red (1.0)
-        let (r, g, b) = if t < 0.25 {
-            // Blue to Cyan: increase green
-            let local_t = t / 0.25;
-            (0.0, local_t, 1.0)
-        } else if t < 0.5 {
-            // Cyan to Green: decrease blue
-            let local_t = (t - 0.25) / 0.25;
-            (0.0, 1.0, 1.0 - local_t)
-        } else if t < 0.75 {
-            // Green to Yellow: increase red
-            let local_t = (t - 0.5) / 0.25;
-            (local_t, 1.0, 0.0)
-        } else {
-            // Yellow to Red: decrease green
-            let local_t = (t - 0.75) / 0.25;
-            (1.0, 1.0 - local_t, 0.0)
-        };
-
-        // Apply intensity scaling
-        let scale = |c: f64| -> u8 { (MIN_INTENSITY + (MAX_INTENSITY - MIN_INTENSITY) * c) as u8 };
-
+    // Use core's palette generation algorithm (Blue → Cyan → Green → Yellow → Red)
+    let core_palette = mayara_core::generate_palette(pixel_values);
+    for rgba in &core_palette {
         legend.pixels.push(Lookup {
             r#type: PixelType::Normal,
             color: Color {
-                r: if r > 0.0 { scale(r) } else { 0 },
-                g: if g > 0.0 { scale(g) } else { 0 },
-                b: if b > 0.0 { scale(b) } else { 0 },
-                a: OPAQUE,
+                r: rgba.r,
+                g: rgba.g,
+                b: rgba.b,
+                a: rgba.a,
             },
         });
     }
 
+    // Add a black opaque entry after the normal colors
     legend.pixels.push(Lookup {
         r#type: PixelType::Normal,
         color: Color {
