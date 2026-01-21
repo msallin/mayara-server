@@ -30,6 +30,8 @@
 //! }
 //! ```
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use super::ControllerEvent;
 use crate::io::{IoProvider, TcpSocketHandle};
 use crate::protocol::furuno::command::{
@@ -39,8 +41,7 @@ use crate::protocol::furuno::command::{
     format_noise_reduction_command, format_rain_command, format_range_command,
     format_request_modules, format_request_ontime, format_request_txtime, format_rezboost_command,
     format_scan_speed_command, format_sea_command, format_status_command,
-    format_target_analyzer_command, format_tx_channel_command, parse_login_response,
-    LOGIN_MESSAGE,
+    format_target_analyzer_command, format_tx_channel_command, parse_login_response, LOGIN_MESSAGE,
 };
 use crate::protocol::furuno::{BASE_PORT, BEACON_PORT};
 use crate::state::{generate_state_requests, RadarState};
@@ -71,7 +72,7 @@ pub struct FurunoController {
     /// Radar ID (for logging)
     radar_id: String,
     /// Radar IP address
-    radar_addr: String,
+    radar_addr: Ipv4Addr,
     /// Login socket (port 10000 or 10010)
     login_socket: Option<TcpSocketHandle>,
     /// Command socket (dynamic port)
@@ -121,6 +122,8 @@ pub struct FurunoController {
     last_emitted_tx_hours: Option<f64>,
     /// Previous power state (to detect transitions)
     prev_power_state: crate::state::PowerState,
+    /// Poll count when last state refresh was sent (for periodic sync)
+    last_state_refresh: u64,
 }
 
 impl FurunoController {
@@ -134,14 +137,17 @@ impl FurunoController {
     const FALLBACK_PORTS: [u16; 3] = [10100, 10001, 10002];
     /// Keep-alive interval in poll counts (~5 seconds at 10 polls/sec)
     const KEEPALIVE_INTERVAL: u64 = 50;
+    /// State refresh interval in poll counts (~2 seconds at 10 polls/sec)
+    /// This allows us to sync state changes made by other clients (e.g., chart plotter)
+    const STATE_REFRESH_INTERVAL: u64 = 20;
 
     /// Create a new controller for a Furuno radar
     ///
     /// The controller will automatically attempt to connect to get model info.
-    pub fn new(radar_id: &str, radar_addr: &str) -> Self {
+    pub fn new(radar_id: &str, radar_addr: Ipv4Addr) -> Self {
         let mut controller = Self {
             radar_id: radar_id.to_string(),
-            radar_addr: radar_addr.to_string(),
+            radar_addr,
             login_socket: None,
             command_socket: None,
             state: ControllerState::Disconnected,
@@ -166,6 +172,7 @@ impl FurunoController {
             last_emitted_hours: None,
             last_emitted_tx_hours: None,
             prev_power_state: crate::state::PowerState::Off,
+            last_state_refresh: 0,
         };
         // Queue keepalive to trigger connection
         controller.request_info();
@@ -306,7 +313,11 @@ impl FurunoController {
         self.queue_command(io, cmd.trim());
         // Update local state immediately for responsive UI
         self.radar_state.doppler_mode.enabled = enabled;
-        self.radar_state.doppler_mode.mode = if mode == 0 { "target".into() } else { "rain".into() };
+        self.radar_state.doppler_mode.mode = if mode == 0 {
+            "target".into()
+        } else {
+            "rain".into()
+        };
     }
 
     /// Set bearing alignment (heading offset)
@@ -381,7 +392,8 @@ impl FurunoController {
             (0, 0) // Disabled: start=0, width=0
         };
 
-        let cmd = format_blind_sector_command(zone2_enabled, z1_start, z1_width, z2_start, z2_width);
+        let cmd =
+            format_blind_sector_command(zone2_enabled, z1_start, z1_width, z2_start, z2_width);
         self.queue_command(io, cmd.trim());
     }
 
@@ -425,7 +437,8 @@ impl FurunoController {
                         if self.retry_count >= Self::MAX_RETRIES {
                             io.debug(&format!(
                                 "[{}] Max retries ({}) reached, giving up",
-                                self.radar_id, Self::MAX_RETRIES
+                                self.radar_id,
+                                Self::MAX_RETRIES
                             ));
                             self.pending_command = None;
                             self.retry_count = 0;
@@ -433,16 +446,26 @@ impl FurunoController {
                         }
                         io.debug(&format!(
                             "[{}] Retry {} of {}",
-                            self.radar_id, self.retry_count + 1, Self::MAX_RETRIES
+                            self.radar_id,
+                            self.retry_count + 1,
+                            Self::MAX_RETRIES
                         ));
                     }
                     self.start_login(io);
                 }
             }
-            ControllerState::LoggingIn => { self.poll_login(io); }
-            ControllerState::Connecting => { self.poll_connecting(io); }
-            ControllerState::Connected => { self.poll_connected(io); }
-            ControllerState::TryingFallback => { self.poll_fallback(io); }
+            ControllerState::LoggingIn => {
+                self.poll_login(io);
+            }
+            ControllerState::Connecting => {
+                self.poll_connecting(io);
+            }
+            ControllerState::Connected => {
+                self.poll_connected(io);
+            }
+            ControllerState::TryingFallback => {
+                self.poll_fallback(io);
+            }
         }
 
         // Emit Connected event when we first reach Connected state
@@ -516,7 +539,8 @@ impl FurunoController {
                 // Raw mode for binary login response
                 let _ = io.tcp_set_line_buffering(&socket, false);
 
-                if io.tcp_connect(&socket, &self.radar_addr, login_port).is_ok() {
+                let addr = SocketAddrV4::new(self.radar_addr, login_port);
+                if io.tcp_connect(&socket, addr).is_ok() {
                     self.login_socket = Some(socket);
                     self.state = ControllerState::LoggingIn;
                     self.login_sent = false; // Reset for new login attempt
@@ -569,7 +593,10 @@ impl FurunoController {
         }
 
         if !io.tcp_is_connected(&socket) {
-            io.debug(&format!("[{}] Login socket still connecting...", self.radar_id));
+            io.debug(&format!(
+                "[{}] Login socket still connecting...",
+                self.radar_id
+            ));
             return true; // Still connecting
         }
 
@@ -587,7 +614,10 @@ impl FurunoController {
         // Check for response
         let mut buf = [0u8; 64];
         if let Some(len) = io.tcp_recv_raw(&socket, &mut buf) {
-            io.debug(&format!("[{}] Login response: {} bytes", self.radar_id, len));
+            io.debug(&format!(
+                "[{}] Login response: {} bytes",
+                self.radar_id, len
+            ));
 
             if let Some(port) = parse_login_response(&buf[..len]) {
                 io.debug(&format!("[{}] Got command port: {}", self.radar_id, port));
@@ -616,7 +646,8 @@ impl FurunoController {
                 // Line buffering for text protocol
                 let _ = io.tcp_set_line_buffering(&socket, true);
 
-                if io.tcp_connect(&socket, &self.radar_addr, self.command_port).is_ok() {
+                let addr = SocketAddrV4::new(self.radar_addr, self.command_port);
+                if io.tcp_connect(&socket, addr).is_ok() {
                     self.command_socket = Some(socket);
                     self.state = ControllerState::Connecting;
                 } else {
@@ -649,7 +680,10 @@ impl FurunoController {
         };
 
         if !io.tcp_is_valid(&socket) {
-            io.debug(&format!("[{}] Command socket closed/errored", self.radar_id));
+            io.debug(&format!(
+                "[{}] Command socket closed/errored",
+                self.radar_id
+            ));
             io.tcp_close(socket);
             self.command_socket = None;
             self.state = ControllerState::Disconnected;
@@ -659,7 +693,10 @@ impl FurunoController {
         }
 
         if io.tcp_is_connected(&socket) {
-            io.debug(&format!("[{}] Command connection established", self.radar_id));
+            io.debug(&format!(
+                "[{}] Command connection established",
+                self.radar_id
+            ));
             self.state = ControllerState::Connected;
             self.last_keepalive = self.poll_count;
             self.retry_count = 0;
@@ -731,6 +768,19 @@ impl FurunoController {
             self.last_keepalive = self.poll_count;
         }
 
+        // Periodic state refresh to sync changes made by other clients (e.g., chart plotter)
+        // When refreshing, we force-update the state to accept external values
+        if self.poll_count - self.last_state_refresh > Self::STATE_REFRESH_INTERVAL {
+            io.debug(&format!(
+                "[{}] Periodic state refresh (sync with external clients)",
+                self.radar_id
+            ));
+            // Mark as pending external update so state.rs accepts radar values
+            self.radar_state.mark_pending_refresh();
+            self.send_state_requests(io);
+            self.last_state_refresh = self.poll_count;
+        }
+
         true
     }
 
@@ -754,7 +804,8 @@ impl FurunoController {
         match io.tcp_create() {
             Ok(socket) => {
                 let _ = io.tcp_set_line_buffering(&socket, true);
-                if io.tcp_connect(&socket, &self.radar_addr, port).is_ok() {
+                let addr = SocketAddrV4::new(self.radar_addr, port);
+                if io.tcp_connect(&socket, addr).is_ok() {
                     self.command_socket = Some(socket);
                     self.command_port = port;
                     self.state = ControllerState::TryingFallback;
@@ -835,7 +886,10 @@ impl FurunoController {
         let cmd = format_request_txtime();
         self.send_command(io, cmd.trim());
 
-        io.info(&format!("[{}] Sent info requests (including $R96 for firmware)", self.radar_id));
+        io.info(&format!(
+            "[{}] Sent info requests (including $R96 for firmware)",
+            self.radar_id
+        ));
     }
 
     /// Send state requests
@@ -843,7 +897,10 @@ impl FurunoController {
         for cmd in generate_state_requests() {
             self.send_command(io, cmd.trim());
         }
-        io.info(&format!("[{}] Sent state requests (including $R83 for mainBangSuppression)", self.radar_id));
+        io.info(&format!(
+            "[{}] Sent state requests (including $R83 for mainBangSuppression)",
+            self.radar_id
+        ));
     }
 
     /// Parse a response line from the radar
@@ -860,7 +917,9 @@ impl FurunoController {
         if self.radar_state.update_from_response(line) {
             io.debug(&format!(
                 "[{}] State updated: power={:?}, range={}, mbs={}",
-                self.radar_id, self.radar_state.power, self.radar_state.range,
+                self.radar_id,
+                self.radar_state.power,
+                self.radar_state.range,
                 self.radar_state.main_bang_suppression
             ));
         }
@@ -912,7 +971,10 @@ impl FurunoController {
                 if let Ok(seconds) = parts[1].parse::<f64>() {
                     let hours = seconds / 3600.0;
                     self.operating_hours = Some(hours);
-                    io.debug(&format!("[{}] Operating hours: {:.1} ({} seconds)", self.radar_id, hours, seconds as i64));
+                    io.debug(&format!(
+                        "[{}] Operating hours: {:.1} ({} seconds)",
+                        self.radar_id, hours, seconds as i64
+                    ));
                 }
             }
         }
@@ -925,7 +987,10 @@ impl FurunoController {
                 if let Ok(seconds) = parts[1].parse::<f64>() {
                     let hours = seconds / 3600.0;
                     self.transmit_hours = Some(hours);
-                    io.debug(&format!("[{}] Transmit hours: {:.1} ({} seconds)", self.radar_id, hours, seconds as i64));
+                    io.debug(&format!(
+                        "[{}] Transmit hours: {:.1} ({} seconds)",
+                        self.radar_id, hours, seconds as i64
+                    ));
                 }
             }
         }

@@ -34,21 +34,25 @@ pub fn control_power() -> ControlDefinition {
                 value: "off".into(),
                 label: "Off".into(),
                 description: Some("Radar powered off".into()),
+                read_only: true, // Cannot be set by client
             },
             EnumValue {
                 value: "standby".into(),
                 label: "Standby".into(),
                 description: Some("Radar on, not transmitting".into()),
+                read_only: false,
             },
             EnumValue {
                 value: "transmit".into(),
                 label: "Transmit".into(),
                 description: Some("Radar transmitting".into()),
+                read_only: false,
             },
             EnumValue {
                 value: "warming".into(),
                 label: "Warming Up".into(),
                 description: Some("Magnetron warming (read-only state)".into()),
+                read_only: true, // Cannot be set by client
             },
         ]),
         properties: None,
@@ -71,7 +75,7 @@ pub fn control_power_for_brand(brand: Brand) -> ControlDefinition {
         // off (0) and warming (3) are read-only states reported by radar
         Brand::Furuno => WireProtocolHint {
             settable_indices: Some(vec![1, 2]), // standby, transmit
-            send_always: true, // Furuno needs power commands sent always
+            send_always: true,                  // Furuno needs power commands sent always
             ..Default::default()
         },
         Brand::Navico | Brand::Raymarine | Brand::Garmin => WireProtocolHint {
@@ -90,7 +94,9 @@ pub fn control_range(supported_ranges: &[u32]) -> ControlDefinition {
     ControlDefinition {
         id: "range".into(),
         name: "Range".into(),
-        description: "Detection range in meters. Use supportedRanges from capabilities for valid values.".into(),
+        description:
+            "Detection range in meters. Use supportedRanges from capabilities for valid values."
+                .into(),
         category: ControlCategory::Base,
         control_type: ControlType::Number,
         range: Some(RangeSpec {
@@ -125,11 +131,13 @@ pub fn control_gain() -> ControlDefinition {
                     value: "auto".into(),
                     label: "Auto".into(),
                     description: None,
+                    read_only: false,
                 },
                 EnumValue {
                     value: "manual".into(),
                     label: "Manual".into(),
                     description: None,
+                    read_only: false,
                 },
             ]),
         },
@@ -153,7 +161,9 @@ pub fn control_gain() -> ControlDefinition {
     ControlDefinition {
         id: "gain".into(),
         name: "Gain".into(),
-        description: "Signal amplification. Higher values increase sensitivity but may also amplify noise.".into(),
+        description:
+            "Signal amplification. Higher values increase sensitivity but may also amplify noise."
+                .into(),
         category: ControlCategory::Base,
         control_type: ControlType::Compound,
         range: None,
@@ -183,11 +193,13 @@ pub fn control_sea() -> ControlDefinition {
                     value: "auto".into(),
                     label: "Auto".into(),
                     description: None,
+                    read_only: false,
                 },
                 EnumValue {
                     value: "manual".into(),
                     label: "Manual".into(),
                     description: None,
+                    read_only: false,
                 },
             ]),
         },
@@ -241,11 +253,13 @@ pub fn control_rain() -> ControlDefinition {
                     value: serde_json::json!("auto"),
                     label: "Auto".into(),
                     description: None,
+                    read_only: false,
                 },
                 EnumValue {
                     value: serde_json::json!("manual"),
                     label: "Manual".into(),
                     description: None,
+                    read_only: false,
                 },
             ]),
         },
@@ -423,11 +437,14 @@ pub fn control_no_transmit_start(zone_number: u8) -> ControlDefinition {
     ControlDefinition {
         id: format!("noTransmitStart{}", zone_number),
         name: format!("No-Transmit Zone {} Start", zone_number),
-        description: format!("Start angle of no-transmit zone {} in degrees. -1 = disabled.", zone_number),
+        description: format!(
+            "Start angle of no-transmit zone {} in degrees. -1 = disabled.",
+            zone_number
+        ),
         category: ControlCategory::Installation,
         control_type: ControlType::Number,
         range: Some(RangeSpec {
-            min: -1.0,  // -1 = zone disabled
+            min: -1.0, // -1 = zone disabled
             max: 359.0,
             step: Some(1.0),
             unit: Some("degrees".into()),
@@ -437,7 +454,7 @@ pub fn control_no_transmit_start(zone_number: u8) -> ControlDefinition {
         modes: None,
         default_mode: None,
         read_only: false,
-        default: Some(serde_json::json!(-1)),  // Default to disabled
+        default: Some(serde_json::json!(-1)), // Default to disabled
         wire_hints: None,
     }
 }
@@ -448,11 +465,14 @@ pub fn control_no_transmit_end(zone_number: u8) -> ControlDefinition {
     ControlDefinition {
         id: format!("noTransmitEnd{}", zone_number),
         name: format!("No-Transmit Zone {} End", zone_number),
-        description: format!("End angle of no-transmit zone {} in degrees. -1 = disabled.", zone_number),
+        description: format!(
+            "End angle of no-transmit zone {} in degrees. -1 = disabled.",
+            zone_number
+        ),
         category: ControlCategory::Installation,
         control_type: ControlType::Number,
         range: Some(RangeSpec {
-            min: -1.0,  // -1 = zone disabled
+            min: -1.0, // -1 = zone disabled
             max: 359.0,
             step: Some(1.0),
             unit: Some("degrees".into()),
@@ -462,13 +482,18 @@ pub fn control_no_transmit_end(zone_number: u8) -> ControlDefinition {
         modes: None,
         default_mode: None,
         read_only: false,
-        default: Some(serde_json::json!(-1)),  // Default to disabled
+        default: Some(serde_json::json!(-1)), // Default to disabled
         wire_hints: None,
     }
 }
 
 /// No-transmit zone angle control with brand-specific wire encoding
-pub fn control_no_transmit_angle_for_brand(id: &str, zone_number: u8, is_start: bool, brand: Brand) -> ControlDefinition {
+pub fn control_no_transmit_angle_for_brand(
+    id: &str,
+    zone_number: u8,
+    is_start: bool,
+    brand: Brand,
+) -> ControlDefinition {
     let mut def = if is_start {
         control_no_transmit_start(zone_number)
     } else {
@@ -516,21 +541,25 @@ pub fn control_beam_sharpening() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: Some("Beam sharpening disabled".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Low".into(),
                 description: Some("Mild beam sharpening".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Medium".into(),
                 description: Some("Moderate beam sharpening".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 3.into(),
                 label: "High".into(),
                 description: Some("Maximum beam sharpening".into()),
+                read_only: false,
             },
         ]),
         properties: None,
@@ -572,21 +601,25 @@ pub fn control_doppler_mode() -> ControlDefinition {
                     value: "approaching".into(),
                     label: "Approaching Only".into(),
                     description: Some("Highlight only approaching targets".into()),
+                    read_only: false,
                 },
                 EnumValue {
                     value: "both".into(),
                     label: "Both Directions".into(),
                     description: Some("Highlight both approaching and receding targets".into()),
+                    read_only: false,
                 },
                 EnumValue {
                     value: "target".into(),
                     label: "Target Mode".into(),
                     description: Some("Furuno: Highlights collision threats".into()),
+                    read_only: false,
                 },
                 EnumValue {
                     value: "rain".into(),
                     label: "Rain Mode".into(),
                     description: Some("Furuno: Identifies precipitation".into()),
+                    read_only: false,
                 },
             ]),
         },
@@ -595,7 +628,9 @@ pub fn control_doppler_mode() -> ControlDefinition {
     ControlDefinition {
         id: "dopplerMode".into(),
         name: "Doppler Mode".into(),
-        description: "Uses Doppler processing to highlight moving targets based on their relative motion.".into(),
+        description:
+            "Uses Doppler processing to highlight moving targets based on their relative motion."
+                .into(),
         category: ControlCategory::Extended,
         control_type: ControlType::Compound,
         range: None,
@@ -626,21 +661,25 @@ pub fn control_bird_mode() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: Some("Bird mode disabled".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Low".into(),
                 description: Some("Mild bird detection sensitivity".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Medium".into(),
                 description: Some("Moderate bird detection sensitivity".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 3.into(),
                 label: "High".into(),
                 description: Some("Maximum bird detection sensitivity".into()),
+                read_only: false,
             },
         ]),
         properties: None,
@@ -657,7 +696,9 @@ pub fn control_tx_channel() -> ControlDefinition {
     ControlDefinition {
         id: "txChannel".into(),
         name: "TX Channel".into(),
-        description: "Selects the transmission frequency channel to avoid interference with nearby radars.".into(),
+        description:
+            "Selects the transmission frequency channel to avoid interference with nearby radars."
+                .into(),
         category: ControlCategory::Installation,
         control_type: ControlType::Enum,
         range: None,
@@ -666,21 +707,25 @@ pub fn control_tx_channel() -> ControlDefinition {
                 value: 0.into(),
                 label: "Auto".into(),
                 description: Some("Automatic channel selection".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Channel 1".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Channel 2".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 3.into(),
                 label: "Channel 3".into(),
                 description: None,
+                read_only: false,
             },
         ]),
         properties: None,
@@ -697,7 +742,8 @@ pub fn control_interference_rejection() -> ControlDefinition {
     ControlDefinition {
         id: "interferenceRejection".into(),
         name: "Interference Rejection".into(),
-        description: "Filters interference from other radars operating on similar frequencies.".into(),
+        description: "Filters interference from other radars operating on similar frequencies."
+            .into(),
         category: ControlCategory::Extended,
         control_type: ControlType::Enum,
         range: None,
@@ -706,21 +752,25 @@ pub fn control_interference_rejection() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Low".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Medium".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 3.into(),
                 label: "High".into(),
                 description: None,
+                read_only: false,
             },
         ]),
         properties: None,
@@ -765,26 +815,31 @@ pub fn control_preset_mode() -> ControlDefinition {
                 value: "custom".into(),
                 label: "Custom".into(),
                 description: Some("Full manual control of all settings".into()),
+                read_only: false,
             },
             EnumValue {
                 value: "harbor".into(),
                 label: "Harbor".into(),
                 description: Some("Optimized for busy ports with fast scanning".into()),
+                read_only: false,
             },
             EnumValue {
                 value: "offshore".into(),
                 label: "Offshore".into(),
                 description: Some("Balanced settings for open water navigation".into()),
+                read_only: false,
             },
             EnumValue {
                 value: "weather".into(),
                 label: "Weather".into(),
                 description: Some("Enhanced sensitivity for detecting precipitation".into()),
+                read_only: false,
             },
             EnumValue {
                 value: "bird".into(),
                 label: "Bird".into(),
                 description: Some("Optimized for detecting bird flocks".into()),
+                read_only: false,
             },
         ]),
         properties: None,
@@ -794,6 +849,133 @@ pub fn control_preset_mode() -> ControlDefinition {
         default: Some("harbor".into()),
         wire_hints: None,
     }
+}
+
+/// Preset mode with brand/model-specific available values
+///
+/// Different radar families support different preset modes:
+/// - Navico HALO: Custom, Harbor, Offshore, Weather, Bird
+/// - Navico 4G/3G: Custom, Harbor, Offshore
+/// - Raymarine Quantum: Harbor, Coastal, Offshore
+pub fn control_preset_mode_for_model(brand: Brand, model_family: Option<&str>) -> ControlDefinition {
+    let mut def = control_preset_mode();
+
+    def.values = Some(match brand {
+        Brand::Navico => {
+            let is_halo = model_family.map_or(false, |f| f.contains("HALO"));
+            let mut values = vec![
+                EnumValue {
+                    value: "custom".into(),
+                    label: "Custom".into(),
+                    description: Some("Full manual control of all settings".into()),
+                    read_only: false,
+                },
+                EnumValue {
+                    value: "harbor".into(),
+                    label: "Harbor".into(),
+                    description: Some("Optimized for busy ports with fast scanning".into()),
+                    read_only: false,
+                },
+                EnumValue {
+                    value: "offshore".into(),
+                    label: "Offshore".into(),
+                    description: Some("Balanced settings for open water navigation".into()),
+                    read_only: false,
+                },
+            ];
+            if is_halo {
+                values.push(EnumValue {
+                    value: "weather".into(),
+                    label: "Weather".into(),
+                    description: Some("Enhanced sensitivity for detecting precipitation".into()),
+                    read_only: false,
+                });
+                values.push(EnumValue {
+                    value: "bird".into(),
+                    label: "Bird".into(),
+                    description: Some("Optimized for detecting bird flocks".into()),
+                    read_only: false,
+                });
+            }
+            values
+        }
+        Brand::Raymarine => {
+            vec![
+                EnumValue {
+                    value: "harbor".into(),
+                    label: "Harbor".into(),
+                    description: Some("Optimized for busy ports".into()),
+                    read_only: false,
+                },
+                EnumValue {
+                    value: "coastal".into(),
+                    label: "Coastal".into(),
+                    description: Some("Balanced settings for coastal navigation".into()),
+                    read_only: false,
+                },
+                EnumValue {
+                    value: "offshore".into(),
+                    label: "Offshore".into(),
+                    description: Some("Long range open water settings".into()),
+                    read_only: false,
+                },
+            ]
+        }
+        // Furuno and Garmin don't have preset modes
+        Brand::Furuno | Brand::Garmin => vec![],
+    });
+
+    def
+}
+
+/// Target expansion with model-specific available values
+///
+/// - Navico HALO: Off, On, High
+/// - Navico 4G/3G, Raymarine: Off, On only
+pub fn control_target_expansion_for_model(brand: Brand, model_family: Option<&str>) -> ControlDefinition {
+    let mut def = control_target_expansion();
+
+    let is_halo = brand == Brand::Navico && model_family.map_or(false, |f| f.contains("HALO"));
+
+    def.values = Some(if is_halo {
+        vec![
+            EnumValue {
+                value: 0.into(),
+                label: "Off".into(),
+                description: None,
+                read_only: false,
+            },
+            EnumValue {
+                value: 1.into(),
+                label: "On".into(),
+                description: None,
+                read_only: false,
+            },
+            EnumValue {
+                value: 2.into(),
+                label: "High".into(),
+                description: Some("Maximum expansion".into()),
+                read_only: false,
+            },
+        ]
+    } else {
+        vec![
+            EnumValue {
+                value: 0.into(),
+                label: "Off".into(),
+                description: None,
+                read_only: false,
+            },
+            EnumValue {
+                value: 1.into(),
+                label: "On".into(),
+                description: None,
+                read_only: false,
+            },
+        ]
+    });
+
+    def
 }
 
 /// Target separation: distinguishes closely-spaced targets (Navico, Raymarine)
@@ -810,21 +992,25 @@ pub fn control_target_separation() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Low".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Medium".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 3.into(),
                 label: "High".into(),
                 description: None,
+                read_only: false,
             },
         ]),
         properties: None,
@@ -870,13 +1056,15 @@ pub fn control_antenna_height() -> ControlDefinition {
     ControlDefinition {
         id: "antennaHeight".into(),
         name: "Antenna Height".into(),
-        description: "Height of radar antenna above waterline in meters. Used for sea clutter calculations.".into(),
+        description:
+            "Height of radar antenna above waterline in meters. Used for sea clutter calculations."
+                .into(),
         category: ControlCategory::Installation,
         control_type: ControlType::Number,
         range: Some(RangeSpec {
             min: 0.0,
             max: 99.0,
-            step: Some(1.0),
+            step: Some(0.01),
             unit: Some("m".into()),
         }),
         values: None,
@@ -897,7 +1085,10 @@ pub fn control_no_transmit_zones(zone_count: u8) -> ControlDefinition {
     ControlDefinition {
         id: "noTransmitZones".into(),
         name: "No-Transmit Zones".into(),
-        description: format!("Configure up to {} sectors where the radar will not transmit.", zone_count),
+        description: format!(
+            "Configure up to {} sectors where the radar will not transmit.",
+            zone_count
+        ),
         category: ControlCategory::Installation,
         control_type: ControlType::Compound,
         range: None,
@@ -908,7 +1099,9 @@ pub fn control_no_transmit_zones(zone_count: u8) -> ControlDefinition {
                 "zones".into(),
                 PropertyDefinition {
                     prop_type: "array".into(),
-                    description: Some("Array of zone objects with enabled, start, and end angles".into()),
+                    description: Some(
+                        "Array of zone objects with enabled, start, and end angles".into(),
+                    ),
                     range: None,
                     values: None,
                 },
@@ -923,7 +1116,8 @@ pub fn control_no_transmit_zones(zone_count: u8) -> ControlDefinition {
     }
 }
 
-/// Scan speed: antenna rotation speed (Navico, generic)
+/// Scan speed: antenna rotation speed (Navico)
+/// 4G verified: 0=Off (Normal), 1=Medium, 2=Medium-High
 pub fn control_scan_speed() -> ControlDefinition {
     ControlDefinition {
         id: "scanSpeed".into(),
@@ -934,21 +1128,29 @@ pub fn control_scan_speed() -> ControlDefinition {
         range: None,
         values: Some(vec![
             EnumValue {
-                value: "normal".into(),
-                label: "Normal".into(),
-                description: Some("Standard rotation speed".into()),
+                value: 0.into(),
+                label: "Off".into(),
+                description: Some("Normal rotation speed".into()),
+                read_only: false,
             },
             EnumValue {
-                value: "fast".into(),
-                label: "Fast".into(),
-                description: Some("Increased rotation speed".into()),
+                value: 1.into(),
+                label: "Medium".into(),
+                description: Some("Medium rotation speed".into()),
+                read_only: false,
+            },
+            EnumValue {
+                value: 2.into(),
+                label: "Medium-High".into(),
+                description: Some("Medium-high rotation speed".into()),
+                read_only: false,
             },
         ]),
         properties: None,
         modes: None,
         default_mode: None,
         read_only: false,
-        default: Some("normal".into()),
+        default: Some(0.into()),
         wire_hints: None,
     }
 }
@@ -969,11 +1171,13 @@ pub fn control_scan_speed_furuno() -> ControlDefinition {
                 value: 0.into(),
                 label: "24 RPM".into(),
                 description: Some("Fixed 24 rotations per minute".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Auto".into(),
                 description: Some("Automatically adjusts based on range".into()),
+                read_only: false,
             },
         ]),
         properties: None,
@@ -990,7 +1194,8 @@ pub fn control_auto_acquire() -> ControlDefinition {
     ControlDefinition {
         id: "autoAcquire".into(),
         name: "Auto Acquire".into(),
-        description: "Automatically acquires and tracks moving targets using Doppler detection.".into(),
+        description: "Automatically acquires and tracks moving targets using Doppler detection."
+            .into(),
         category: ControlCategory::Installation,
         control_type: ControlType::Boolean,
         range: None,
@@ -1072,16 +1277,19 @@ pub fn control_target_expansion() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "On".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "High".into(),
                 description: Some("HALO only".into()),
+                read_only: false,
             },
         ]),
         properties: None,
@@ -1109,16 +1317,19 @@ pub fn control_target_boost() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Low".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "High".into(),
                 description: None,
+                read_only: false,
             },
         ]),
         properties: None,
@@ -1146,16 +1357,19 @@ pub fn control_sea_state() -> ControlDefinition {
                 value: 0.into(),
                 label: "Calm".into(),
                 description: Some("Light seas with minimal wave action".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Moderate".into(),
                 description: Some("Average sea conditions".into()),
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Rough".into(),
                 description: Some("Heavy seas with large waves".into()),
+                read_only: false,
             },
         ]),
         properties: None,
@@ -1185,11 +1399,13 @@ pub fn control_sidelobe_suppression() -> ControlDefinition {
                     value: "auto".into(),
                     label: "Auto".into(),
                     description: None,
+                    read_only: false,
                 },
                 EnumValue {
                     value: "manual".into(),
                     label: "Manual".into(),
                     description: None,
+                    read_only: false,
                 },
             ]),
         },
@@ -1243,21 +1459,25 @@ pub fn control_noise_rejection() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Low".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Medium".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 3.into(),
                 label: "High".into(),
                 description: None,
+                read_only: false,
             },
         ]),
         properties: None,
@@ -1276,7 +1496,8 @@ pub fn control_crosstalk_rejection() -> ControlDefinition {
     ControlDefinition {
         id: "crosstalkRejection".into(),
         name: "Crosstalk Rejection".into(),
-        description: "Filters interference from nearby radars operating on similar frequencies.".into(),
+        description: "Filters interference from nearby radars operating on similar frequencies."
+            .into(),
         category: ControlCategory::Extended,
         control_type: ControlType::Enum,
         range: None,
@@ -1285,11 +1506,13 @@ pub fn control_crosstalk_rejection() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "On".into(),
                 description: None,
+                read_only: false,
             },
         ]),
         properties: None,
@@ -1369,11 +1592,13 @@ pub fn control_tune() -> ControlDefinition {
                     value: "auto".into(),
                     label: "Auto".into(),
                     description: None,
+                    read_only: false,
                 },
                 EnumValue {
                     value: "manual".into(),
                     label: "Manual".into(),
                     description: None,
+                    read_only: false,
                 },
             ]),
         },
@@ -1429,11 +1654,13 @@ pub fn control_color_gain() -> ControlDefinition {
                     value: "auto".into(),
                     label: "Auto".into(),
                     description: None,
+                    read_only: false,
                 },
                 EnumValue {
                     value: "manual".into(),
                     label: "Manual".into(),
                     description: None,
+                    read_only: false,
                 },
             ]),
         },
@@ -1487,21 +1714,25 @@ pub fn control_accent_light() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Low".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Medium".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 3.into(),
                 label: "High".into(),
                 description: None,
+                read_only: false,
             },
         ]),
         properties: None,
@@ -1556,21 +1787,25 @@ pub fn control_local_interference_rejection() -> ControlDefinition {
                 value: 0.into(),
                 label: "Off".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 1.into(),
                 label: "Low".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 2.into(),
                 label: "Medium".into(),
                 description: None,
+                read_only: false,
             },
             EnumValue {
                 value: 3.into(),
                 label: "High".into(),
                 description: None,
+                read_only: false,
             },
         ]),
         properties: None,
@@ -1629,10 +1864,15 @@ pub fn get_extended_control(id: &str) -> Option<ControlDefinition> {
 }
 
 /// Get extended control with customization for no-transmit zones
+/// Returns None if zone_count is 0 (model doesn't support no-transmit zones)
 #[inline(never)]
 pub fn get_extended_control_with_zones(id: &str, zone_count: u8) -> Option<ControlDefinition> {
     if id == "noTransmitZones" {
-        Some(control_no_transmit_zones(zone_count))
+        if zone_count == 0 {
+            None // Model doesn't support no-transmit zones
+        } else {
+            Some(control_no_transmit_zones(zone_count))
+        }
     } else {
         get_extended_control(id)
     }
@@ -1705,40 +1945,103 @@ pub fn control_rain_for_brand(brand: Brand) -> ControlDefinition {
     def
 }
 
-/// Bearing alignment control with brand-specific wire hints
+/// Bearing alignment control with brand-specific range and wire hints
 pub fn control_bearing_alignment_for_brand(brand: Brand) -> ControlDefinition {
     let mut def = control_bearing_alignment();
-    def.wire_hints = Some(match brand {
-        Brand::Furuno => WireProtocolHint {
-            write_only: true, // Cannot reliably read from hardware
-            ..Default::default()
-        },
-        Brand::Navico | Brand::Raymarine => WireProtocolHint {
-            scale_factor: Some(1800.0), // 0.1 degree precision
-            offset: Some(-1.0),
+
+    // Set brand-specific range limits
+    def.range = Some(match brand {
+        // Navico: -180 to +180 degrees in 0.1 degree steps (wire uses deci-degrees 0-3599)
+        Brand::Navico => RangeSpec {
+            min: -180.0,
+            max: 180.0,
             step: Some(0.1),
-            write_only: true, // Cannot reliably read from hardware
+            unit: Some("degrees".into()),
+        },
+        // Furuno: -179 to +180 degrees in 0.1 degree steps (wire uses tenths)
+        Brand::Furuno => RangeSpec {
+            min: -179.0,
+            max: 180.0,
+            step: Some(0.1),
+            unit: Some("degrees".into()),
+        },
+        // Raymarine/Garmin: -180 to +180 in 1 degree steps
+        Brand::Raymarine | Brand::Garmin => RangeSpec {
+            min: -180.0,
+            max: 180.0,
+            step: Some(1.0),
+            unit: Some("degrees".into()),
+        },
+    });
+
+    def.wire_hints = Some(match brand {
+        // Navico: Wire protocol uses deci-degrees (0-3599), conversion done in report.rs
+        Brand::Navico => WireProtocolHint {
+            scale_factor: Some(3600.0), // 360 degrees * 10 = 3600 deci-degrees
+            write_only: false,
             ..Default::default()
         },
-        Brand::Garmin => WireProtocolHint {
-            write_only: true, // Cannot reliably read from hardware
+        // Furuno: Wire protocol uses tenths of degrees
+        Brand::Furuno => WireProtocolHint {
+            scale_factor: Some(1800.0), // ±180 degrees * 10 = 1800 tenths
+            write_only: false,
+            ..Default::default()
+        },
+        // Raymarine/Garmin: degrees directly
+        Brand::Raymarine | Brand::Garmin => WireProtocolHint {
+            write_only: false,
             ..Default::default()
         },
     });
     def
 }
 
-/// Antenna height control with brand-specific wire hints
+/// Antenna height control with brand-specific range and wire hints
 pub fn control_antenna_height_for_brand(brand: Brand) -> ControlDefinition {
     let mut def = control_antenna_height();
+
+    // Set brand-specific range limits
+    def.range = Some(match brand {
+        // Navico: 0-99m in 0.1m steps (wire uses decimeters 0-990)
+        Brand::Navico => RangeSpec {
+            min: 0.0,
+            max: 99.0,
+            step: Some(0.1),
+            unit: Some("m".into()),
+        },
+        // Furuno: 0-30m in 1m steps (integer meters)
+        Brand::Furuno => RangeSpec {
+            min: 0.0,
+            max: 30.0,
+            step: Some(1.0),
+            unit: Some("m".into()),
+        },
+        // Raymarine: 0-30m in 0.1m steps
+        Brand::Raymarine => RangeSpec {
+            min: 0.0,
+            max: 30.0,
+            step: Some(0.1),
+            unit: Some("m".into()),
+        },
+        // Garmin: 0-30m in 0.1m steps
+        Brand::Garmin => RangeSpec {
+            min: 0.0,
+            max: 30.0,
+            step: Some(0.1),
+            unit: Some("m".into()),
+        },
+    });
+
     def.wire_hints = Some(match brand {
+        // Navico: Wire protocol uses decimeters (0-990), control uses meters (0-99).
+        // Conversion is done in report.rs when reading Report 04.
         Brand::Navico => WireProtocolHint {
-            scale_factor: Some(99000.0), // cm to mm conversion
-            write_only: true, // Cannot reliably read from hardware
+            scale_factor: Some(990.0), // 99m * 10 = 990 decimeters
+            write_only: false,
             ..Default::default()
         },
         Brand::Furuno | Brand::Raymarine | Brand::Garmin => WireProtocolHint {
-            write_only: true, // Cannot reliably read from hardware
+            write_only: false,
             ..Default::default()
         },
     });
@@ -1813,9 +2116,35 @@ pub fn control_ftc_for_brand(brand: Brand) -> ControlDefinition {
     def
 }
 
-/// Doppler speed control with brand-specific wire hints
+/// Doppler speed control with brand-specific range and wire hints
 pub fn control_doppler_speed_for_brand(brand: Brand) -> ControlDefinition {
     let mut def = control_doppler_speed();
+
+    // Set brand-specific range limits
+    def.range = Some(match brand {
+        // Navico HALO: 0.5-16 knots in 0.5 knot steps
+        Brand::Navico => RangeSpec {
+            min: 0.5,
+            max: 16.0,
+            step: Some(0.5),
+            unit: Some("knots".into()),
+        },
+        // Furuno NXT: 0.2-15 knots in 0.1 knot steps
+        Brand::Furuno => RangeSpec {
+            min: 0.2,
+            max: 15.0,
+            step: Some(0.1),
+            unit: Some("knots".into()),
+        },
+        // Raymarine/Garmin: similar range
+        Brand::Raymarine | Brand::Garmin => RangeSpec {
+            min: 0.5,
+            max: 20.0,
+            step: Some(0.5),
+            unit: Some("knots".into()),
+        },
+    });
+
     def.wire_hints = Some(match brand {
         Brand::Navico => WireProtocolHint {
             scale_factor: Some(99.0 * 16.0), // cm/s units
@@ -1883,13 +2212,38 @@ pub fn get_control_for_brand(id: &str, brand: Brand) -> Option<ControlDefinition
     get_base_control_for_brand(id, brand).or_else(|| get_extended_control_for_brand(id, brand))
 }
 
+/// Get extended control with brand and model-specific configuration
+///
+/// This variant filters enum values based on model family (e.g., HALO vs 4G).
+/// Use this when you know the specific model family to get accurate enum options.
+#[inline(never)]
+pub fn get_extended_control_for_model(
+    id: &str,
+    brand: Brand,
+    model_family: Option<&str>,
+) -> Option<ControlDefinition> {
+    match id {
+        // Controls with model-specific enum values
+        "presetMode" => Some(control_preset_mode_for_model(brand, model_family)),
+        "targetExpansion" => Some(control_target_expansion_for_model(brand, model_family)),
+        // Fall back to brand-specific controls for others
+        _ => get_extended_control_for_brand(id, brand),
+    }
+}
+
+/// Get any control with brand and model-specific configuration
+#[inline(never)]
+pub fn get_control_for_model(
+    id: &str,
+    brand: Brand,
+    model_family: Option<&str>,
+) -> Option<ControlDefinition> {
+    get_base_control_for_brand(id, brand)
+        .or_else(|| get_extended_control_for_model(id, brand, model_family))
+}
+
 /// Base control IDs that all radars of a brand support (before model is known)
-const BASE_CONTROL_IDS: &[&str] = &[
-    "power",
-    "gain",
-    "sea",
-    "rain",
-];
+const BASE_CONTROL_IDS: &[&str] = &["power", "gain", "sea", "rain"];
 
 /// Get all base controls for a brand as a vector of ControlDefinitions.
 /// These are controls that exist before the model is known.
@@ -1907,7 +2261,10 @@ pub fn get_base_controls_for_brand(brand: Brand) -> Vec<ControlDefinition> {
 /// This includes base controls plus model-specific extended controls.
 ///
 /// If model_name is None, only base controls are returned.
-pub fn get_all_controls_for_model(brand: Brand, model_name: Option<&str>) -> Vec<ControlDefinition> {
+pub fn get_all_controls_for_model(
+    brand: Brand,
+    model_name: Option<&str>,
+) -> Vec<ControlDefinition> {
     use crate::models;
 
     let mut controls = get_base_controls_for_brand(brand);
@@ -1917,10 +2274,10 @@ pub fn get_all_controls_for_model(brand: Brand, model_name: Option<&str>) -> Vec
         if let Some(model_info) = models::get_model(brand, name) {
             for control_id in model_info.controls {
                 // Skip special compound controls
-                if *control_id == "noTransmitZones" {
+                if *control_id == super::ControlId::NoTransmitZones {
                     continue;
                 }
-                if let Some(def) = get_extended_control_for_brand(control_id, brand) {
+                if let Some(def) = get_extended_control_for_brand(control_id.as_ref(), brand) {
                     controls.push(def);
                 }
             }
@@ -1928,4 +2285,51 @@ pub fn get_all_controls_for_model(brand: Brand, model_name: Option<&str>) -> Vec
     }
 
     controls
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_preset_mode_halo_has_weather_bird() {
+        let def = control_preset_mode_for_model(Brand::Navico, Some("HALO"));
+        let values = def.values.unwrap();
+        assert_eq!(values.len(), 5); // custom, harbor, offshore, weather, bird
+        assert!(values.iter().any(|v| v.value == "weather"));
+        assert!(values.iter().any(|v| v.value == "bird"));
+    }
+
+    #[test]
+    fn test_preset_mode_4g_no_weather_bird() {
+        let def = control_preset_mode_for_model(Brand::Navico, Some("4G"));
+        let values = def.values.unwrap();
+        assert_eq!(values.len(), 3); // custom, harbor, offshore only
+        assert!(!values.iter().any(|v| v.value == "weather"));
+        assert!(!values.iter().any(|v| v.value == "bird"));
+    }
+
+    #[test]
+    fn test_target_expansion_halo_has_high() {
+        let def = control_target_expansion_for_model(Brand::Navico, Some("HALO"));
+        let values = def.values.unwrap();
+        assert_eq!(values.len(), 3); // Off, On, High
+        assert!(values.iter().any(|v| v.label == "High"));
+    }
+
+    #[test]
+    fn test_target_expansion_4g_no_high() {
+        let def = control_target_expansion_for_model(Brand::Navico, Some("4G"));
+        let values = def.values.unwrap();
+        assert_eq!(values.len(), 2); // Off, On only
+        assert!(!values.iter().any(|v| v.label == "High"));
+    }
+
+    #[test]
+    fn test_raymarine_preset_has_coastal() {
+        let def = control_preset_mode_for_model(Brand::Raymarine, None);
+        let values = def.values.unwrap();
+        assert!(values.iter().any(|v| v.value == "coastal"));
+        assert!(!values.iter().any(|v| v.value == "custom")); // Raymarine doesn't have custom
+    }
 }

@@ -33,8 +33,6 @@ pub(crate) const NAUTICAL_MILE_F64: f64 = 1852.; // 1 nautical mile in meters
 // A "native to radar" bearing, usually [0..2048] or [0..4096] or [0..8192]
 pub(crate) type SpokeBearing = u16;
 
-pub(crate) const BYTE_LOOKUP_LENGTH: usize = (u8::MAX as usize) + 1;
-
 #[derive(Error, Debug)]
 pub enum RadarError {
     #[error("I/O operation failed")]
@@ -218,7 +216,10 @@ impl RadarInfo {
         controls: SharedControls,
         doppler: bool,
     ) -> Self {
-        let (message_tx, _message_rx) = tokio::sync::broadcast::channel(32);
+        // Large buffer to handle high-latency connections (VPN, slow networks)
+        // A 4G radar sends ~64 frames/second with 32 spokes each = ~2048 spokes/sec
+        // With 200ms latency, we need ~400+ messages buffered to avoid lag
+        let (message_tx, _message_rx) = tokio::sync::broadcast::channel(1024);
 
         let legend = default_legend(session.clone(), false, pixel_values);
 
@@ -276,6 +277,10 @@ impl RadarInfo {
 
     pub fn key(&self) -> String {
         self.key.to_owned()
+    }
+
+    pub fn pixel_values(&self) -> u8 {
+        self.pixel_values
     }
 
     pub fn set_doppler(&mut self, doppler: bool) {
@@ -337,8 +342,7 @@ impl RadarInfo {
     }
 
     pub(crate) fn set_ranges(&mut self, ranges: Ranges) -> Result<(), RadarError> {
-        self.controls
-            .set_valid_ranges("range", &ranges)?;
+        self.controls.set_valid_ranges("range", &ranges)?;
         self.ranges = ranges;
         Ok(())
     }
@@ -395,6 +399,10 @@ impl RadarInfo {
                 },
             }
         }
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.ranges.len() > 0 || self.serial_no.is_some()
     }
 }
 
@@ -479,7 +487,10 @@ impl SharedRadars {
                 "Found radar: key '{}' id {} name '{}'",
                 &new_info.key,
                 new_info.id,
-                new_info.controls.user_name().unwrap_or_else(|| new_info.key.clone())
+                new_info
+                    .controls
+                    .user_name()
+                    .unwrap_or_else(|| new_info.key.clone())
             );
             radars.info.insert(key, new_info.clone());
             Some(new_info)
@@ -510,7 +521,7 @@ impl SharedRadars {
             .info
             .iter()
             .map(|(_k, v)| v)
-            .filter(|i| i.ranges.len() > 0)
+            .filter(|i| i.is_active())
             .map(|v| v.clone())
             .collect()
     }
@@ -521,7 +532,7 @@ impl SharedRadars {
             .info
             .iter()
             .map(|(_k, v)| v)
-            .filter(|i| i.ranges.len() > 0)
+            .filter(|i| i.is_active())
             .count()
             > 0
     }
@@ -625,8 +636,8 @@ impl SharedRadars {
     pub fn update_from_discovery(&self, discovery: &mayara_core::radar::RadarDiscovery) {
         use mayara_core::Brand as CoreBrand;
 
-        // Extract IP from discovery address (which may be "ip:port" or just "ip")
-        let discovery_ip = discovery.address.split(':').next().unwrap_or(&discovery.address);
+        // Get IP from discovery address (now typed as SocketAddrV4)
+        let discovery_ip = *discovery.address.ip();
 
         // Find radar by matching address
         let matching_key = {
@@ -634,10 +645,7 @@ impl SharedRadars {
             radars
                 .info
                 .iter()
-                .find(|(_, info)| {
-                    let info_ip = info.addr.ip().to_string();
-                    info_ip == discovery_ip
-                })
+                .find(|(_, info)| *info.addr.ip() == discovery_ip)
                 .map(|(key, _)| key.clone())
         };
 
@@ -656,10 +664,17 @@ impl SharedRadars {
                     #[cfg(feature = "raymarine")]
                     CoreBrand::Raymarine => {
                         // Raymarine model settings applied at discovery time
-                        log::debug!("{}: Raymarine model update ignored (applied at discovery)", key);
+                        log::debug!(
+                            "{}: Raymarine model update ignored (applied at discovery)",
+                            key
+                        );
                     }
                     _ => {
-                        log::debug!("{}: No model update handler for brand {:?}", key, discovery.brand);
+                        log::debug!(
+                            "{}: No model update handler for brand {:?}",
+                            key,
+                            discovery.brand
+                        );
                     }
                 }
             }
@@ -804,6 +819,11 @@ impl FromStr for Status {
 
 // The actual values are not arbitrary: these are the exact values as reported
 // by HALO radars, simplifying the navico::report code.
+//
+// NOTE: mayara-core also has a DopplerMode enum (in protocol::navico) with
+// identical values. The server version exists for DataUpdate messages and
+// settings. Navico data processing converts between them. A future refactor
+// could unify these, but it would touch DataUpdate, settings, and report code.
 #[derive(Copy, Clone, Debug, Primitive)]
 pub enum DopplerMode {
     None = 0,
@@ -818,7 +838,6 @@ impl fmt::Display for DopplerMode {
 }
 
 pub const BLOB_HISTORY_COLORS: u8 = 32;
-const TRANSPARENT: u8 = 0;
 const OPAQUE: u8 = 255;
 
 fn default_legend(session: Session, doppler: bool, pixel_values: u8) -> Legend {
@@ -831,73 +850,30 @@ fn default_legend(session: Session, doppler: bool, pixel_values: u8) -> Legend {
         strong_return: 255,
     };
 
-    let mut pixel_values = pixel_values;
-    if pixel_values > 255 - 32 - 2 {
-        pixel_values = 255 - 32 - 2;
-    }
-
+    let pixel_values = pixel_values.min(255 - 32 - 2);
     if pixel_values == 0 {
         return legend;
     }
 
-    let pixels_with_color = pixel_values - 1;
-    let one_third = pixels_with_color / 3;
-    let two_thirds = one_third * 2;
+    let pixels_with_color = pixel_values.saturating_sub(1);
+    let two_thirds = (pixels_with_color * 2) / 3;
     legend.strong_return = two_thirds;
 
-    // No return is black
-    legend.pixels.push(Lookup {
-        r#type: PixelType::Normal,
-        color: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: TRANSPARENT,
-        },
-    });
-
-    // Start colors at 1/3 intensity (like signalk-radar) for more visible returns
-    const MIN_INTENSITY: f64 = 85.0; // WHITE / 3
-    const MAX_INTENSITY: f64 = 255.0;
-    let intensity_range = MAX_INTENSITY - MIN_INTENSITY;
-
-    for v in 1..pixel_values {
+    // Use core's palette generation algorithm (Blue → Cyan → Green → Yellow → Red)
+    let core_palette = mayara_core::generate_palette(pixel_values);
+    for rgba in &core_palette {
         legend.pixels.push(Lookup {
             r#type: PixelType::Normal,
             color: Color {
-                // red starts at 2/3 and peaks at end
-                r: if v >= two_thirds {
-                    (MIN_INTENSITY + intensity_range * (v - two_thirds) as f64 / one_third as f64)
-                        as u8
-                } else {
-                    0
-                },
-                // green starts at 1/3 and peaks at 2/3
-                g: if v >= one_third && v < two_thirds {
-                    (MIN_INTENSITY + intensity_range * (v - one_third) as f64 / one_third as f64)
-                        as u8
-                } else if v >= two_thirds {
-                    (MIN_INTENSITY
-                        + intensity_range * (pixels_with_color - v) as f64 / one_third as f64)
-                        as u8
-                } else {
-                    0
-                },
-                // blue peaks at 1/3
-                b: if v < one_third {
-                    (MIN_INTENSITY + intensity_range * v as f64 / one_third as f64) as u8
-                } else if v >= one_third && v < two_thirds {
-                    (MIN_INTENSITY
-                        + intensity_range * (two_thirds - v) as f64 / one_third as f64)
-                        as u8
-                } else {
-                    0
-                },
-                a: OPAQUE,
+                r: rgba.r,
+                g: rgba.g,
+                b: rgba.b,
+                a: rgba.a,
             },
         });
     }
 
+    // Add a black opaque entry after the normal colors
     legend.pixels.push(Lookup {
         r#type: PixelType::Normal,
         color: Color {

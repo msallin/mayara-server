@@ -1,5 +1,5 @@
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::io;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use tokio_graceful_shutdown::{SubsystemBuilder, SubsystemHandle};
 
 use crate::locator::LocatorId;
@@ -11,10 +11,9 @@ mod settings;
 
 // Use constants from core (single source of truth)
 use mayara_core::protocol::raymarine::{
-    RD_SPOKES_PER_REVOLUTION as RD_SPOKES_U16,
-    RD_SPOKE_LEN as RD_SPOKE_LEN_U16,
     QUANTUM_SPOKES_PER_REVOLUTION as QUANTUM_SPOKES_U16,
-    QUANTUM_SPOKE_LEN as QUANTUM_SPOKE_LEN_U16,
+    QUANTUM_SPOKE_LEN as QUANTUM_SPOKE_LEN_U16, RD_SPOKES_PER_REVOLUTION as RD_SPOKES_U16,
+    RD_SPOKE_LEN as RD_SPOKE_LEN_U16,
 };
 
 const RD_SPOKES_PER_REVOLUTION: usize = RD_SPOKES_U16 as usize;
@@ -34,7 +33,7 @@ const HD_PIXEL_VALUES: u8 = 128; // New radars have one byte pixels, but we drop
 #[derive(Clone, Debug)]
 struct RaymarineModel {
     model: BaseModel,
-    hd: bool, // true if HD = 256 bits per pixel
+    hd: bool,             // true if HD = 256 bits per pixel
     max_spoke_len: usize, // 1024 for analog, 256 for Quantum?
     doppler: bool,        // true if Doppler is supported
     name: &'static str,
@@ -55,20 +54,68 @@ impl RaymarineModel {
         let (model, hd, max_spoke_len, doppler, name) = match model {
             // All "E" strings derived from the raymarine.app.box.com EU declaration of conformity documents
             // Quantum models, believed working
-            "E70210" => (BaseModel::Quantum, true, QUANTUM_SPOKE_LEN, false, "Quantum Q24"),
-            "E70344" => (BaseModel::Quantum, true, QUANTUM_SPOKE_LEN, false, "Quantum Q24C"),
-            "E70498" => (BaseModel::Quantum, true, QUANTUM_SPOKE_LEN, true, "Quantum Q24D"),
+            "E70210" => (
+                BaseModel::Quantum,
+                true,
+                QUANTUM_SPOKE_LEN,
+                false,
+                "Quantum Q24",
+            ),
+            "E70344" => (
+                BaseModel::Quantum,
+                true,
+                QUANTUM_SPOKE_LEN,
+                false,
+                "Quantum Q24C",
+            ),
+            "E70498" => (
+                BaseModel::Quantum,
+                true,
+                QUANTUM_SPOKE_LEN,
+                true,
+                "Quantum Q24D",
+            ),
             // Cyclone and Cyclone Pro models, untested, assume works as Quantum
             "E70620" => (BaseModel::Quantum, true, QUANTUM_SPOKE_LEN, true, "Cyclone"),
-            "E70621" => (BaseModel::Quantum, true, QUANTUM_SPOKE_LEN, true, "Cyclone Pro"),
+            "E70621" => (
+                BaseModel::Quantum,
+                true,
+                QUANTUM_SPOKE_LEN,
+                true,
+                "Cyclone Pro",
+            ),
             // Magnum, untested, assume works as RD
             "E70484" => (BaseModel::RD, true, RD_SPOKE_LEN, false, "Magnum 4kW"),
             "E70487" => (BaseModel::RD, true, RD_SPOKE_LEN, false, "Magnum 12kW"),
             // Open Array HD and SHD, introduced circa 2007
-            "E52069" => (BaseModel::RD, true, RD_SPOKE_LEN, false, "Open Array HD 4kW"),
-            "E92160" => (BaseModel::RD, true, RD_SPOKE_LEN, false, "Open Array HD 12kW"),
-            "E52081" => (BaseModel::RD, true, RD_SPOKE_LEN, false, "Open Array SHD 4kW"),
-            "E52082" => (BaseModel::RD, true, RD_SPOKE_LEN, false, "Open Array SHD 12kW"),
+            "E52069" => (
+                BaseModel::RD,
+                true,
+                RD_SPOKE_LEN,
+                false,
+                "Open Array HD 4kW",
+            ),
+            "E92160" => (
+                BaseModel::RD,
+                true,
+                RD_SPOKE_LEN,
+                false,
+                "Open Array HD 12kW",
+            ),
+            "E52081" => (
+                BaseModel::RD,
+                true,
+                RD_SPOKE_LEN,
+                false,
+                "Open Array SHD 4kW",
+            ),
+            "E52082" => (
+                BaseModel::RD,
+                true,
+                RD_SPOKE_LEN,
+                false,
+                "Open Array SHD 12kW",
+            ),
             // And the actual RD models, introduced circa 2004
             "E92142" => (BaseModel::RD, true, RD_SPOKE_LEN, false, "RD418HD"),
             "E92143" => (BaseModel::RD, true, RD_SPOKE_LEN, false, "RD424HD"),
@@ -420,7 +467,7 @@ pub fn create_locator(session: Session) -> Box<dyn RadarLocator + Send> {
 // New unified discovery processing (used by CoreLocatorAdapter)
 // =============================================================================
 
-use mayara_core::radar::{ParsedAddress, RadarDiscovery};
+use mayara_core::radar::RadarDiscovery;
 
 /// Process a radar discovery from the core locator.
 ///
@@ -435,16 +482,17 @@ pub fn process_discovery(
     radars: &SharedRadars,
     subsys: &SubsystemHandle,
 ) -> Result<(), io::Error> {
-    // Parse address from discovery using core's parser
-    let parsed = ParsedAddress::parse(&discovery.address)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let radar_ip = Ipv4Addr::from(parsed.ip);
-    let radar_addr = SocketAddrV4::new(radar_ip, if parsed.port > 0 { parsed.port } else { 5800 });
+    // Get address from discovery (now typed as SocketAddrV4)
+    let radar_ip = *discovery.address.ip();
+    let radar_addr = if discovery.address.port() > 0 {
+        discovery.address
+    } else {
+        SocketAddrV4::new(radar_ip, 5800)
+    };
 
     // Determine model from discovery
     let model = if let Some(ref model_name) = discovery.model {
-        RaymarineModel::try_into(model_name)
-            .unwrap_or_else(|| RaymarineModel::new_eseries())
+        RaymarineModel::try_into(model_name).unwrap_or_else(|| RaymarineModel::new_eseries())
     } else {
         RaymarineModel::new_eseries()
     };
@@ -456,12 +504,16 @@ pub fn process_discovery(
     };
 
     let max_spoke_len = model.max_spoke_len;
-    let pixel_values = if model.hd { HD_PIXEL_VALUES } else { NON_HD_PIXEL_VALUES };
+    let pixel_values = if model.hd {
+        HD_PIXEL_VALUES
+    } else {
+        NON_HD_PIXEL_VALUES
+    };
 
-    // For simplified discovery, use basic addresses
-    let report_addr: SocketAddrV4 = SocketAddrV4::new(radar_ip, discovery.command_port);
-    let data_addr: SocketAddrV4 = SocketAddrV4::new(radar_ip, discovery.data_port);
-    let send_addr: SocketAddrV4 = SocketAddrV4::new(radar_ip, discovery.command_port);
+    // Use addresses from beacon if available, otherwise construct from IP
+    let report_addr: SocketAddrV4 = discovery.report_address.unwrap_or_else(|| SocketAddrV4::new(radar_ip, 0));
+    let data_addr: SocketAddrV4 = discovery.data_address.unwrap_or_else(|| SocketAddrV4::new(radar_ip, 0));
+    let send_addr: SocketAddrV4 = discovery.send_address.unwrap_or_else(|| SocketAddrV4::new(radar_ip, 0));
 
     let info: RadarInfo = RadarInfo::new(
         session.clone(),
@@ -499,11 +551,8 @@ pub fn process_discovery(
     }
 
     let report_name = info.key();
-    let report_receiver = report::RaymarineReportReceiver::new(
-        session.clone(),
-        info.clone(),
-        radars.clone(),
-    );
+    let report_receiver =
+        report::RaymarineReportReceiver::new(session.clone(), info.clone(), radars.clone());
 
     subsys.start(SubsystemBuilder::new(report_name, |s| {
         report_receiver.run(s)

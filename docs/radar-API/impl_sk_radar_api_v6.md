@@ -152,12 +152,17 @@ pub struct RangeSpec {
     pub unit: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct EnumValue {
     pub value: serde_json::Value,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether this value is read-only (can be reported but not set by clients)
+    /// For power control: "off" and "warming" are read-only states
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +224,8 @@ pub mod controls;
 use super::*;
 
 /// Base control: power
+/// Note: "off" and "warming" are read-only states - they can be reported by the radar
+/// but cannot be set by clients. Clients can only set "standby" or "transmit".
 pub fn control_power() -> ControlDefinition {
     ControlDefinition {
         id: "power".into(),
@@ -228,10 +235,10 @@ pub fn control_power() -> ControlDefinition {
         control_type: ControlType::Enum,
         range: None,
         values: Some(vec![
-            EnumValue { value: "off".into(), label: "Off".into(), description: Some("Radar powered off".into()) },
-            EnumValue { value: "standby".into(), label: "Standby".into(), description: Some("Radar on, not transmitting".into()) },
-            EnumValue { value: "transmit".into(), label: "Transmit".into(), description: Some("Radar transmitting".into()) },
-            EnumValue { value: "warming".into(), label: "Warming Up".into(), description: Some("Magnetron warming (read-only)".into()) },
+            EnumValue { value: "off".into(), label: "Off".into(), description: Some("Radar powered off".into()), read_only: true },
+            EnumValue { value: "standby".into(), label: "Standby".into(), description: Some("Radar on, not transmitting".into()), read_only: false },
+            EnumValue { value: "transmit".into(), label: "Transmit".into(), description: Some("Radar transmitting".into()), read_only: false },
+            EnumValue { value: "warming".into(), label: "Warming Up".into(), description: Some("Magnetron warming".into()), read_only: true },
         ]),
         properties: None,
         modes: None,

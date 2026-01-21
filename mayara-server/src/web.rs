@@ -8,15 +8,13 @@ use axum::{
     Json, Router,
 };
 use axum_embed::ServeEmbed;
+use flate2::{write::GzEncoder, Compression};
 use hyper;
 use log::{debug, trace};
 use miette::Result;
 #[cfg(not(feature = "dev"))]
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "dev")]
-use tower_http::services::ServeDir;
-use flate2::{write::GzEncoder, Compression};
 use std::{
     collections::{BTreeMap, HashMap},
     io::{self, Write},
@@ -27,6 +25,8 @@ use std::{
 use thiserror::Error;
 use tokio::{net::TcpListener, sync::broadcast};
 use tokio_graceful_shutdown::SubsystemHandle;
+#[cfg(feature = "dev")]
+use tower_http::services::ServeDir;
 
 mod axum_fix;
 
@@ -35,10 +35,11 @@ use axum_fix::{Message, WebSocket, WebSocketUpgrade};
 use mayara_server::{
     radar::{Legend, RadarError, RadarInfo},
     recording::{
-        RecordingManager, RecordingInfo, RecordingStatus, ActiveRecording, start_recording, build_initial_state,
-        ActivePlayback, PlaybackSettings, PlaybackStatus, load_recording, unregister_playback_radar,
+        build_initial_state, load_recording, start_recording, unregister_playback_radar,
+        ActivePlayback, ActiveRecording, PlaybackSettings, PlaybackStatus, RecordingInfo,
+        RecordingManager, RecordingStatus,
     },
-    storage::{AppDataKey, SharedStorage, create_shared_storage},
+    storage::{create_shared_storage, AppDataKey, SharedStorage},
     ProtoAssets, Session,
 };
 
@@ -58,7 +59,9 @@ use mayara_core::dual_range::{DualRangeConfig, DualRangeState as CoreDualRangeSt
 use mayara_core::engine::RadarEngine;
 
 // Capability types from mayara-core for v5 API
-use mayara_core::capabilities::{builder::build_capabilities_from_model_with_key, RadarStateV5, SupportedFeature};
+use mayara_core::capabilities::{
+    builder::build_capabilities_from_model_with_key, RadarStateV5, SupportedFeature,
+};
 use mayara_core::models;
 
 // Standalone Radar API v2 paths (matches SignalK Radar API v2 structure)
@@ -109,6 +112,18 @@ const PLAYBACK_SEEK_URI: &str = "/v2/api/recordings/playback/seek";
 const PLAYBACK_SETTINGS_URI: &str = "/v2/api/recordings/playback/settings";
 const PLAYBACK_STATUS_URI: &str = "/v2/api/recordings/playback/status";
 
+// Debug API (dev mode only)
+#[cfg(feature = "dev")]
+const DEBUG_WS_URI: &str = "/v2/api/debug";
+#[cfg(feature = "dev")]
+const DEBUG_EVENTS_URI: &str = "/v2/api/debug/events";
+#[cfg(feature = "dev")]
+const DEBUG_RECORDING_START_URI: &str = "/v2/api/debug/recording/start";
+#[cfg(feature = "dev")]
+const DEBUG_RECORDING_STOP_URI: &str = "/v2/api/debug/recording/stop";
+#[cfg(feature = "dev")]
+const DEBUG_RECORDINGS_URI: &str = "/v2/api/debug/recordings";
+
 #[cfg(not(feature = "dev"))]
 #[derive(RustEmbed, Clone)]
 #[folder = "$OUT_DIR/gui/"]
@@ -145,6 +160,10 @@ type SharedActiveRecording = Arc<RwLock<Option<ActiveRecording>>>;
 /// Shared active playback state
 type SharedActivePlayback = Arc<tokio::sync::RwLock<Option<ActivePlayback>>>;
 
+/// Shared DebugHub for protocol debugging (dev mode only)
+#[cfg(feature = "dev")]
+type SharedDebugHub = Arc<mayara_server::debug::DebugHub>;
+
 #[derive(Clone)]
 pub struct Web {
     session: Session,
@@ -159,11 +178,20 @@ pub struct Web {
     active_recording: SharedActiveRecording,
     /// Active playback (if any)
     active_playback: SharedActivePlayback,
+    /// Debug hub for protocol analysis (dev mode only)
+    #[cfg(feature = "dev")]
+    debug_hub: SharedDebugHub,
 }
 
 impl Web {
     pub fn new(session: Session) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
+
+        // Get the debug hub from the session (shared with all components)
+        #[cfg(feature = "dev")]
+        let debug_hub = session
+            .debug_hub()
+            .expect("DebugHub should be initialized in Session when dev feature is enabled");
 
         Web {
             session,
@@ -173,7 +201,15 @@ impl Web {
             recording_manager: Arc::new(RwLock::new(RecordingManager::new())),
             active_recording: Arc::new(RwLock::new(None)),
             active_playback: Arc::new(tokio::sync::RwLock::new(None)),
+            #[cfg(feature = "dev")]
+            debug_hub,
         }
+    }
+
+    /// Get the debug hub (dev mode only)
+    #[cfg(feature = "dev")]
+    pub fn debug_hub(&self) -> &SharedDebugHub {
+        &self.debug_hub
     }
 
     /// Ensure a radar exists in the engine (lazy initialization)
@@ -185,7 +221,7 @@ impl Web {
             // Add a Furuno radar as placeholder - the brand doesn't matter
             // since we're only using the feature processors (ARPA, GuardZones, etc.)
             // not the controller functionality
-            engine.add_furuno(radar_id, "0.0.0.0");
+            engine.add_furuno(radar_id, std::net::Ipv4Addr::UNSPECIFIED);
         }
     }
 
@@ -193,7 +229,7 @@ impl Web {
     fn ensure_radar_in_engine_with_model(&self, radar_id: &str, model_name: &str) {
         let mut engine = self.engine.write().unwrap();
         if !engine.contains(radar_id) {
-            engine.add_furuno(radar_id, "0.0.0.0");
+            engine.add_furuno(radar_id, std::net::Ipv4Addr::UNSPECIFIED);
         }
         // Set model info (creates dual_range controller if model supports it)
         engine.set_model_info(radar_id, model_name);
@@ -236,27 +272,52 @@ impl Web {
             .route(CONTROL_VALUE_URI, put(set_control_value))
             .route(TARGETS_URI, get(get_targets).post(acquire_target))
             .route(TARGET_URI, delete(cancel_target))
-            .route(ARPA_SETTINGS_URI, get(get_arpa_settings).put(set_arpa_settings))
+            .route(
+                ARPA_SETTINGS_URI,
+                get(get_arpa_settings).put(set_arpa_settings),
+            )
             // Guard zones
-            .route(GUARD_ZONES_URI, get(get_guard_zones).post(create_guard_zone))
-            .route(GUARD_ZONE_URI, get(get_guard_zone).put(update_guard_zone).delete(delete_guard_zone))
+            .route(
+                GUARD_ZONES_URI,
+                get(get_guard_zones).post(create_guard_zone),
+            )
+            .route(
+                GUARD_ZONE_URI,
+                get(get_guard_zone)
+                    .put(update_guard_zone)
+                    .delete(delete_guard_zone),
+            )
             // Trails
             .route(TRAILS_URI, get(get_all_trails).delete(clear_all_trails))
             .route(TRAIL_URI, get(get_trail).delete(clear_trail))
-            .route(TRAIL_SETTINGS_URI, get(get_trail_settings).put(set_trail_settings))
+            .route(
+                TRAIL_SETTINGS_URI,
+                get(get_trail_settings).put(set_trail_settings),
+            )
             // Dual-range
             .route(DUAL_RANGE_URI, get(get_dual_range).put(set_dual_range))
             .route(DUAL_RANGE_SPOKES_URI, get(dual_range_spokes_handler))
             // Other endpoints
             .route(INTERFACES_URI, get(get_interfaces))
             // SignalK applicationData API
-            .route(APP_DATA_URI, get(get_app_data).put(put_app_data).delete(delete_app_data))
+            .route(
+                APP_DATA_URI,
+                get(get_app_data).put(put_app_data).delete(delete_app_data),
+            )
             // Recordings API - File management
             .route(RECORDINGS_URI, get(list_recordings))
-            .route(RECORDING_URI, get(get_recording).delete(delete_recording).put(update_recording))
+            .route(
+                RECORDING_URI,
+                get(get_recording)
+                    .delete(delete_recording)
+                    .put(update_recording),
+            )
             .route(RECORDING_DOWNLOAD_URI, get(download_recording))
             .route(RECORDING_UPLOAD_URI, post(upload_recording))
-            .route(RECORDINGS_DIRS_URI, get(list_directories).post(create_directory))
+            .route(
+                RECORDINGS_DIRS_URI,
+                get(list_directories).post(create_directory),
+            )
             .route(RECORDING_DIR_URI, delete(delete_directory))
             // Recordings API - Recording control
             .route(RECORD_RADARS_URI, get(get_recordable_radars))
@@ -270,7 +331,21 @@ impl Web {
             .route(PLAYBACK_STOP_URI, post(playback_stop_handler))
             .route(PLAYBACK_SEEK_URI, post(playback_seek_handler))
             .route(PLAYBACK_SETTINGS_URI, put(playback_settings_handler))
-            .route(PLAYBACK_STATUS_URI, get(playback_status_handler))
+            .route(PLAYBACK_STATUS_URI, get(playback_status_handler));
+
+        // Debug API routes (dev mode only)
+        #[cfg(feature = "dev")]
+        let app = app
+            .route(DEBUG_WS_URI, get(debug_ws_handler))
+            .route(DEBUG_EVENTS_URI, get(debug_events_handler))
+            .route(
+                DEBUG_RECORDING_START_URI,
+                post(debug_recording_start_handler),
+            )
+            .route(DEBUG_RECORDING_STOP_URI, post(debug_recording_stop_handler))
+            .route(DEBUG_RECORDINGS_URI, get(debug_recordings_list_handler));
+
+        let app = app
             // Apply no-cache middleware to all API routes
             .layer(middleware::from_fn(no_cache_middleware))
             // Static assets (no middleware - can be cached)
@@ -281,12 +356,16 @@ impl Web {
         #[cfg(feature = "rustdoc")]
         let app = app.nest_service("/rustdoc", rustdoc_assets);
 
-        let app = app.fallback_service(serve_assets)
+        let app = app
+            .fallback_service(serve_assets)
             .with_state(self)
             .into_make_service_with_connect_info::<SocketAddr>();
 
         #[cfg(feature = "dev")]
-        log::info!("Starting HTTP web server on port {} (DEV MODE - serving from filesystem)", port);
+        log::info!(
+            "Starting HTTP web server on port {} (DEV MODE - serving from filesystem)",
+            port
+        );
         #[cfg(not(feature = "dev"))]
         log::info!("Starting HTTP web server on port {}", port);
 
@@ -308,7 +387,10 @@ impl Web {
 }
 
 /// Middleware to add no-cache headers to API responses
-async fn no_cache_middleware(request: axum::http::Request<axum::body::Body>, next: Next) -> Response {
+async fn no_cache_middleware(
+    request: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -400,7 +482,10 @@ async fn get_radars(
         let id = format!("radar-{}", info.id);
         let stream_url = format!("ws://{}/v2/api/radars/{}/spokes", host, id);
         let control_url = format!("ws://{}/v2/api/radars/{}/control", host, id);
-        let name = info.controls.user_name().unwrap_or_else(|| info.key().to_string());
+        let name = info
+            .controls
+            .user_name()
+            .unwrap_or_else(|| info.key().to_string());
         let v = RadarApi::new(
             id.to_owned(),
             name,
@@ -480,6 +565,7 @@ async fn get_radar_capabilities(
                     supported_features,
                     info.spokes_per_revolution,
                     info.max_spoke_len,
+                    info.pixel_values(),
                 ))
             }
             None => None,
@@ -487,7 +573,15 @@ async fn get_radar_capabilities(
     }; // session lock released here
 
     match build_args {
-        Some((model_info, radar_id, radar_key, supported_features, spokes_per_revolution, max_spoke_len)) => {
+        Some((
+            model_info,
+            radar_id,
+            radar_key,
+            supported_features,
+            spokes_per_revolution,
+            max_spoke_len,
+            pixel_values,
+        )) => {
             // Use spawn_blocking to run capability building on a thread with larger stack
             // This avoids stack overflow in debug builds where ControlDefinition structs
             // (328 bytes each) can overflow the default 2MB async task stack
@@ -499,6 +593,7 @@ async fn get_radar_capabilities(
                     supported_features,
                     spokes_per_revolution,
                     max_spoke_len,
+                    pixel_values,
                 )
             })
             .await
@@ -513,10 +608,7 @@ async fn get_radar_capabilities(
 /// GET /v2/api/radars/{radar_id}/state
 /// Returns the current state of a radar (v5 API format)
 #[debug_handler]
-async fn get_radar_state(
-    State(state): State<Web>,
-    Path(params): Path<RadarIdParam>,
-) -> Response {
+async fn get_radar_state(State(state): State<Web>, Path(params): Path<RadarIdParam>) -> Response {
     debug!("State request for radar {}", params.radar_id);
 
     let session = state.session.read().unwrap();
@@ -529,7 +621,10 @@ async fn get_radar_state(
             let mut controls = BTreeMap::new();
 
             // Helper to format a control value for the API response
-            fn format_control_value(control_id: &str, control: &mayara_server::settings::Control) -> serde_json::Value {
+            fn format_control_value(
+                control_id: &str,
+                control: &mayara_server::settings::Control,
+            ) -> serde_json::Value {
                 // Special handling for power/status - return string enum
                 if control_id == "power" {
                     let status_val = control.value.unwrap_or(0.0) as i32;
@@ -545,7 +640,11 @@ async fn get_radar_state(
 
                 // Controls with auto mode (compound controls)
                 if control.auto.is_some() {
-                    let mode = if control.auto.unwrap_or(false) { "auto" } else { "manual" };
+                    let mode = if control.auto.unwrap_or(false) {
+                        "auto"
+                    } else {
+                        "manual"
+                    };
                     let value = control.value.unwrap_or(0.0);
                     // Return integer for most controls, but preserve decimals for bearing alignment
                     if control_id == "bearingAlignment" {
@@ -582,7 +681,10 @@ async fn get_radar_state(
                 if control_id == "userName" || control_id == "modelName" {
                     continue;
                 }
-                controls.insert(control_id.clone(), format_control_value(&control_id, &control));
+                controls.insert(
+                    control_id.clone(),
+                    format_control_value(&control_id, &control),
+                );
             }
 
             // Determine status string for top-level field
@@ -676,14 +778,14 @@ async fn spokes_stream(
                         let len = message.len();
                         let ws_message = Message::Binary(message.into());
                         if let Err(e) = socket.send(ws_message).await {
-                            debug!("Error on send to websocket: {}", e);
+                            log::warn!("Error on send to websocket: {}", e);
                             break;
                         }
                         trace!("Sent radar message {} bytes", len);
                     },
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         // Channel lagged - receiver fell behind, skip missed messages
-                        debug!("Websocket receiver lagged, skipped {} messages", n);
+                        log::warn!("Websocket receiver lagged, skipped {} messages", n);
                         // Continue to receive next message
                     },
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -877,7 +979,9 @@ async fn set_control_value(
                     Some(c) => c,
                     None => {
                         // Debug: list all available controls
-                        let available: Vec<String> = radar.controls.get_all()
+                        let available: Vec<String> = radar
+                            .controls
+                            .get_all()
                             .iter()
                             .map(|(k, _)| k.clone())
                             .collect();
@@ -899,19 +1003,25 @@ async fn set_control_value(
                     serde_json::Value::String(s) => {
                         // Try to normalize enum values using core definition
                         let normalized = if let Some(index) = control.enum_value_to_index(s) {
-                            control.index_to_enum_value(index).unwrap_or_else(|| s.clone())
+                            control
+                                .index_to_enum_value(index)
+                                .unwrap_or_else(|| s.clone())
                         } else {
                             s.clone()
                         };
                         (normalized, None)
-                    },
+                    }
                     serde_json::Value::Number(n) => (n.to_string(), None),
                     serde_json::Value::Bool(b) => (if *b { "1" } else { "0" }.to_string(), None),
                     serde_json::Value::Object(obj) => {
                         // Check if this is a dopplerMode compound control {"enabled": bool, "mode": "target"|"rain"}
                         if params.control_id == "dopplerMode" {
-                            let enabled = obj.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let mode_str = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("target");
+                            let enabled = obj
+                                .get("enabled")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let mode_str =
+                                obj.get("mode").and_then(|v| v.as_str()).unwrap_or("target");
                             // Convert mode string to numeric: "target" = 0, "rain" = 1
                             let mode_val = match mode_str {
                                 "target" | "targets" => 0,
@@ -924,7 +1034,8 @@ async fn set_control_value(
                             // Standard compound control: {"mode": "auto"|"manual", "value": N}
                             let mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("manual");
                             let auto = Some(mode == "auto");
-                            let value = obj.get("value")
+                            let value = obj
+                                .get("value")
                                 .map(|v| match v {
                                     serde_json::Value::Number(n) => n.to_string(),
                                     serde_json::Value::String(s) => s.clone(),
@@ -933,7 +1044,7 @@ async fn set_control_value(
                                 .unwrap_or_default();
                             (value, auto)
                         }
-                    },
+                    }
                     _ => (request.value.to_string(), None),
                 };
 
@@ -956,7 +1067,10 @@ async fn set_control_value(
         .process_client_request(control_type, reply_tx)
         .await
     {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to send control: {:?}", e))
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to send control: {:?}", e),
+        )
             .into_response();
     }
 
@@ -1018,10 +1132,7 @@ struct AcquireTargetResponse {
 
 /// GET /radars/{radar_id}/targets - List all tracked ARPA targets
 #[debug_handler]
-async fn get_targets(
-    State(state): State<Web>,
-    Path(params): Path<RadarIdParam>,
-) -> Response {
+async fn get_targets(State(state): State<Web>, Path(params): Path<RadarIdParam>) -> Response {
     debug!("GET targets for radar {}", params.radar_id);
 
     let engine = state.engine.read().unwrap();
@@ -1084,7 +1195,12 @@ async fn acquire_target(
         .as_millis() as u64;
 
     let mut engine = state.engine.write().unwrap();
-    match engine.acquire_target(&params.radar_id, request.bearing, request.distance, timestamp) {
+    match engine.acquire_target(
+        &params.radar_id,
+        request.bearing,
+        request.distance,
+        timestamp,
+    ) {
         Some(target_id) => {
             debug!("Acquired target {} on radar {}", target_id, params.radar_id);
             Json(AcquireTargetResponse {
@@ -1119,7 +1235,10 @@ async fn cancel_target(
 
     let mut engine = state.engine.write().unwrap();
     if engine.cancel_target(&params.radar_id, params.target_id) {
-        debug!("Cancelled target {} on radar {}", params.target_id, params.radar_id);
+        debug!(
+            "Cancelled target {} on radar {}",
+            params.target_id, params.radar_id
+        );
         StatusCode::NO_CONTENT.into_response()
     } else {
         (StatusCode::NOT_FOUND, "Target not found").into_response()
@@ -1128,10 +1247,7 @@ async fn cancel_target(
 
 /// GET /radars/{radar_id}/arpa/settings - Get ARPA settings
 #[debug_handler]
-async fn get_arpa_settings(
-    State(state): State<Web>,
-    Path(params): Path<RadarIdParam>,
-) -> Response {
+async fn get_arpa_settings(State(state): State<Web>, Path(params): Path<RadarIdParam>) -> Response {
     debug!("GET ARPA settings for radar {}", params.radar_id);
 
     let engine = state.engine.read().unwrap();
@@ -1175,10 +1291,7 @@ struct AppDataParams {
 
 /// GET /signalk/v1/applicationData/global/{appid}/{version}/{key} - Get stored data
 #[debug_handler]
-async fn get_app_data(
-    State(state): State<Web>,
-    Path(params): Path<AppDataParams>,
-) -> Response {
+async fn get_app_data(State(state): State<Web>, Path(params): Path<AppDataParams>) -> Response {
     debug!(
         "GET applicationData: {}/{}/{}",
         params.appid, params.version, params.key
@@ -1216,10 +1329,7 @@ async fn put_app_data(
 
 /// DELETE /signalk/v1/applicationData/global/{appid}/{version}/{key} - Delete stored data
 #[debug_handler]
-async fn delete_app_data(
-    State(state): State<Web>,
-    Path(params): Path<AppDataParams>,
-) -> Response {
+async fn delete_app_data(State(state): State<Web>, Path(params): Path<AppDataParams>) -> Response {
     debug!(
         "DELETE applicationData: {}/{}/{}",
         params.appid, params.version, params.key
@@ -1255,10 +1365,7 @@ struct GuardZoneListResponse {
 
 /// GET /radars/{radar_id}/guardZones - List all guard zones
 #[debug_handler]
-async fn get_guard_zones(
-    State(state): State<Web>,
-    Path(params): Path<RadarIdParam>,
-) -> Response {
+async fn get_guard_zones(State(state): State<Web>, Path(params): Path<RadarIdParam>) -> Response {
     debug!("GET guard zones for radar {}", params.radar_id);
 
     let engine = state.engine.read().unwrap();
@@ -1279,14 +1386,20 @@ async fn create_guard_zone(
     Path(params): Path<RadarIdParam>,
     Json(zone): Json<GuardZone>,
 ) -> Response {
-    debug!("POST create guard zone {} for radar {}", zone.id, params.radar_id);
+    debug!(
+        "POST create guard zone {} for radar {}",
+        zone.id, params.radar_id
+    );
 
     // Ensure radar exists in engine
     state.ensure_radar_in_engine(&params.radar_id);
 
     let mut engine = state.engine.write().unwrap();
     engine.set_guard_zone(&params.radar_id, zone.clone());
-    debug!("Created guard zone {} on radar {}", zone.id, params.radar_id);
+    debug!(
+        "Created guard zone {} on radar {}",
+        zone.id, params.radar_id
+    );
 
     (StatusCode::CREATED, Json(zone)).into_response()
 }
@@ -1297,7 +1410,10 @@ async fn get_guard_zone(
     State(state): State<Web>,
     Path(params): Path<RadarZoneIdParam>,
 ) -> Response {
-    debug!("GET guard zone {} for radar {}", params.zone_id, params.radar_id);
+    debug!(
+        "GET guard zone {} for radar {}",
+        params.zone_id, params.radar_id
+    );
 
     let engine = state.engine.read().unwrap();
     if let Some(status) = engine.get_guard_zone(&params.radar_id, params.zone_id) {
@@ -1314,7 +1430,10 @@ async fn update_guard_zone(
     Path(params): Path<RadarZoneIdParam>,
     Json(zone): Json<GuardZone>,
 ) -> Response {
-    debug!("PUT update guard zone {} for radar {}", params.zone_id, params.radar_id);
+    debug!(
+        "PUT update guard zone {} for radar {}",
+        params.zone_id, params.radar_id
+    );
 
     // Ensure radar exists in engine
     state.ensure_radar_in_engine(&params.radar_id);
@@ -1325,7 +1444,10 @@ async fn update_guard_zone(
 
     let mut engine = state.engine.write().unwrap();
     engine.set_guard_zone(&params.radar_id, zone);
-    debug!("Updated guard zone {} on radar {}", params.zone_id, params.radar_id);
+    debug!(
+        "Updated guard zone {} on radar {}",
+        params.zone_id, params.radar_id
+    );
 
     StatusCode::OK.into_response()
 }
@@ -1336,11 +1458,17 @@ async fn delete_guard_zone(
     State(state): State<Web>,
     Path(params): Path<RadarZoneIdParam>,
 ) -> Response {
-    debug!("DELETE guard zone {} for radar {}", params.zone_id, params.radar_id);
+    debug!(
+        "DELETE guard zone {} for radar {}",
+        params.zone_id, params.radar_id
+    );
 
     let mut engine = state.engine.write().unwrap();
     if engine.remove_guard_zone(&params.radar_id, params.zone_id) {
-        debug!("Deleted guard zone {} on radar {}", params.zone_id, params.radar_id);
+        debug!(
+            "Deleted guard zone {} on radar {}",
+            params.zone_id, params.radar_id
+        );
         return StatusCode::NO_CONTENT.into_response();
     }
 
@@ -1369,10 +1497,7 @@ struct TrailListResponse {
 
 /// GET /radars/{radar_id}/trails - Get all trails
 #[debug_handler]
-async fn get_all_trails(
-    State(state): State<Web>,
-    Path(params): Path<RadarIdParam>,
-) -> Response {
+async fn get_all_trails(State(state): State<Web>, Path(params): Path<RadarIdParam>) -> Response {
     debug!("GET all trails for radar {}", params.radar_id);
 
     let engine = state.engine.read().unwrap();
@@ -1389,11 +1514,11 @@ async fn get_all_trails(
 
 /// GET /radars/{radar_id}/trails/{target_id} - Get trail for a specific target
 #[debug_handler]
-async fn get_trail(
-    State(state): State<Web>,
-    Path(params): Path<RadarTrailIdParam>,
-) -> Response {
-    debug!("GET trail for target {} on radar {}", params.target_id, params.radar_id);
+async fn get_trail(State(state): State<Web>, Path(params): Path<RadarTrailIdParam>) -> Response {
+    debug!(
+        "GET trail for target {} on radar {}",
+        params.target_id, params.radar_id
+    );
 
     let engine = state.engine.read().unwrap();
     if let Some(trail_data) = engine.get_trail(&params.radar_id, params.target_id) {
@@ -1405,10 +1530,7 @@ async fn get_trail(
 
 /// DELETE /radars/{radar_id}/trails - Clear all trails
 #[debug_handler]
-async fn clear_all_trails(
-    State(state): State<Web>,
-    Path(params): Path<RadarIdParam>,
-) -> Response {
+async fn clear_all_trails(State(state): State<Web>, Path(params): Path<RadarIdParam>) -> Response {
     debug!("DELETE all trails for radar {}", params.radar_id);
 
     let mut engine = state.engine.write().unwrap();
@@ -1420,15 +1542,18 @@ async fn clear_all_trails(
 
 /// DELETE /radars/{radar_id}/trails/{target_id} - Clear trail for a specific target
 #[debug_handler]
-async fn clear_trail(
-    State(state): State<Web>,
-    Path(params): Path<RadarTrailIdParam>,
-) -> Response {
-    debug!("DELETE trail for target {} on radar {}", params.target_id, params.radar_id);
+async fn clear_trail(State(state): State<Web>, Path(params): Path<RadarTrailIdParam>) -> Response {
+    debug!(
+        "DELETE trail for target {} on radar {}",
+        params.target_id, params.radar_id
+    );
 
     let mut engine = state.engine.write().unwrap();
     engine.clear_trail(&params.radar_id, params.target_id);
-    debug!("Cleared trail for target {} on radar {}", params.target_id, params.radar_id);
+    debug!(
+        "Cleared trail for target {} on radar {}",
+        params.target_id, params.radar_id
+    );
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -1483,10 +1608,7 @@ struct DualRangeResponse {
 
 /// GET /radars/{radar_id}/dualRange - Get dual-range state
 #[debug_handler]
-async fn get_dual_range(
-    State(state): State<Web>,
-    Path(params): Path<RadarIdParam>,
-) -> Response {
+async fn get_dual_range(State(state): State<Web>, Path(params): Path<RadarIdParam>) -> Response {
     debug!("GET dual-range for radar {}", params.radar_id);
 
     // Check if radar exists and supports dual-range (get model info from session)
@@ -1504,10 +1626,7 @@ async fn get_dual_range(
                     .unwrap_or(&models::UNKNOWN_MODEL);
 
                 if !model_info.has_dual_range {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        "Radar does not support dual-range",
-                    )
+                    return (StatusCode::NOT_FOUND, "Radar does not support dual-range")
                         .into_response();
                 }
 
@@ -1571,10 +1690,7 @@ async fn set_dual_range(
                     .unwrap_or(&models::UNKNOWN_MODEL);
 
                 if !model.has_dual_range {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        "Radar does not support dual-range",
-                    )
+                    return (StatusCode::NOT_FOUND, "Radar does not support dual-range")
                         .into_response();
                 }
 
@@ -1596,8 +1712,7 @@ async fn set_dual_range(
             StatusCode::BAD_REQUEST,
             format!(
                 "Secondary range {} exceeds maximum {}",
-                config.secondary_range,
-                model_info.max_dual_range
+                config.secondary_range, model_info.max_dual_range
             ),
         )
             .into_response();
@@ -1641,10 +1756,7 @@ async fn dual_range_spokes_handler(
                     .unwrap_or(&models::UNKNOWN_MODEL);
 
                 if !model.has_dual_range {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        "Radar does not support dual-range",
-                    )
+                    return (StatusCode::NOT_FOUND, "Radar does not support dual-range")
                         .into_response();
                 }
 
@@ -1847,16 +1959,30 @@ async fn download_recording(
             // Compress with gzip
             let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
             if let Err(e) = encoder.write_all(&data) {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Compression error: {}", e)).into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Compression error: {}", e),
+                )
+                    .into_response();
             }
             let compressed = match encoder.finish() {
                 Ok(data) => data,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Compression error: {}", e)).into_response(),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Compression error: {}", e),
+                    )
+                        .into_response()
+                }
             };
 
-            debug!("Compressed {} from {} to {} bytes ({:.1}% reduction)",
-                filename, data.len(), compressed.len(),
-                (1.0 - compressed.len() as f64 / data.len() as f64) * 100.0);
+            debug!(
+                "Compressed {} from {} to {} bytes ({:.1}% reduction)",
+                filename,
+                data.len(),
+                compressed.len(),
+                (1.0 - compressed.len() as f64 / data.len() as f64) * 100.0
+            );
 
             // Return compressed file with .mrr.gz extension
             let gz_filename = format!("{}.gz", filename);
@@ -1889,7 +2015,8 @@ async fn upload_recording(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
             // Parse "attachment; filename="xxx.mrr""
-            s.split("filename=").nth(1)
+            s.split("filename=")
+                .nth(1)
                 .map(|f| f.trim_matches('"').trim_matches('\'').to_string())
         })
         .unwrap_or_else(|| {
@@ -1903,7 +2030,11 @@ async fn upload_recording(
     let manager = state.recording_manager.read().unwrap();
     match manager.save_upload(&filename, &body, query.subdirectory.as_deref()) {
         Ok(info) => Json(info).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
     }
 }
 
@@ -1935,10 +2066,7 @@ async fn create_directory(
 
 /// DELETE /v2/api/recordings/directories/{name} - Delete a directory
 #[debug_handler]
-async fn delete_directory(
-    State(state): State<Web>,
-    Path(name): Path<String>,
-) -> Response {
+async fn delete_directory(State(state): State<Web>, Path(name): Path<String>) -> Response {
     debug!("DELETE directory: {}", name);
 
     let manager = state.recording_manager.read().unwrap();
@@ -1979,7 +2107,10 @@ async fn get_recordable_radars(State(state): State<Web>) -> Response {
         let radar_id = format!("radar-{}", info.id);
         result.push(RecordableRadar {
             id: radar_id,
-            name: info.controls.user_name().unwrap_or_else(|| info.key().to_string()),
+            name: info
+                .controls
+                .user_name()
+                .unwrap_or_else(|| info.key().to_string()),
             brand: format!("{:?}", info.brand),
             model: info.controls.model_name(),
         });
@@ -2067,9 +2198,11 @@ async fn start_recording_handler(
             supported_features,
             radar.spokes_per_revolution,
             radar.max_spoke_len,
+            radar.pixel_values(),
         );
 
-        let capabilities_json = serde_json::to_vec(&capabilities).unwrap_or_else(|_| b"{}".to_vec());
+        let capabilities_json =
+            serde_json::to_vec(&capabilities).unwrap_or_else(|_| b"{}".to_vec());
 
         (radar, capabilities_json)
     };
@@ -2178,7 +2311,10 @@ async fn playback_load_handler(
     {
         let mut active = state.active_playback.write().await;
         if let Some(playback) = active.take() {
-            log::info!("Stopping existing playback before loading new: {}", playback.filename());
+            log::info!(
+                "Stopping existing playback before loading new: {}",
+                playback.filename()
+            );
             playback.stop();
             // Unregister the old playback radar
             let session = state.session.read().unwrap();
@@ -2346,3 +2482,371 @@ async fn playback_status_handler(State(state): State<Web>) -> Response {
 
     Json(status).into_response()
 }
+
+// =============================================================================
+// Debug API Handlers (dev mode only)
+// =============================================================================
+
+#[cfg(feature = "dev")]
+mod debug_handlers {
+    use super::*;
+    use mayara_server::debug::{
+        recording::{RecordedRadar, RecordingManager as DebugRecordingManager},
+        DebugEvent,
+    };
+
+    /// Query parameters for debug events
+    #[derive(Debug, Deserialize)]
+    pub struct DebugEventsQuery {
+        /// Filter by radar ID
+        #[serde(default)]
+        pub radar_id: Option<String>,
+        /// Maximum number of events to return
+        #[serde(default)]
+        pub limit: Option<usize>,
+        /// Start from this event ID
+        #[serde(default)]
+        pub after: Option<u64>,
+    }
+
+    /// WebSocket message from client
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "type", rename_all = "camelCase")]
+    pub enum DebugClientMessage {
+        /// Subscribe to events with optional filter
+        Subscribe {
+            #[serde(default)]
+            radar_id: Option<String>,
+        },
+        /// Get historical events
+        GetHistory {
+            #[serde(default)]
+            limit: Option<usize>,
+        },
+        /// Pause event streaming
+        Pause,
+        /// Resume event streaming
+        Resume,
+    }
+
+    /// WebSocket message to client
+    #[derive(Debug, Serialize)]
+    #[serde(tag = "type", rename_all = "camelCase")]
+    pub enum DebugServerMessage {
+        /// A debug event
+        Event(DebugEvent),
+        /// Historical events
+        History { events: Vec<DebugEvent> },
+        /// Connection established
+        Connected { event_count: usize },
+        /// Error message
+        Error { message: String },
+    }
+
+    /// Request body for starting debug recording
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct StartDebugRecordingRequest {
+        /// Radars to include in the recording
+        #[serde(default)]
+        pub radars: Vec<RecordedRadarInfo>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct RecordedRadarInfo {
+        pub radar_id: String,
+        pub brand: String,
+        #[serde(default)]
+        pub model: Option<String>,
+        #[serde(default)]
+        pub address: Option<String>,
+    }
+
+    /// Response for debug recording operations
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DebugRecordingResponse {
+        pub success: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub filename: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub error: Option<String>,
+    }
+
+    /// Response for listing debug recordings
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DebugRecordingsListResponse {
+        pub recordings: Vec<mayara_server::debug::recording::RecordingInfo>,
+    }
+
+    /// GET /v2/api/debug - WebSocket for real-time debug events
+    #[debug_handler]
+    pub async fn debug_ws_handler(
+        State(state): State<Web>,
+        ConnectInfo(addr): ConnectInfo<SocketAddr>,
+        ws: WebSocketUpgrade,
+    ) -> Response {
+        debug!("Debug WebSocket connection from {}", addr);
+
+        let hub = state.debug_hub.clone();
+        let shutdown_rx = state.shutdown_tx.subscribe();
+
+        ws.on_upgrade(move |socket| debug_ws_stream(socket, hub, shutdown_rx))
+    }
+
+    /// WebSocket stream for debug events
+    async fn debug_ws_stream(
+        mut socket: WebSocket,
+        hub: SharedDebugHub,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    ) {
+        use futures_util::SinkExt;
+
+        // Subscribe to the debug event broadcast
+        let mut event_rx = hub.subscribe();
+        let mut paused = false;
+        let mut radar_filter: Option<String> = None;
+
+        // Send initial connected message
+        let connected = DebugServerMessage::Connected {
+            event_count: hub.event_count(),
+        };
+        if let Ok(json) = serde_json::to_string(&connected) {
+            let _ = socket.send(Message::Text(json.into())).await;
+        }
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    debug!("Shutdown of debug websocket");
+                    break;
+                }
+                // Receive commands from client
+                msg = socket.recv() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Ok(cmd) = serde_json::from_str::<DebugClientMessage>(&text) {
+                                match cmd {
+                                    DebugClientMessage::Subscribe { radar_id } => {
+                                        radar_filter = radar_id;
+                                        debug!("Debug WS: filter set to {:?}", radar_filter);
+                                    }
+                                    DebugClientMessage::GetHistory { limit } => {
+                                        let events = hub.get_events(
+                                            radar_filter.as_deref(),
+                                            limit.unwrap_or(100),
+                                            None,
+                                        );
+                                        let msg = DebugServerMessage::History { events };
+                                        if let Ok(json) = serde_json::to_string(&msg) {
+                                            let _ = socket.send(Message::Text(json.into())).await;
+                                        }
+                                    }
+                                    DebugClientMessage::Pause => {
+                                        paused = true;
+                                        debug!("Debug WS: paused");
+                                    }
+                                    DebugClientMessage::Resume => {
+                                        paused = false;
+                                        debug!("Debug WS: resumed");
+                                    }
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None => {
+                            debug!("Debug websocket closed");
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                // Broadcast events to client
+                event = event_rx.recv() => {
+                    if paused {
+                        continue;
+                    }
+                    match event {
+                        Ok(event) => {
+                            debug!("Debug WS: received event #{} for radar {}", event.id, event.radar_id);
+                            // Apply radar filter
+                            if let Some(ref filter) = radar_filter {
+                                if &event.radar_id != filter {
+                                    debug!("Debug WS: filtered out event (filter: {})", filter);
+                                    continue;
+                                }
+                            }
+                            let msg = DebugServerMessage::Event(event);
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                if socket.send(Message::Text(json.into())).await.is_err() {
+                                    debug!("Debug WS: failed to send event");
+                                    break;
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            debug!("Debug WS lagged, missed {} events", n);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// GET /v2/api/debug/events - Get historical debug events
+    #[debug_handler]
+    pub async fn debug_events_handler(
+        State(state): State<Web>,
+        axum::extract::Query(query): axum::extract::Query<DebugEventsQuery>,
+    ) -> Response {
+        debug!("GET debug events: {:?}", query);
+
+        let events = state.debug_hub.get_events(
+            query.radar_id.as_deref(),
+            query.limit.unwrap_or(100),
+            query.after,
+        );
+
+        Json(events).into_response()
+    }
+
+    /// POST /v2/api/debug/recording/start - Start debug recording
+    #[debug_handler]
+    pub async fn debug_recording_start_handler(
+        State(state): State<Web>,
+        Json(request): Json<StartDebugRecordingRequest>,
+    ) -> Response {
+        debug!("POST debug recording start");
+
+        // Get the debug recorder from the hub
+        let recorder = state.debug_hub.recorder();
+
+        // Convert radar info
+        let radars: Vec<RecordedRadar> = request
+            .radars
+            .into_iter()
+            .map(|r| RecordedRadar {
+                radar_id: r.radar_id,
+                brand: r.brand,
+                model: r.model,
+                address: r.address,
+            })
+            .collect();
+
+        match recorder.start(radars) {
+            Ok(filename) => Json(DebugRecordingResponse {
+                success: true,
+                filename: Some(filename),
+                error: None,
+            })
+            .into_response(),
+            Err(e) => (
+                StatusCode::CONFLICT,
+                Json(DebugRecordingResponse {
+                    success: false,
+                    filename: None,
+                    error: Some(e.to_string()),
+                }),
+            )
+                .into_response(),
+        }
+    }
+
+    /// POST /v2/api/debug/recording/stop - Stop debug recording
+    #[debug_handler]
+    pub async fn debug_recording_stop_handler(State(state): State<Web>) -> Response {
+        debug!("POST debug recording stop");
+
+        let recorder = state.debug_hub.recorder();
+
+        match recorder.stop() {
+            Ok(path) => Json(DebugRecordingResponse {
+                success: true,
+                filename: path.file_name().map(|n| n.to_string_lossy().to_string()),
+                error: None,
+            })
+            .into_response(),
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(DebugRecordingResponse {
+                    success: false,
+                    filename: None,
+                    error: Some(e.to_string()),
+                }),
+            )
+                .into_response(),
+        }
+    }
+
+    /// GET /v2/api/debug/recordings - List debug recordings
+    #[debug_handler]
+    pub async fn debug_recordings_list_handler(State(state): State<Web>) -> Response {
+        debug!("GET debug recordings list");
+
+        let recorder = state.debug_hub.recorder();
+        let output_dir = recorder.output_dir().to_path_buf();
+        let manager = DebugRecordingManager::new(output_dir);
+
+        match manager.list() {
+            Ok(recordings) => Json(DebugRecordingsListResponse { recordings }).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use mayara_server::debug::{DebugEventPayload, EventSource, IoDirection, ProtocolType};
+
+        #[test]
+        fn test_debug_server_message_serialization() {
+            // Test that DebugServerMessage serializes correctly with distinct type fields
+            let event = DebugEvent {
+                id: 123,
+                timestamp: 1000,
+                radar_id: "radar-1".to_string(),
+                brand: "furuno".to_string(),
+                source: EventSource::IoProvider,
+                payload: DebugEventPayload::Data {
+                    direction: IoDirection::Recv,
+                    protocol: ProtocolType::Tcp,
+                    local_addr: None,
+                    remote_addr: "172.31.1.4".to_string(),
+                    remote_port: 10050,
+                    raw_hex: "24 4e 36 33".to_string(),
+                    raw_ascii: "$N63".to_string(),
+                    decoded: None,
+                    length: 4,
+                },
+            };
+
+            let msg = DebugServerMessage::Event(event);
+            let json = serde_json::to_string_pretty(&msg).unwrap();
+
+            // Verify both type fields are present and distinct
+            assert!(
+                json.contains(r#""type": "event""#),
+                "Should have WebSocket message type 'event'"
+            );
+            assert!(
+                json.contains(r#""eventType": "data""#),
+                "Should have payload eventType 'data'"
+            );
+
+            // Verify parsed type field is correct
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.get("type").and_then(|v| v.as_str()), Some("event"));
+            assert_eq!(
+                parsed.get("eventType").and_then(|v| v.as_str()),
+                Some("data")
+            );
+        }
+    }
+}
+
+#[cfg(feature = "dev")]
+use debug_handlers::*;

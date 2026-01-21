@@ -17,12 +17,9 @@ pub(crate) use mayara_core::protocol::furuno::Model as RadarModel;
 
 // Use constants from core (single source of truth)
 use mayara_core::protocol::furuno::{
-    SPOKES_PER_REVOLUTION as FURUNO_SPOKES_U16,
-    MAX_SPOKE_LEN as FURUNO_SPOKE_LEN_U16,
-    BEACON_PORT as FURUNO_BEACON_PORT,
-    DATA_PORT as FURUNO_DATA_PORT,
-    BROADCAST_ADDR as FURUNO_BROADCAST_ADDR,
-    DATA_MULTICAST_ADDR as FURUNO_DATA_MULTICAST_ADDR,
+    BEACON_PORT as FURUNO_BEACON_PORT, BROADCAST_ADDR as FURUNO_BROADCAST_ADDR,
+    DATA_MULTICAST_ADDR as FURUNO_DATA_MULTICAST_ADDR, DATA_PORT as FURUNO_DATA_PORT,
+    MAX_SPOKE_LEN as FURUNO_SPOKE_LEN_U16, SPOKES_PER_REVOLUTION as FURUNO_SPOKES_U16,
 };
 
 const FURUNO_SPOKES: usize = FURUNO_SPOKES_U16 as usize;
@@ -31,14 +28,12 @@ const FURUNO_SPOKE_LEN: usize = FURUNO_SPOKE_LEN_U16 as usize;
 // Construct broadcast address from core's constants
 // Note: Furuno uses broadcast on 172.31.255.255 for data fallback
 fn furuno_broadcast_addr() -> SocketAddrV4 {
-    let ip: Ipv4Addr = FURUNO_BROADCAST_ADDR.parse().expect("Invalid FURUNO_BROADCAST_ADDR");
-    SocketAddrV4::new(ip, FURUNO_DATA_PORT)
+    SocketAddrV4::new(FURUNO_BROADCAST_ADDR, FURUNO_DATA_PORT)
 }
 
 // Construct multicast data address from core's constants
 fn furuno_data_multicast_addr() -> SocketAddrV4 {
-    let ip: Ipv4Addr = FURUNO_DATA_MULTICAST_ADDR.parse().expect("Invalid FURUNO_DATA_MULTICAST_ADDR");
-    SocketAddrV4::new(ip, FURUNO_DATA_PORT)
+    SocketAddrV4::new(FURUNO_DATA_MULTICAST_ADDR, FURUNO_DATA_PORT)
 }
 
 // Beacon packet structures are now in mayara-core
@@ -49,7 +44,11 @@ fn furuno_data_multicast_addr() -> SocketAddrV4 {
 /// Called during initial discovery when model is known from persistence.
 fn restore_installation_settings(radar_key: &str, info: &mut RadarInfo, _radars: &SharedRadars) {
     if let Some(settings) = load_installation_settings(radar_key) {
-        log::info!("{}: Restoring installation settings: {:?}", radar_key, settings);
+        log::info!(
+            "{}: Restoring installation settings: {:?}",
+            radar_key,
+            settings
+        );
 
         let mut restored_any = false;
 
@@ -64,9 +63,7 @@ fn restore_installation_settings(radar_key: &str, info: &mut RadarInfo, _radars:
 
         // Restore antenna height
         if let Some(meters) = settings.antenna_height {
-            info.controls
-                .set("antennaHeight", meters as f32, None)
-                .ok();
+            info.controls.set("antennaHeight", meters as f32, None).ok();
             log::info!("{}: Restored antennaHeight = {}m", radar_key, meters);
             restored_any = true;
         }
@@ -384,7 +381,7 @@ pub fn create_locator(session: Session) -> Box<dyn RadarLocator + Send> {
 // New unified discovery processing (used by CoreLocatorAdapter)
 // =============================================================================
 
-use mayara_core::radar::{ParsedAddress, RadarDiscovery};
+use mayara_core::radar::RadarDiscovery;
 
 /// Process a radar discovery from the core locator.
 ///
@@ -397,19 +394,18 @@ pub fn process_discovery(
     radars: &SharedRadars,
     subsys: &SubsystemHandle,
 ) -> Result<(), io::Error> {
-    // Parse address from discovery using core's parser
-    let parsed = ParsedAddress::parse(&discovery.address)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let radar_addr = SocketAddrV4::new(
-        Ipv4Addr::from(parsed.ip),
-        if parsed.port > 0 { parsed.port } else { FURUNO_BEACON_PORT },
-    );
+    // Get address from discovery (now typed as SocketAddrV4)
+    let radar_addr = if discovery.address.port() > 0 {
+        discovery.address
+    } else {
+        SocketAddrV4::new(*discovery.address.ip(), FURUNO_BEACON_PORT)
+    };
 
     // DRS: spoke data all on a well-known multicast address from core
     let spoke_data_addr: SocketAddrV4 = furuno_data_multicast_addr();
 
     let report_addr: SocketAddrV4 = SocketAddrV4::new(*radar_addr.ip(), 0); // Port is set in login_to_radar
-    let send_command_addr: SocketAddrV4 = report_addr.clone();
+    let send_command_addr: SocketAddrV4 = report_addr;
 
     // Use name (e.g., "RD003212") as serial identifier for unique key generation
     // Use None for 'which' since Furuno doesn't have multi-unit setups like Navico A/B
@@ -442,7 +438,10 @@ pub fn process_discovery(
 
     // Apply model-specific settings if known from discovery OR from persistence
     // After located(), model_name may be set from persisted config
-    let model_name = discovery.model.clone().or_else(|| info.controls.model_name());
+    let model_name = discovery
+        .model
+        .clone()
+        .or_else(|| info.controls.model_name());
     if let Some(ref model_name) = model_name {
         let model = RadarModel::from_name(model_name);
         let version = "unknown"; // Version comes from $N96 via report receiver
@@ -451,7 +450,11 @@ pub fn process_discovery(
             info.key(),
             model_name,
             model,
-            if discovery.model.is_some() { "discovery" } else { "persistence" }
+            if discovery.model.is_some() {
+                "discovery"
+            } else {
+                "persistence"
+            }
         );
         settings::update_when_model_known(&mut info, model, version);
 
@@ -510,4 +513,3 @@ pub fn process_discovery(
     );
     Ok(())
 }
-

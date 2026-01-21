@@ -9,10 +9,10 @@ use std::collections::HashMap;
 
 use crate::protocol::furuno::command::{
     parse_bird_mode_response, parse_blind_sector_response, parse_gain_response,
-    parse_main_bang_response, parse_rain_response, parse_range_response,
-    parse_rezboost_response, parse_scan_speed_response, parse_sea_response,
-    parse_signal_processing_response, parse_status_response, parse_target_analyzer_response,
-    parse_tx_channel_response, range_index_to_meters, ControlValue as ParsedControlValue,
+    parse_main_bang_response, parse_rain_response, parse_range_response, parse_rezboost_response,
+    parse_scan_speed_response, parse_sea_response, parse_signal_processing_response,
+    parse_status_response, parse_target_analyzer_response, parse_tx_channel_response,
+    range_index_to_meters, ControlValue as ParsedControlValue,
 };
 
 /// Power state of the radar
@@ -136,12 +136,25 @@ pub struct RadarState {
     /// Timestamp of last update (milliseconds since epoch)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<u64>,
+
+    /// Internal flag: when true, accept radar values even in manual mode
+    /// Used during state refresh to sync changes made by other clients (chart plotter)
+    #[serde(skip)]
+    pending_refresh: bool,
 }
 
 impl RadarState {
     /// Create a new radar state with default values
     pub fn new() -> Self {
         RadarState::default()
+    }
+
+    /// Mark that a state refresh is pending.
+    /// When set, the next update_from_response calls will accept radar values
+    /// even if we're in manual mode. This allows syncing changes made by
+    /// other clients (e.g., chart plotter).
+    pub fn mark_pending_refresh(&mut self) {
+        self.pending_refresh = true;
     }
 
     /// Update state by parsing a response line from the radar
@@ -160,9 +173,14 @@ impl RadarState {
 
         // Try gain response ($N63)
         // In manual mode, preserve the commanded value - radar reports sensor readings,
-        // but we want to show what the user set, not what the sensor reads
+        // but we want to show what the user set, not what the sensor reads.
+        // EXCEPTION: During refresh, always accept radar values to sync external changes.
         if let Some(cv) = parse_gain_response(line) {
-            if self.gain.mode == "manual" && !cv.auto {
+            if self.pending_refresh {
+                // Refresh mode: accept radar values (sync from chart plotter)
+                self.gain = cv.into();
+                self.pending_refresh = false; // Clear after first control update
+            } else if self.gain.mode == "manual" && !cv.auto {
                 // Manual mode: only update mode confirmation, keep commanded value
                 // (value was already set when we sent the command)
             } else {
@@ -175,7 +193,9 @@ impl RadarState {
         // Try sea response ($N64)
         // Same logic: in manual mode, preserve commanded value
         if let Some(cv) = parse_sea_response(line) {
-            if self.sea.mode == "manual" && !cv.auto {
+            if self.pending_refresh {
+                self.sea = cv.into();
+            } else if self.sea.mode == "manual" && !cv.auto {
                 // Manual mode: keep commanded value
             } else {
                 self.sea = cv.into();
@@ -186,7 +206,9 @@ impl RadarState {
         // Try rain response ($N65)
         // Same logic: in manual mode, preserve commanded value
         if let Some(cv) = parse_rain_response(line) {
-            if self.rain.mode == "manual" && !cv.auto {
+            if self.pending_refresh {
+                self.rain = cv.into();
+            } else if self.rain.mode == "manual" && !cv.auto {
                 // Manual mode: keep commanded value
             } else {
                 self.rain = cv.into();
@@ -344,10 +366,7 @@ impl RadarState {
         );
 
         // Bird Mode
-        map.insert(
-            "birdMode".to_string(),
-            serde_json::json!(self.bird_mode),
-        );
+        map.insert("birdMode".to_string(), serde_json::json!(self.bird_mode));
 
         // Target Analyzer (Doppler)
         map.insert(
@@ -359,10 +378,7 @@ impl RadarState {
         );
 
         // Scan Speed
-        map.insert(
-            "scanSpeed".to_string(),
-            serde_json::json!(self.scan_speed),
-        );
+        map.insert("scanSpeed".to_string(), serde_json::json!(self.scan_speed));
 
         // Main Bang Suppression
         map.insert(
@@ -371,10 +387,7 @@ impl RadarState {
         );
 
         // TX Channel
-        map.insert(
-            "txChannel".to_string(),
-            serde_json::json!(self.tx_channel),
-        );
+        map.insert("txChannel".to_string(), serde_json::json!(self.tx_channel));
 
         // No-Transmit Zones
         map.insert(
@@ -551,7 +564,7 @@ mod tests {
         let requests = generate_state_requests();
 
         assert_eq!(requests.len(), 14); // Base + signal processing (2) + extended controls
-        // Base controls
+                                        // Base controls
         assert!(requests.contains(&"$R69\r\n".to_string()));
         assert!(requests.contains(&"$R62\r\n".to_string()));
         assert!(requests.contains(&"$R63\r\n".to_string()));
@@ -560,7 +573,7 @@ mod tests {
         // Signal processing - feature-specific queries
         assert!(requests.contains(&"$R67,0,3\r\n".to_string())); // Noise reduction
         assert!(requests.contains(&"$R67,0,0\r\n".to_string())); // Interference rejection
-        // Extended controls
+                                                                 // Extended controls
         assert!(requests.contains(&"$REE\r\n".to_string()));
         assert!(requests.contains(&"$RED\r\n".to_string()));
         assert!(requests.contains(&"$REF\r\n".to_string()));

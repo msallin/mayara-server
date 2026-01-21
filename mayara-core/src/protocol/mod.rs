@@ -15,11 +15,13 @@
 //!
 //! ```rust,no_run
 //! use mayara_core::protocol::furuno;
+//! use std::net::{Ipv4Addr, SocketAddrV4};
 //!
 //! // Parse discovery beacon
 //! let packet: &[u8] = &[/* beacon data */];
+//! let source = SocketAddrV4::new(Ipv4Addr::new(172, 31, 6, 1), 10010);
 //! if furuno::is_beacon_response(packet) {
-//!     let discovery = furuno::parse_beacon_response(packet, "172.31.6.1").unwrap();
+//!     let discovery = furuno::parse_beacon_response(packet, source).unwrap();
 //!     println!("Found: {}", discovery.name);
 //! }
 //!

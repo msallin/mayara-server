@@ -11,46 +11,34 @@ use crate::brand::raymarine::RaymarineModel;
 use crate::network::create_udp_multicast_listen;
 use crate::radar::range::Ranges;
 use crate::radar::trail::TrailBuffer;
-use crate::radar::{Legend, RadarError, RadarInfo, SharedRadars, Statistics, BYTE_LOOKUP_LENGTH};
+use crate::radar::{RadarError, RadarInfo, SharedRadars, Statistics};
 use crate::settings::{ControlUpdate, ControlValue};
 use crate::tokio_io::TokioIoProvider;
 use crate::Session;
 
-// Use unified controller from mayara-core
+// Use unified controller and spoke processor from mayara-core
 use mayara_core::controllers::RaymarineController;
+use mayara_core::protocol::raymarine::SpokeProcessor;
 
 use super::BaseModel;
+
+// Debug I/O wrapper for protocol analysis (dev feature only)
+#[cfg(feature = "dev")]
+use crate::debug::DebugIoProvider;
+
+/// Type alias for the I/O provider used by RaymarineReportReceiver.
+/// When dev feature is enabled, wraps TokioIoProvider with DebugIoProvider.
+#[cfg(feature = "dev")]
+type RaymarineIoProvider = DebugIoProvider<TokioIoProvider>;
+
+#[cfg(not(feature = "dev"))]
+type RaymarineIoProvider = TokioIoProvider;
 
 mod quantum;
 mod rd;
 
 // Every 5 seconds we ask the radar for reports, so we can update our controls
 const REPORT_REQUEST_INTERVAL: Duration = Duration::from_millis(5000);
-
-// The LookupSpokeEnum is an index into an array, really
-enum LookupDoppler {
-    Normal = 0,
-    Doppler = 1,
-}
-const LOOKUP_DOPPLER_LENGTH: usize = (LookupDoppler::Doppler as usize) + 1;
-
-type PixelToBlobType = [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH];
-
-pub(super) fn pixel_to_blob(legend: &Legend) -> PixelToBlobType {
-    let mut lookup: [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH] =
-        [[0; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH];
-    // Cannot use for() in const expr, so use while instead
-    for j in 0..BYTE_LOOKUP_LENGTH {
-        lookup[LookupDoppler::Normal as usize][j] = j as u8 / 2;
-        lookup[LookupDoppler::Doppler as usize][j] = match j {
-            0xff => legend.doppler_approaching,
-            0xfe => legend.doppler_receding,
-            _ => j as u8 / 2,
-        };
-    }
-    log::info!("Created pixel_to_blob from legend {:?}", legend);
-    lookup
-}
 
 #[derive(PartialEq, PartialOrd, Debug)]
 enum ReceiverState {
@@ -61,6 +49,8 @@ enum ReceiverState {
 }
 
 pub(crate) struct RaymarineReportReceiver {
+    #[allow(dead_code)]
+    session: Session, // Kept for debug_hub access
     replay: bool,
     info: RadarInfo,
     key: String,
@@ -71,8 +61,8 @@ pub(crate) struct RaymarineReportReceiver {
     base_model: Option<BaseModel>,
     /// Unified controller from mayara-core
     controller: Option<RaymarineController>,
-    /// I/O provider for the controller
-    io: TokioIoProvider,
+    /// I/O provider for the controller (wrapped with DebugIoProvider when dev feature enabled)
+    io: RaymarineIoProvider,
     control_update_rx: broadcast::Receiver<ControlUpdate>,
     report_request_timeout: Instant,
     reported_unknown: HashMap<u32, bool>,
@@ -81,7 +71,7 @@ pub(crate) struct RaymarineReportReceiver {
     statistics: Statistics,
     pixel_stats: [u32; 256],
     range_meters: u32,
-    pixel_to_blob: PixelToBlobType,
+    spoke_processor: SpokeProcessor,
     trails: TrailBuffer,
     prev_azimuth: u16,
 }
@@ -104,14 +94,49 @@ impl RaymarineReportReceiver {
 
         // Controller is created when we know the model (from info report)
         let controller = None;
+
+        // Create I/O provider - wrapped with DebugIoProvider when dev feature enabled
+        #[cfg(feature = "dev")]
+        let io = {
+            let inner = TokioIoProvider::new();
+            if let Some(hub) = session.debug_hub() {
+                log::debug!("{}: Using DebugIoProvider for protocol analysis", key);
+                DebugIoProvider::new(inner, hub, key.clone(), "raymarine".to_string())
+            } else {
+                // Fallback if debug_hub not initialized (shouldn't happen)
+                log::warn!(
+                    "{}: DebugHub not available, using plain TokioIoProvider",
+                    key
+                );
+                DebugIoProvider::new(
+                    inner,
+                    std::sync::Arc::new(crate::debug::DebugHub::new()),
+                    key.clone(),
+                    "raymarine".to_string(),
+                )
+            }
+        };
+
+        #[cfg(not(feature = "dev"))]
         let io = TokioIoProvider::new();
 
         let control_update_rx = info.controls.control_update_subscribe();
 
-        let pixel_to_blob = pixel_to_blob(&info.legend);
+        // Use core's SpokeProcessor for Raymarine spoke processing
+        let spoke_processor = SpokeProcessor::new(
+            info.legend.doppler_approaching,
+            info.legend.doppler_receding,
+        );
+        log::debug!(
+            "{}: Created SpokeProcessor with doppler approaching={}, receding={}",
+            key,
+            info.legend.doppler_approaching,
+            info.legend.doppler_receding
+        );
         let trails = TrailBuffer::new(session.clone(), &info);
 
         RaymarineReportReceiver {
+            session,
             replay,
             key,
             info,
@@ -128,7 +153,7 @@ impl RaymarineReportReceiver {
             statistics: Statistics::new(),
             pixel_stats: [0; 256],
             range_meters: 0,
-            pixel_to_blob,
+            spoke_processor,
             trails,
             prev_azimuth: 0,
         }
@@ -233,7 +258,11 @@ impl RaymarineReportReceiver {
     async fn send_control_to_radar(&mut self, cv: &ControlValue) -> Result<(), RadarError> {
         let controller = match &mut self.controller {
             Some(c) => c,
-            None => return Err(RadarError::CannotSetControlType("Controller not initialized".to_string())),
+            None => {
+                return Err(RadarError::CannotSetControlType(
+                    "Controller not initialized".to_string(),
+                ))
+            }
         };
 
         let value: f32 = cv
@@ -244,7 +273,14 @@ impl RaymarineReportReceiver {
         let enabled = cv.enabled.unwrap_or(false);
         let v = Self::scale_100_to_byte(value);
 
-        log::debug!("{}: set_control {} = {} auto={} enabled={}", self.key, cv.id, value, auto, enabled);
+        log::debug!(
+            "{}: set_control {} = {} auto={} enabled={}",
+            self.key,
+            cv.id,
+            value,
+            auto,
+            enabled
+        );
 
         match cv.id.as_str() {
             "power" => {
@@ -360,13 +396,8 @@ impl RaymarineReportReceiver {
             }
         }
     }
-    fn set<T>(
-        &mut self,
-        control_id: &str,
-        value: T,
-        auto: Option<bool>,
-        enabled: Option<bool>,
-    ) where
+    fn set<T>(&mut self, control_id: &str, value: T, auto: Option<bool>, enabled: Option<bool>)
+    where
         f32: From<T>,
     {
         match self

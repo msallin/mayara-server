@@ -9,10 +9,17 @@
 //! - WASM has no async runtime
 //! - Native code can easily adapt async to poll with `try_recv`/`try_send`
 //!
+//! # Type Safety
+//!
+//! All address parameters use Rust's standard library types (`Ipv4Addr`, `SocketAddrV4`)
+//! instead of strings. This ensures malformed addresses are caught at compile time
+//! rather than failing silently at runtime.
+//!
 //! # Example
 //!
 //! ```rust,ignore
-//! use mayara_core::io::{IoProvider, UdpSocketOps, IoError};
+//! use mayara_core::io::{IoProvider, IoError};
+//! use std::net::{Ipv4Addr, SocketAddrV4};
 //!
 //! fn discover_radars<I: IoProvider>(io: &mut I) -> Vec<Discovery> {
 //!     let socket = io.udp_create().unwrap();
@@ -21,14 +28,15 @@
 //!
 //!     // Poll for incoming data
 //!     let mut buf = [0u8; 1024];
-//!     if let Some((len, addr, port)) = io.udp_recv_from(&socket, &mut buf) {
-//!         // Process beacon...
+//!     if let Some((len, addr)) = io.udp_recv_from(&socket, &mut buf) {
+//!         // Process beacon from addr (SocketAddrV4)
 //!     }
 //!     vec![]
 //! }
 //! ```
 
 use core::fmt;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 // =============================================================================
 // Error Types
@@ -136,16 +144,18 @@ pub trait IoProvider {
     /// Enable or disable broadcast mode on a UDP socket.
     ///
     /// Must be called before sending to broadcast addresses.
-    fn udp_set_broadcast(&mut self, socket: &UdpSocketHandle, enabled: bool) -> Result<(), IoError>;
+    fn udp_set_broadcast(&mut self, socket: &UdpSocketHandle, enabled: bool)
+        -> Result<(), IoError>;
 
     /// Join a multicast group.
     ///
-    /// The `interface` parameter is the local interface address to use (empty for default).
+    /// - `group`: The multicast group address to join (e.g., `Ipv4Addr::new(239, 255, 0, 2)`)
+    /// - `interface`: The local interface address to bind to (use `Ipv4Addr::UNSPECIFIED` for default)
     fn udp_join_multicast(
         &mut self,
         socket: &UdpSocketHandle,
-        group: &str,
-        interface: &str,
+        group: Ipv4Addr,
+        interface: Ipv4Addr,
     ) -> Result<(), IoError>;
 
     /// Send data to a specific address.
@@ -155,22 +165,20 @@ pub trait IoProvider {
         &mut self,
         socket: &UdpSocketHandle,
         data: &[u8],
-        addr: &str,
-        port: u16,
+        addr: SocketAddrV4,
     ) -> Result<usize, IoError>;
 
     /// Receive data from a UDP socket (non-blocking).
     ///
     /// Returns `None` if no data is available.
-    /// Returns `Some((len, addr, port))` on success where:
+    /// Returns `Some((len, addr))` on success where:
     /// - `len` is the number of bytes received (written to `buf`)
-    /// - `addr` is the sender's IP address as a string
-    /// - `port` is the sender's port number
+    /// - `addr` is the sender's socket address (IP + port)
     fn udp_recv_from(
         &mut self,
         socket: &UdpSocketHandle,
         buf: &mut [u8],
-    ) -> Option<(usize, String, u16)>;
+    ) -> Option<(usize, SocketAddrV4)>;
 
     /// Check if data is available to receive on a UDP socket.
     fn udp_pending(&self, socket: &UdpSocketHandle) -> i32;
@@ -184,7 +192,11 @@ pub trait IoProvider {
     /// correct interface in multi-NIC setups. Call this before `udp_send_to`.
     ///
     /// Default implementation does nothing (uses OS routing).
-    fn udp_bind_interface(&mut self, _socket: &UdpSocketHandle, _interface: &str) -> Result<(), IoError> {
+    fn udp_bind_interface(
+        &mut self,
+        _socket: &UdpSocketHandle,
+        _interface: Ipv4Addr,
+    ) -> Result<(), IoError> {
         Ok(())
     }
 
@@ -202,8 +214,7 @@ pub trait IoProvider {
     fn tcp_connect(
         &mut self,
         socket: &TcpSocketHandle,
-        addr: &str,
-        port: u16,
+        addr: SocketAddrV4,
     ) -> Result<(), IoError>;
 
     /// Check if a TCP socket is connected.
@@ -283,9 +294,8 @@ pub trait IoProviderExt: IoProvider {
     /// Receive a line as a String from TCP.
     fn tcp_recv_line_string(&mut self, socket: &TcpSocketHandle) -> Option<String> {
         let mut buf = [0u8; 1024];
-        self.tcp_recv_line(socket, &mut buf).map(|len| {
-            String::from_utf8_lossy(&buf[..len]).to_string()
-        })
+        self.tcp_recv_line(socket, &mut buf)
+            .map(|len| String::from_utf8_lossy(&buf[..len]).to_string())
     }
 }
 

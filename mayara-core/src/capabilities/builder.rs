@@ -8,7 +8,7 @@ use crate::radar::RadarDiscovery;
 use super::controls::*;
 use super::{
     CapabilityManifest, Characteristics, ConstraintCondition, ConstraintEffect, ConstraintType,
-    ControlConstraint, ControlDefinition, SupportedFeature,
+    ControlConstraint, ControlDefinition, ControlId, SupportedFeature,
 };
 
 /// Build a capability manifest for a discovered radar
@@ -46,6 +46,8 @@ pub fn build_capabilities(
             supported_ranges: model_info.range_table.to_vec(),
             spokes_per_revolution: model_info.spokes_per_revolution,
             max_spoke_length: model_info.max_spoke_length,
+            pixel_values: discovery.pixel_values,
+            legend: crate::radar::generate_legend(discovery.pixel_values),
             has_doppler: model_info.has_doppler,
             has_dual_range: model_info.has_dual_range,
             max_dual_range: model_info.max_dual_range,
@@ -85,6 +87,8 @@ pub fn build_capabilities_from_model(
             supported_ranges: model_info.range_table.to_vec(),
             spokes_per_revolution: model_info.spokes_per_revolution,
             max_spoke_length: model_info.max_spoke_length,
+            pixel_values: 64, // Default to 6-bit radar data
+            legend: crate::radar::generate_legend(64),
             has_doppler: model_info.has_doppler,
             has_dual_range: model_info.has_dual_range,
             max_dual_range: model_info.max_dual_range,
@@ -108,6 +112,7 @@ pub fn build_capabilities_from_model_with_spokes(
     supported_features: Vec<SupportedFeature>,
     spokes_per_revolution: u16,
     max_spoke_length: u16,
+    pixel_values: u8,
 ) -> CapabilityManifest {
     build_capabilities_from_model_with_key(
         model_info,
@@ -116,6 +121,7 @@ pub fn build_capabilities_from_model_with_spokes(
         supported_features,
         spokes_per_revolution,
         max_spoke_length,
+        pixel_values,
     )
 }
 
@@ -129,6 +135,7 @@ pub fn build_capabilities_from_model_with_key(
     supported_features: Vec<SupportedFeature>,
     spokes_per_revolution: u16,
     max_spoke_length: u16,
+    pixel_values: u8,
 ) -> CapabilityManifest {
     CapabilityManifest {
         id: radar_id.to_string(),
@@ -145,6 +152,8 @@ pub fn build_capabilities_from_model_with_key(
             supported_ranges: model_info.range_table.to_vec(),
             spokes_per_revolution,
             max_spoke_length,
+            pixel_values,
+            legend: crate::radar::generate_legend(pixel_values),
             has_doppler: model_info.has_doppler,
             has_dual_range: model_info.has_dual_range,
             max_dual_range: model_info.max_dual_range,
@@ -188,21 +197,21 @@ fn build_controls(model: &ModelInfo, has_serial_number: bool) -> Vec<ControlDefi
     // in capabilities so clients can see the schema, but they won't appear in /state
     // since they're configuration values stored locally, not queried from the radar.
     for control_id in model.controls {
-        if *control_id == "noTransmitZones" {
+        if *control_id == ControlId::NoTransmitZones {
             if let Some(def) =
-                get_extended_control_with_zones(control_id, model.no_transmit_zone_count)
+                get_extended_control_with_zones(control_id.as_ref(), model.no_transmit_zone_count)
             {
                 controls.push(def);
             }
-        } else if *control_id == "interferenceRejection"
+        } else if *control_id == ControlId::InterferenceRejection
             && model.brand == crate::Brand::Furuno
         {
             // Furuno has simple on/off interference rejection
             controls.push(control_interference_rejection_furuno());
-        } else if *control_id == "scanSpeed" && model.brand == crate::Brand::Furuno {
+        } else if *control_id == ControlId::ScanSpeed && model.brand == crate::Brand::Furuno {
             // Furuno uses 0=24RPM, 2=Auto
             controls.push(control_scan_speed_furuno());
-        } else if let Some(def) = get_extended_control(control_id) {
+        } else if let Some(def) = get_extended_control(control_id.as_ref()) {
             controls.push(def);
         }
     }
@@ -216,13 +225,18 @@ fn build_constraints(model: &ModelInfo) -> Vec<ControlConstraint> {
     let mut constraints = vec![];
 
     // If preset mode is available, add constraints for controls it locks
-    if model.controls.contains(&"presetMode") {
-        let locked_controls = ["gain", "sea", "rain", "interferenceRejection"];
+    if model.controls.contains(&ControlId::PresetMode) {
+        let locked_controls = [
+            ControlId::Gain,
+            ControlId::Sea,
+            ControlId::Rain,
+            ControlId::InterferenceRejection,
+        ];
 
         for control_id in locked_controls {
             // Only add constraint if the control exists on this model
-            if control_id == "interferenceRejection"
-                && !model.controls.contains(&"interferenceRejection")
+            if control_id == ControlId::InterferenceRejection
+                && !model.controls.contains(&ControlId::InterferenceRejection)
             {
                 continue;
             }
@@ -231,7 +245,7 @@ fn build_constraints(model: &ModelInfo) -> Vec<ControlConstraint> {
                 control_id: control_id.to_string(),
                 condition: ConstraintCondition {
                     condition_type: ConstraintType::ReadOnlyWhen,
-                    depends_on: "presetMode".into(),
+                    depends_on: ControlId::PresetMode.to_string(),
                     operator: "!=".into(),
                     value: "custom".into(),
                 },
@@ -246,14 +260,51 @@ fn build_constraints(model: &ModelInfo) -> Vec<ControlConstraint> {
     }
 
     // Doppler mode constraint: only available when radar has Doppler
-    if model.has_doppler && model.controls.contains(&"dopplerMode") {
+    if model.has_doppler && model.controls.contains(&ControlId::DopplerMode) {
         // No additional constraint needed - presence in controls indicates availability
     }
 
-    // Dual range constraint: range limited in dual-range mode for Furuno
+    // Dual range constraint: range limited in dual-range mode
+    // When dual-range is active, the secondary screen range is limited to max_dual_range
     if model.has_dual_range && model.max_dual_range > 0 {
-        // Could add constraint that secondary screen range is limited
-        // This would be a "restricted_when" constraint
+        constraints.push(ControlConstraint {
+            control_id: ControlId::Range.to_string(),
+            condition: ConstraintCondition {
+                condition_type: ConstraintType::RestrictedWhen,
+                depends_on: "dualRangeActive".into(), // Virtual control for dual-range state
+                operator: "==".into(),
+                value: "true".into(),
+            },
+            effect: ConstraintEffect {
+                disabled: None,
+                read_only: None,
+                allowed_values: None, // Would need API extension for max_value
+                reason: Some(format!(
+                    "In dual-range mode, range limited to {} meters",
+                    model.max_dual_range
+                )),
+            },
+        });
+    }
+
+    // Scan speed constraint: some speeds only available at certain ranges
+    // Higher RPM is only possible at shorter ranges (less data processing)
+    if model.controls.contains(&ControlId::ScanSpeed) {
+        constraints.push(ControlConstraint {
+            control_id: ControlId::ScanSpeed.to_string(),
+            condition: ConstraintCondition {
+                condition_type: ConstraintType::RestrictedWhen,
+                depends_on: ControlId::Range.to_string(),
+                operator: ">".into(),
+                value: "12000".into(), // 12km / ~6.5 NM threshold
+            },
+            effect: ConstraintEffect {
+                disabled: None,
+                read_only: None,
+                allowed_values: None, // Would list available speeds for this range
+                reason: Some("Higher rotation speeds not available at long ranges".into()),
+            },
+        });
     }
 
     constraints
@@ -266,13 +317,12 @@ mod tests {
 
     #[test]
     fn test_build_capabilities_furuno() {
+        use std::net::{Ipv4Addr, SocketAddrV4};
         let discovery = RadarDiscovery {
             brand: Brand::Furuno,
             model: Some("DRS4D-NXT".into()),
             name: "Test Radar".into(),
-            address: "192.168.1.100:10010".into(),
-            data_port: 10024,
-            command_port: 10025,
+            address: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 100), 10010),
             spokes_per_revolution: 2048,
             max_spoke_len: 512,
             pixel_values: 64,
@@ -297,13 +347,12 @@ mod tests {
 
     #[test]
     fn test_build_capabilities_with_features() {
+        use std::net::{Ipv4Addr, SocketAddrV4};
         let discovery = RadarDiscovery {
             brand: Brand::Furuno,
             model: Some("DRS4D-NXT".into()),
             name: "Test Radar".into(),
-            address: "192.168.1.100:10010".into(),
-            data_port: 10024,
-            command_port: 10025,
+            address: SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 100), 10010),
             spokes_per_revolution: 2048,
             max_spoke_len: 512,
             pixel_values: 64,
@@ -323,6 +372,8 @@ mod tests {
 
         assert_eq!(caps.supported_features.len(), 2);
         assert!(caps.supported_features.contains(&SupportedFeature::Arpa));
-        assert!(caps.supported_features.contains(&SupportedFeature::GuardZones));
+        assert!(caps
+            .supported_features
+            .contains(&SupportedFeature::GuardZones));
     }
 }

@@ -4,92 +4,92 @@
 //! (Simrad, Lowrance, B&G branded radars).
 
 use super::ModelInfo;
+use crate::capabilities::ControlId;
 use crate::Brand;
 
 /// Range table for HALO series (in meters)
+/// Matches B&G chart plotter range steps for consistent UX
+/// 1 NM = 1852 meters
 static RANGE_TABLE_HALO: &[u32] = &[
-    50,     // ~1/32 NM
-    75,
-    100,
-    125,    // 1/16 NM
-    250,    // 1/8 NM
-    500,    // 1/4 NM
-    750,    // 3/8 NM
-    1000,   // ~1/2 NM
-    1500,   // 3/4 NM
-    2000,   // 1 NM
-    3000,   // 1.5 NM
-    4000,   // 2 NM
-    6000,   // 3 NM
-    8000,   // 4 NM
-    12000,  // 6 NM
-    16000,  // 8 NM
-    24000,  // 12 NM
-    36000,  // 18 NM
-    48000,  // 24 NM
-    64000,  // 32 NM
-    72000,  // 36 NM
-    96000,  // 48 NM
+    50,    // 50m
+    75,    // 75m
+    100,   // 100m
+    231,   // 1/8 NM
+    463,   // 1/4 NM
+    926,   // 1/2 NM
+    1389,  // 3/4 NM
+    1852,  // 1 NM
+    2778,  // 1.5 NM
+    3704,  // 2 NM
+    5556,  // 3 NM
+    7408,  // 4 NM
+    11112, // 6 NM
+    14816, // 8 NM
+    22224, // 12 NM
+    29632, // 16 NM
+    44448, // 24 NM
+    66672, // 36 NM
+    88896, // 48 NM
 ];
 
 /// Range table for 4G/3G series (in meters)
+/// Matches B&G chart plotter range steps for consistent UX
+/// 1 NM = 1852 meters
 static RANGE_TABLE_4G: &[u32] = &[
-    50,
-    75,
-    100,
-    125,
-    250,
-    500,
-    750,
-    1000,
-    1500,
-    2000,
-    3000,
-    4000,
-    6000,
-    8000,
-    12000,
-    16000,
-    24000,
-    36000,
-    48000,
-    64000,
+    50,    // 50m
+    75,    // 75m
+    100,   // 100m
+    231,   // 1/8 NM
+    463,   // 1/4 NM
+    926,   // 1/2 NM
+    1389,  // 3/4 NM
+    1852,  // 1 NM
+    2778,  // 1.5 NM
+    3704,  // 2 NM
+    5556,  // 3 NM
+    7408,  // 4 NM
+    11112, // 6 NM
+    14816, // 8 NM
+    22224, // 12 NM
+    29632, // 16 NM
+    44448, // 24 NM
+    66672, // 36 NM
 ];
 
 /// Extended controls for HALO series
-static CONTROLS_HALO: &[&str] = &[
-    "presetMode",           // Harbor/Offshore/Weather/Custom
-    "dopplerMode",          // VelocityTrack
-    "dopplerSpeed",         // VelocityTrack speed threshold
-    "targetSeparation",
-    "targetExpansion",
-    "targetBoost",
-    "seaState",
-    "noiseRejection",
-    "interferenceRejection",
-    "localInterferenceRejection",
-    "sidelobeSuppression",
-    "birdMode",
-    "noTransmitZones",
-    "bearingAlignment",
-    "antennaHeight",
-    "scanSpeed",
-    "accentLight",          // Pedestal lighting
+static CONTROLS_HALO: &[ControlId] = &[
+    ControlId::PresetMode,   // Harbor/Offshore/Weather/Custom
+    ControlId::DopplerMode,  // VelocityTrack
+    ControlId::DopplerSpeed, // VelocityTrack speed threshold
+    ControlId::TargetSeparation,
+    ControlId::TargetExpansion,
+    ControlId::TargetBoost,
+    ControlId::SeaState,
+    ControlId::NoiseRejection,
+    ControlId::InterferenceRejection,
+    ControlId::LocalInterferenceRejection,
+    ControlId::SidelobeSuppression,
+    ControlId::BirdMode,
+    ControlId::NoTransmitZones,
+    ControlId::BearingAlignment,
+    ControlId::AntennaHeight,
+    ControlId::ScanSpeed,
+    ControlId::AccentLight, // Pedestal lighting
 ];
 
 /// Extended controls for 4G/3G series
-static CONTROLS_4G: &[&str] = &[
-    "presetMode",
-    "targetSeparation",
-    "targetExpansion",
-    "targetBoost",
-    "seaState",
-    "noiseRejection",
-    "interferenceRejection",
-    "sidelobeSuppression",
-    "noTransmitZones",
-    "bearingAlignment",
-    "antennaHeight",
+/// NOTE: NoTransmitZones NOT supported on 4G/3G (no_transmit_zone_count=0)
+static CONTROLS_4G: &[ControlId] = &[
+    ControlId::PresetMode,
+    ControlId::TargetSeparation,
+    ControlId::TargetExpansion,
+    ControlId::TargetBoost,
+    ControlId::SeaState,
+    ControlId::NoiseRejection,
+    ControlId::InterferenceRejection,
+    ControlId::SidelobeSuppression,
+    ControlId::BearingAlignment,
+    ControlId::AntennaHeight,
 ];
 
 /// All known Navico radar models
@@ -101,7 +101,7 @@ pub static MODELS: &[ModelInfo] = &[
         model: "HALO",
         family: "HALO",
         display_name: "Navico HALO",
-        max_range: 74080, // Conservative max range
+        max_range: 48 * 1852, // Conservative max range
         min_range: 50,
         range_table: RANGE_TABLE_HALO,
         spokes_per_revolution: 2048,
@@ -117,7 +117,7 @@ pub static MODELS: &[ModelInfo] = &[
         model: "HALO20+",
         family: "HALO",
         display_name: "Navico HALO20+",
-        max_range: 72000,
+        max_range: 36 * 1852,
         min_range: 50,
         range_table: RANGE_TABLE_HALO,
         spokes_per_revolution: 2048,
@@ -133,7 +133,7 @@ pub static MODELS: &[ModelInfo] = &[
         model: "HALO24",
         family: "HALO",
         display_name: "Navico HALO24",
-        max_range: 96000,
+        max_range: 48 * 1852,
         min_range: 50,
         range_table: RANGE_TABLE_HALO,
         spokes_per_revolution: 2048,
@@ -192,8 +192,7 @@ pub static MODELS: &[ModelInfo] = &[
         no_transmit_zone_count: 2,
         controls: CONTROLS_HALO,
     },
-
-    // 4G Series
+    // 4G Series (no transmit zones not supported on 4G)
     ModelInfo {
         brand: Brand::Navico,
         model: "4G",
@@ -207,11 +206,10 @@ pub static MODELS: &[ModelInfo] = &[
         has_doppler: false,
         has_dual_range: false,
         max_dual_range: 0,
-        no_transmit_zone_count: 2,
+        no_transmit_zone_count: 0,
         controls: CONTROLS_4G,
     },
-
-    // 3G Series
+    // 3G Series (no transmit zones not supported on 3G)
     ModelInfo {
         brand: Brand::Navico,
         model: "3G",
@@ -225,11 +223,10 @@ pub static MODELS: &[ModelInfo] = &[
         has_doppler: false,
         has_dual_range: false,
         max_dual_range: 0,
-        no_transmit_zone_count: 2,
+        no_transmit_zone_count: 0,
         controls: CONTROLS_4G,
     },
-
-    // BR24
+    // BR24 (no transmit zones not supported on BR24)
     ModelInfo {
         brand: Brand::Navico,
         model: "BR24",
@@ -243,8 +240,11 @@ pub static MODELS: &[ModelInfo] = &[
         has_doppler: false,
         has_dual_range: false,
         max_dual_range: 0,
-        no_transmit_zone_count: 2,
-        controls: &["interferenceRejection", "bearingAlignment"],
+        no_transmit_zone_count: 0,
+        controls: &[
+            ControlId::InterferenceRejection,
+            ControlId::BearingAlignment,
+        ],
     },
 ];
 
@@ -262,13 +262,13 @@ mod tests {
         let model = get_model("HALO24").unwrap();
         assert_eq!(model.family, "HALO");
         assert!(model.has_doppler);
-        assert!(model.controls.contains(&"dopplerMode"));
+        assert!(model.controls.contains(&ControlId::DopplerMode));
     }
 
     #[test]
     fn test_4g() {
         let model = get_model("4G").unwrap();
         assert!(!model.has_doppler);
-        assert!(model.controls.contains(&"presetMode"));
+        assert!(model.controls.contains(&ControlId::PresetMode));
     }
 }

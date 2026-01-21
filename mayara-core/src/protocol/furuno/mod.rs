@@ -7,11 +7,11 @@ pub mod command;
 pub mod dispatch;
 pub mod report;
 
-use serde::Deserialize;
-use crate::error::ParseError;
-use crate::Brand;
-use crate::radar::RadarDiscovery;
 use super::c_string;
+use crate::error::ParseError;
+use crate::radar::RadarDiscovery;
+use crate::{Brand, BrandStatus, IoProvider, UdpSocketHandle};
+use serde::Deserialize;
 
 // =============================================================================
 // Constants
@@ -23,8 +23,13 @@ pub const SPOKES_PER_REVOLUTION: u16 = 8192;
 /// Maximum spoke length in pixels
 pub const MAX_SPOKE_LEN: u16 = 884;
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 /// Base port for Furuno radar communication
 pub const BASE_PORT: u16 = 10000;
+
+/// Furuno beacon/announce broadcast address
+pub const BEACON_BROADCAST: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 255);
 
 /// Port for beacon discovery (broadcast)
 pub const BEACON_PORT: u16 = BASE_PORT + 10;
@@ -33,10 +38,14 @@ pub const BEACON_PORT: u16 = BASE_PORT + 10;
 pub const DATA_PORT: u16 = BASE_PORT + 24;
 
 /// Broadcast address for Furuno radars
-pub const BROADCAST_ADDR: &str = "172.31.255.255";
+pub const BROADCAST_ADDR: Ipv4Addr = Ipv4Addr::new(172, 31, 255, 255);
 
 /// Multicast address for spoke data
-pub const DATA_MULTICAST_ADDR: &str = "239.255.0.2";
+pub const DATA_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 0, 2);
+
+// Send Furuno announce periodically (every ~2 seconds at 10 polls/sec)
+// Note: ANNOUNCE_INTERVAL of 20 * 100ms poll interval = 2 seconds
+pub(crate) const ANNOUNCE_INTERVAL: u64 = 20;
 
 // =============================================================================
 // Network Requirements
@@ -75,28 +84,23 @@ pub fn network_requirement_message() -> &'static str {
 
 /// Beacon request packet - send this to discover Furuno radars
 pub const REQUEST_BEACON_PACKET: [u8; 16] = [
-    0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-    0x01, 0x01, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00,
 ];
 
 /// Model info request packet
 pub const REQUEST_MODEL_PACKET: [u8; 16] = [
-    0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-    0x14, 0x01, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x14, 0x01, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00,
 ];
 
 /// Announce presence packet
 pub const ANNOUNCE_PACKET: [u8; 32] = [
-    0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x01, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00,
-    b'M', b'A', b'Y', b'A', b'R', b'A', 0x00, 0x00,
-    0x01, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x12,
+    0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00,
+    b'M', b'A', b'Y', b'A', b'R', b'A', 0x00, 0x00, 0x01, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x12,
 ];
 
 /// Expected header for radar beacon response
 pub const BEACON_RESPONSE_HEADER: [u8; 11] = [
-    0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x01, 0x00,
+    0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
 ];
 
 // =============================================================================
@@ -213,9 +217,7 @@ pub struct ModelReport {
 
 /// Check if a packet is a valid Furuno beacon response
 pub fn is_beacon_response(data: &[u8]) -> bool {
-    data.len() >= 32
-        && data[0..11] == BEACON_RESPONSE_HEADER
-        && data[16] == b'R'
+    data.len() >= 32 && data[0..11] == BEACON_RESPONSE_HEADER && data[16] == b'R'
 }
 
 /// Check if a packet is a model report (170 bytes)
@@ -227,12 +229,12 @@ pub fn is_model_report(data: &[u8]) -> bool {
 ///
 /// # Arguments
 /// * `data` - Raw packet bytes (at least 32 bytes)
-/// * `source_addr` - Source IP address as string (for RadarDiscovery)
+/// * `source_addr` - Source IP address (for RadarDiscovery)
 ///
 /// # Returns
 /// * `Ok(RadarDiscovery)` with parsed radar information
 /// * `Err(ParseError)` if packet is invalid
-pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDiscovery, ParseError> {
+pub fn parse_beacon_response(data: &[u8], source_addr: SocketAddrV4) -> Result<RadarDiscovery, ParseError> {
     // Check minimum length
     if data.len() < 32 {
         return Err(ParseError::TooShort {
@@ -270,23 +272,20 @@ pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDisc
     }
 
     // Extract name
-    let name = c_string(&response.name)
-        .ok_or(ParseError::InvalidString)?;
+    let name = c_string(&response.name).ok_or(ParseError::InvalidString)?;
 
     Ok(RadarDiscovery {
         brand: Brand::Furuno,
         model: None, // Model comes from UDP model report
         name,
-        address: source_addr.to_string(),
-        data_port: DATA_PORT,
-        command_port: 0, // Set after TCP login
+        address: source_addr,
         spokes_per_revolution: SPOKES_PER_REVOLUTION,
         max_spoke_len: MAX_SPOKE_LEN,
         pixel_values: 64,
         serial_number: None,
         nic_address: None, // Set by locator
         suffix: None,
-        data_address: None,
+        data_address: Some(SocketAddrV4::new(DATA_MULTICAST_ADDR, DATA_PORT)),
         report_address: None,
         send_address: None,
     })
@@ -406,7 +405,10 @@ pub fn parse_spoke_header(data: &[u8]) -> Result<SpokeFrameHeader, ParseError> {
 /// Parse all spokes from a frame
 ///
 /// Returns parsed spokes and updates the previous spoke buffer for delta encoding.
-pub fn parse_spoke_frame(data: &[u8], prev_spoke: &mut Vec<u8>) -> Result<Vec<ParsedSpoke>, ParseError> {
+pub fn parse_spoke_frame(
+    data: &[u8],
+    prev_spoke: &mut Vec<u8>,
+) -> Result<Vec<ParsedSpoke>, ParseError> {
     let header = parse_spoke_header(data)?;
     let mut spokes = Vec::with_capacity(header.sweep_count as usize);
     let sweep_len = header.sweep_len as usize;
@@ -583,35 +585,126 @@ fn decode_encoding_3(data: &[u8], prev_spoke: &[u8], sweep_len: usize) -> (Vec<u
 /// Index 21 = minimum (1/16 nm), Index 15 = maximum (48 nm), Index 19 = 36 nm (out of sequence)
 /// 1 nautical mile = 1852 meters
 pub const RANGE_TABLE: [u32; 24] = [
-    231,    // 0: 1/8 nm
-    463,    // 1: 1/4 nm
-    926,    // 2: 1/2 nm
-    1389,   // 3: 3/4 nm
-    1852,   // 4: 1 nm
-    2778,   // 5: 1.5 nm
-    3704,   // 6: 2 nm
-    5556,   // 7: 3 nm
-    7408,   // 8: 4 nm
-    11112,  // 9: 6 nm
-    14816,  // 10: 8 nm
-    22224,  // 11: 12 nm
-    29632,  // 12: 16 nm
-    44448,  // 13: 24 nm
-    59264,  // 14: 32 nm
-    88896,  // 15: 48 nm (maximum)
-    0,      // 16: unused
-    0,      // 17: unused
-    0,      // 18: unused
-    66672,  // 19: 36 nm (out of sequence!)
-    0,      // 20: unused
-    116,    // 21: 1/16 nm (minimum)
-    0,      // 22: unused
-    0,      // 23: unused
+    231,   // 0: 1/8 nm
+    463,   // 1: 1/4 nm
+    926,   // 2: 1/2 nm
+    1389,  // 3: 3/4 nm
+    1852,  // 4: 1 nm
+    2778,  // 5: 1.5 nm
+    3704,  // 6: 2 nm
+    5556,  // 7: 3 nm
+    7408,  // 8: 4 nm
+    11112, // 9: 6 nm
+    14816, // 10: 8 nm
+    22224, // 11: 12 nm
+    29632, // 12: 16 nm
+    44448, // 13: 24 nm
+    59264, // 14: 32 nm
+    88896, // 15: 48 nm (maximum)
+    0,     // 16: unused
+    0,     // 17: unused
+    0,     // 18: unused
+    66672, // 19: 36 nm (out of sequence!)
+    0,     // 20: unused
+    116,   // 21: 1/16 nm (minimum)
+    0,     // 22: unused
+    0,     // 23: unused
 ];
 
 /// Get range in meters from range index
 pub fn get_range_meters(range_index: u8) -> u32 {
     RANGE_TABLE.get(range_index as usize).copied().unwrap_or(0)
+}
+
+///
+/// Callback from the Locator to poll for brand specific beacon packets
+///
+pub(crate) fn poll_beacon_packets(
+    brand_status: &BrandStatus,
+    poll_count: u64,
+    io: &mut dyn IoProvider,
+    buf: &mut [u8],
+    discoveries: &mut Vec<RadarDiscovery>,
+    model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
+) {
+    if let Some(socket) = &brand_status.socket {
+        if poll_count % ANNOUNCE_INTERVAL == 0 {
+            send_furuno_announce(socket, io);
+        }
+
+        while let Some((len, addr)) = io.udp_recv_from(socket, buf) {
+            let data = &buf[..len];
+
+            if is_beacon_response(data) {
+                match parse_beacon_response(data, addr) {
+                    Ok(discovery) => {
+                        io.debug(&format!(
+                            "Furuno beacon from {}: {:?}",
+                            addr, discovery.model
+                        ));
+                        discoveries.push(discovery);
+                    }
+                    Err(e) => {
+                        io.debug(&format!("Furuno beacon parse error: {}", e));
+                    }
+                }
+            } else if is_model_report(data) {
+                // UDP model reports (170 bytes) are often empty/unreliable
+                // Model detection now uses TCP $N96 command instead (see FurunoController)
+                match parse_model_report(data) {
+                    Ok((model, serial)) => {
+                        io.debug(&format!(
+                            "Furuno UDP model report from {}: model={:?}, serial={:?}",
+                            addr, model, serial
+                        ));
+                        if model.is_some() || serial.is_some() {
+                            model_reports.push((addr.to_string(), model, serial));
+                        }
+                    }
+                    Err(e) => {
+                        io.debug(&format!(
+                            "Furuno UDP model report parse error from {}: {}",
+                            addr, e
+                        ));
+                    }
+                }
+            } else {
+                // Log unexpected packet sizes to help debug
+                io.debug(&format!(
+                    "Furuno UDP packet from {}: {} bytes (not beacon or model)",
+                    addr, len
+                ));
+            }
+        }
+    }
+}
+
+/// Send Furuno announce and beacon request packets
+///
+/// This should be called before attempting TCP connections to Furuno radars,
+/// as the radar only accepts TCP from clients that have recently announced.
+pub fn send_furuno_announce(socket: &UdpSocketHandle, io: &mut dyn IoProvider) {
+    let dest = SocketAddrV4::new(BEACON_BROADCAST, BEACON_PORT);
+
+    // Send beacon request to broadcast
+    if let Err(e) = io.udp_send_to(socket, &REQUEST_BEACON_PACKET, dest) {
+        io.debug(&format!("Failed to send Furuno beacon request: {}", e));
+    }
+
+    // Send model request to broadcast
+    if let Err(e) = io.udp_send_to(socket, &REQUEST_MODEL_PACKET, dest) {
+        io.debug(&format!("Failed to send Furuno model request: {}", e));
+    }
+
+    // Send announce packet - this tells the radar we exist
+    if let Err(e) = io.udp_send_to(socket, &ANNOUNCE_PACKET, dest) {
+        io.debug(&format!("Failed to send Furuno announce: {}", e));
+    } else {
+        io.debug(&format!("Sent Furuno announce to {}", dest));
+    }
+
+    // Note: UDP model requests (0x14) are unreliable - the response often has empty model/serial fields
+    // Model detection is done via TCP $N96 command in FurunoController instead
 }
 
 // =============================================================================
@@ -624,9 +717,8 @@ mod tests {
 
     // Real packet from DRS4D-NXT
     const SAMPLE_BEACON: [u8; 32] = [
-        0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x01, 0x00, 0x18, 0x01, 0x00, 0x00, 0x00,
-        0x52, 0x44, 0x30, 0x30, 0x33, 0x32, 0x31, 0x32,  // "RD003212"
+        0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x18, 0x01, 0x00, 0x00,
+        0x00, 0x52, 0x44, 0x30, 0x30, 0x33, 0x32, 0x31, 0x32, // "RD003212"
         0x01, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00, 0x12,
     ];
 
@@ -638,7 +730,9 @@ mod tests {
 
     #[test]
     fn test_parse_beacon_response() {
-        let result = parse_beacon_response(&SAMPLE_BEACON, "172.31.6.1");
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        let source = SocketAddrV4::new(Ipv4Addr::new(172, 31, 6, 1), BEACON_PORT);
+        let result = parse_beacon_response(&SAMPLE_BEACON, source);
         assert!(result.is_ok());
 
         let discovery = result.unwrap();
@@ -650,16 +744,20 @@ mod tests {
 
     #[test]
     fn test_parse_short_packet() {
-        let result = parse_beacon_response(&[0u8; 16], "172.31.6.1");
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        let source = SocketAddrV4::new(Ipv4Addr::new(172, 31, 6, 1), BEACON_PORT);
+        let result = parse_beacon_response(&[0u8; 16], source);
         assert!(matches!(result, Err(ParseError::TooShort { .. })));
     }
 
     #[test]
     fn test_parse_invalid_header() {
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        let source = SocketAddrV4::new(Ipv4Addr::new(172, 31, 6, 1), BEACON_PORT);
         let mut bad_packet = SAMPLE_BEACON;
         bad_packet[0] = 0xFF;
 
-        let result = parse_beacon_response(&bad_packet, "172.31.6.1");
+        let result = parse_beacon_response(&bad_packet, source);
         assert!(matches!(result, Err(ParseError::InvalidHeader { .. })));
     }
 

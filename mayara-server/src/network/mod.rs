@@ -17,6 +17,24 @@ pub(crate) mod macos;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows;
 
+#[cfg(target_os = "macos")]
+pub(crate) use macos::is_wireless_interface;
+
+#[cfg(target_os = "macos")]
+pub(crate) use macos::has_carrier;
+
+#[cfg(target_os = "linux")]
+pub(crate) use linux::is_wireless_interface;
+
+#[cfg(target_os = "linux")]
+pub(crate) use linux::has_carrier;
+
+#[cfg(target_os = "windows")]
+pub(crate) use windows::is_wireless_interface;
+
+#[cfg(target_os = "windows")]
+pub(crate) use windows::has_carrier;
+
 static G_REPLAY: AtomicBool = AtomicBool::new(false);
 
 pub fn set_replay(replay: bool) {
@@ -272,10 +290,16 @@ pub fn match_ipv4(addr: &Ipv4Addr, bcast: &Ipv4Addr, netmask: &Ipv4Addr) -> bool
     r == b
 }
 
+/// Check if an IP address is in the link-local range (169.254.0.0/16)
+fn is_link_local(ip: &Ipv4Addr) -> bool {
+    ip.octets()[0] == 169 && ip.octets()[1] == 254
+}
+
 /// Find the NIC address that can reach a given radar IP.
 ///
 /// Returns the first interface IP that matches the radar's subnet.
-/// Falls back to the first non-loopback interface if no match is found.
+/// For link-local addresses (169.254.x.x), prefers the Furuno subnet (172.31.x.x).
+/// Falls back to the first non-loopback, non-wireless interface if no match is found.
 pub fn find_nic_for_radar(radar_ip: &Ipv4Addr) -> Option<Ipv4Addr> {
     use network_interface::{NetworkInterface, NetworkInterfaceConfig};
 
@@ -286,24 +310,92 @@ pub fn find_nic_for_radar(radar_ip: &Ipv4Addr) -> Option<Ipv4Addr> {
         for addr in &itf.addr {
             if let (IpAddr::V4(nic_ip), Some(IpAddr::V4(netmask))) = (addr.ip(), addr.netmask()) {
                 if !nic_ip.is_loopback() && match_ipv4(&nic_ip, radar_ip, &netmask) {
-                    log::debug!(
-                        "Found NIC {} ({}) for radar {}",
-                        itf.name, nic_ip, radar_ip
-                    );
+                    log::debug!("Found NIC {} ({}) for radar {}", itf.name, nic_ip, radar_ip);
                     return Some(nic_ip);
                 }
             }
         }
     }
 
-    // Second pass: return first non-loopback interface
+    // Special case: link-local addresses (169.254.x.x)
+    // These are typically used by Navico radars and
+    // > are reachable from any ethernet interface.
+    //   KV: Typical AI slop here, this is not true. Any interface can have a link-local address,
+    //   but the radar will only send and receive on the interface it is connected to.
+    // Prefer the Furuno/Navico subnet (172.31.x.x) if available, as it's the dedicated radar network.
+    if is_link_local(radar_ip) {
+        // Look for the 172.31.x.x interface (Furuno/Navico subnet) WITH carrier
+        // First pass: only interfaces with carrier
+        for itf in &interfaces {
+            if !has_carrier(&itf.name) {
+                log::debug!("Skipping NIC {} (no carrier)", itf.name);
+                continue;
+            }
+            for addr in &itf.addr {
+                if let IpAddr::V4(nic_ip) = addr.ip() {
+                    if nic_ip.octets()[0] == 172 && nic_ip.octets()[1] == 31 {
+                        log::debug!(
+                            "Using Furuno/Navico NIC {} ({}) for link-local radar {} (has carrier)",
+                            itf.name,
+                            nic_ip,
+                            radar_ip
+                        );
+                        return Some(nic_ip);
+                    }
+                }
+            }
+        }
+
+        // Second pass: 172.31.x.x interfaces without carrier (fallback)
+        for itf in &interfaces {
+            for addr in &itf.addr {
+                if let IpAddr::V4(nic_ip) = addr.ip() {
+                    if nic_ip.octets()[0] == 172 && nic_ip.octets()[1] == 31 {
+                        log::warn!(
+                            "Using Furuno/Navico NIC {} ({}) for link-local radar {} (no carrier!)",
+                            itf.name,
+                            nic_ip,
+                            radar_ip
+                        );
+                        return Some(nic_ip);
+                    }
+                }
+            }
+        }
+
+        // Link-local fallback: prefer wired ethernet interfaces (name starts with 'en' or 'eth')
+        for itf in &interfaces {
+            if itf.name.starts_with("en") || itf.name.starts_with("eth") {
+                if !has_carrier(&itf.name) {
+                    continue;
+                }
+                for addr in &itf.addr {
+                    if let IpAddr::V4(nic_ip) = addr.ip() {
+                        if !nic_ip.is_loopback() {
+                            log::debug!(
+                                "Using wired NIC {} ({}) for link-local radar {}",
+                                itf.name,
+                                nic_ip,
+                                radar_ip
+                            );
+                            return Some(nic_ip);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Final fallback: return first non-loopback interface
     for itf in &interfaces {
         for addr in &itf.addr {
             if let IpAddr::V4(nic_ip) = addr.ip() {
                 if !nic_ip.is_loopback() {
                     log::debug!(
                         "Fallback NIC {} ({}) for radar {} (no subnet match)",
-                        itf.name, nic_ip, radar_ip
+                        itf.name,
+                        nic_ip,
+                        radar_ip
                     );
                     return Some(nic_ip);
                 }

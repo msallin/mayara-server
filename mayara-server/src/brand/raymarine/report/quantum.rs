@@ -2,16 +2,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mayara_core::protocol::raymarine::{
     decompress_quantum_spoke, parse_quantum_frame_header, parse_quantum_status,
-    QUANTUM_FRAME_HEADER_SIZE,
+    DopplerMode as RaymDopplerMode, QUANTUM_FRAME_HEADER_SIZE,
 };
 
-use crate::brand::raymarine::report::LookupDoppler;
-use mayara_core::controllers::{RaymarineController, RaymarineVariant};
 use crate::brand::raymarine::{hd_to_pixel_values, settings, RaymarineModel};
 use crate::protos::RadarMessage::RadarMessage;
 use crate::radar::range::{Range, Ranges};
 use crate::radar::spoke::to_protobuf_spoke;
 use crate::radar::{SpokeBearing, Status};
+use mayara_core::controllers::{RaymarineController, RaymarineVariant};
 
 use super::{RaymarineReportReceiver, ReceiverState};
 
@@ -33,7 +32,11 @@ pub(crate) fn process_frame(receiver: &mut RaymarineReportReceiver, data: &[u8])
     let header = match parse_quantum_frame_header(data) {
         Ok(h) => h,
         Err(e) => {
-            log::error!("{}: Failed to parse Quantum frame header: {}", receiver.key, e);
+            log::error!(
+                "{}: Failed to parse Quantum frame header: {}",
+                receiver.key,
+                e
+            );
             return;
         }
     };
@@ -65,9 +68,8 @@ pub(crate) fn process_frame(receiver: &mut RaymarineReportReceiver, data: &[u8])
     let data_len = header.data_len as usize;
     let spoke_data = &data[next_offset..next_offset + data_len];
 
-    // Build doppler lookup table from pixel_to_blob for the core function
-    let doppler = LookupDoppler::Doppler as usize;
-    let doppler_lookup: [u8; 256] = core::array::from_fn(|i| receiver.pixel_to_blob[doppler][i]);
+    // Get doppler lookup from SpokeProcessor for the core decompression function
+    let doppler_lookup = receiver.spoke_processor.get_lookup(RaymDopplerMode::Both);
 
     // Use core decompression
     let unpacked = decompress_quantum_spoke(spoke_data, &doppler_lookup, returns_per_line as usize);
@@ -179,7 +181,10 @@ pub(super) fn process_status_report(receiver: &mut RaymarineReportReceiver, data
         log::warn!("{}: Unknown mode {}", receiver.key, report.mode);
     }
     receiver.set_value("targetExpansion", report.target_expansion as f32);
-    receiver.set_value("interferenceRejection", report.interference_rejection as f32);
+    receiver.set_value(
+        "interferenceRejection",
+        report.interference_rejection as f32,
+    );
     receiver.set_value("bearingAlignment", report.bearing_offset as f32);
     receiver.set_value("mainBangSuppression", report.mbs_enabled as u8 as f32);
 }
@@ -227,10 +232,8 @@ pub(super) fn process_info_report(receiver: &mut RaymarineReportReceiver, data: 
                 log::debug!("{}: Starting unified controller (Quantum)", receiver.key);
                 let controller = RaymarineController::new(
                     &receiver.key,
-                    &receiver.info.send_command_addr.ip().to_string(),
-                    receiver.info.send_command_addr.port(),
-                    &receiver.info.report_addr.ip().to_string(),
-                    receiver.info.report_addr.port(),
+                    receiver.info.send_command_addr,
+                    receiver.info.report_addr,
                     RaymarineVariant::Quantum,
                     model.doppler,
                 );

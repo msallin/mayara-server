@@ -3,77 +3,41 @@
 //! This module contains specifications for Garmin radar models.
 
 use super::ModelInfo;
+use crate::capabilities::ControlId;
 use crate::Brand;
 
 /// Range table for xHD series (in meters)
 static RANGE_TABLE_XHD: &[u32] = &[
-    50,
-    75,
-    100,
-    125,
-    250,
-    500,
-    750,
-    1000,
-    1500,
-    2000,
-    3000,
-    4000,
-    6000,
-    8000,
-    12000,
-    16000,
-    24000,
-    36000,
-    48000,
-    72000,
+    50, 75, 100, 125, 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 6000, 8000, 12000, 16000, 24000,
+    36000, 48000, 72000,
 ];
 
 /// Range table for Fantom series (in meters)
 static RANGE_TABLE_FANTOM: &[u32] = &[
-    50,
-    75,
-    100,
-    125,
-    250,
-    500,
-    750,
-    1000,
-    1500,
-    2000,
-    3000,
-    4000,
-    6000,
-    8000,
-    12000,
-    16000,
-    24000,
-    36000,
-    48000,
-    72000,
-    96000,
+    50, 75, 100, 125, 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 6000, 8000, 12000, 16000, 24000,
+    36000, 48000, 72000, 96000,
 ];
 
 /// Extended controls for Fantom series (Doppler capable)
-static CONTROLS_FANTOM: &[&str] = &[
-    "dopplerMode",      // MotionScope
-    "targetSeparation",
-    "interferenceRejection",
-    "crosstalkRejection",  // Garmin-specific
-    "noTransmitZones",
-    "bearingAlignment",
-    "antennaHeight",
-    "scanSpeed",
+static CONTROLS_FANTOM: &[ControlId] = &[
+    ControlId::DopplerMode, // MotionScope
+    ControlId::TargetSeparation,
+    ControlId::InterferenceRejection,
+    ControlId::CrosstalkRejection, // Garmin-specific
+    ControlId::NoTransmitZones,
+    ControlId::BearingAlignment,
+    ControlId::AntennaHeight,
+    ControlId::ScanSpeed,
 ];
 
 /// Extended controls for xHD series
-static CONTROLS_XHD: &[&str] = &[
-    "targetSeparation",
-    "interferenceRejection",
-    "crosstalkRejection",  // Garmin-specific
-    "noTransmitZones",
-    "bearingAlignment",
-    "antennaHeight",
+static CONTROLS_XHD: &[ControlId] = &[
+    ControlId::TargetSeparation,
+    ControlId::InterferenceRejection,
+    ControlId::CrosstalkRejection, // Garmin-specific
+    ControlId::NoTransmitZones,
+    ControlId::BearingAlignment,
+    ControlId::AntennaHeight,
 ];
 
 /// All known Garmin radar models
@@ -143,7 +107,6 @@ pub static MODELS: &[ModelInfo] = &[
         no_transmit_zone_count: 2,
         controls: CONTROLS_FANTOM,
     },
-
     // xHD Series
     ModelInfo {
         brand: Brand::Garmin,
@@ -224,7 +187,7 @@ mod tests {
     fn test_fantom_24() {
         let model = get_model("Fantom 24").unwrap();
         assert!(model.has_doppler);
-        assert!(model.controls.contains(&"dopplerMode"));
+        assert!(model.controls.contains(&ControlId::DopplerMode));
     }
 
     #[test]

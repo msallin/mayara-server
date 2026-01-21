@@ -2,6 +2,8 @@
 
 This guide helps new developers understand the codebase structure and get up and running quickly.
 
+> **Quick Build Guide:** If you just want to build and run, see **[Building Mayara Server](building.md)** for the essential commands.
+
 ---
 
 ## Prerequisites
@@ -261,6 +263,29 @@ pub fn format_control_command(id: &str, value: i32, auto: bool) -> Option<String
 
 ## Debugging Tips
 
+### Protocol Debugger (Dev Mode Only)
+
+When built with `--features dev`, mayara-server includes a real-time protocol debugger for reverse-engineering radar protocols.
+
+**Enable the debugger:**
+```bash
+# Build and run with dev features
+cargo run -p mayara-server --features dev
+```
+
+**Open the debug panel:**
+1. Navigate to `http://localhost:6502/`
+2. Click the "Debug" icon in the top toolbar (only visible in dev mode)
+3. The debug panel opens as a sidebar showing real-time protocol traffic
+
+**Features:**
+- View all TCP/UDP traffic to/from radars
+- Decoded protocol messages with hex dump
+- Automatic state change detection
+- Session recording for sharing with other developers
+
+See the [Protocol Debugger User Guide](../user-guide/protocol-debugger.md) for details.
+
 ### Logging
 
 ```bash
@@ -328,6 +353,7 @@ For protocol and control logic testing, you can use the mock IoProvider pattern 
 
 ## Next Steps
 
+- Read [building.md](building.md) for build commands and troubleshooting
 - Read [architecture.md](../design/architecture.md) for the full architectural picture
 - Read [adding_radar_models.md](adding_radar_models.md) when adding support for new radar hardware
 - Explore the codebase starting from `mayara-core/src/lib.rs`

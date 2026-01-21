@@ -16,6 +16,8 @@
 //! | Quantum | Q24, Q24C, Q24D, Cyclone | 250 | Q24D, Cyclone |
 //! | RD | RD418/424 HD, Magnum | 2048 | No |
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use crate::io::{IoProvider, UdpSocketHandle};
 
 /// Raymarine radar variant
@@ -51,12 +53,10 @@ pub enum RaymarineControllerState {
 pub struct RaymarineController {
     /// Radar ID (for logging)
     radar_id: String,
-    /// Command address (from beacon)
-    command_addr: String,
-    command_port: u16,
-    /// Report multicast address (from beacon)
-    report_addr: String,
-    report_port: u16,
+    /// Command address (IP + port)
+    command_addr: SocketAddrV4,
+    /// Report multicast address (IP + port)
+    report_addr: SocketAddrV4,
     /// Command socket
     command_socket: Option<UdpSocketHandle>,
     /// Report socket
@@ -75,19 +75,15 @@ impl RaymarineController {
     /// Create a new Raymarine controller
     pub fn new(
         radar_id: &str,
-        command_addr: &str,
-        command_port: u16,
-        report_addr: &str,
-        report_port: u16,
+        command_addr: SocketAddrV4,
+        report_addr: SocketAddrV4,
         variant: RaymarineVariant,
         has_doppler: bool,
     ) -> Self {
         Self {
             radar_id: radar_id.to_string(),
-            command_addr: command_addr.to_string(),
-            command_port,
-            report_addr: report_addr.to_string(),
-            report_port,
+            command_addr,
+            report_addr,
             command_socket: None,
             report_socket: None,
             state: RaymarineControllerState::Disconnected,
@@ -139,31 +135,40 @@ impl RaymarineController {
                 if io.udp_bind(&socket, 0).is_ok() {
                     self.command_socket = Some(socket);
                     io.debug(&format!(
-                        "[{}] Command socket created for {}:{}",
-                        self.radar_id, self.command_addr, self.command_port
+                        "[{}] Command socket created for {}",
+                        self.radar_id, self.command_addr
                     ));
                 } else {
                     io.udp_close(socket);
                 }
             }
             Err(e) => {
-                io.debug(&format!("[{}] Failed to create command socket: {}", self.radar_id, e));
+                io.debug(&format!(
+                    "[{}] Failed to create command socket: {}",
+                    self.radar_id, e
+                ));
             }
         }
 
         // Create report socket
         match io.udp_create() {
             Ok(socket) => {
-                if io.udp_bind(&socket, self.report_port).is_ok() {
-                    if io.udp_join_multicast(&socket, &self.report_addr, "").is_ok() {
+                if io.udp_bind(&socket, self.report_addr.port()).is_ok() {
+                    if io
+                        .udp_join_multicast(&socket, *self.report_addr.ip(), Ipv4Addr::UNSPECIFIED)
+                        .is_ok()
+                    {
                         self.report_socket = Some(socket);
                         io.debug(&format!(
-                            "[{}] Joined report multicast {}:{}",
-                            self.radar_id, self.report_addr, self.report_port
+                            "[{}] Joined report multicast {}",
+                            self.radar_id, self.report_addr
                         ));
                         self.state = RaymarineControllerState::Listening;
                     } else {
-                        io.debug(&format!("[{}] Failed to join report multicast", self.radar_id));
+                        io.debug(&format!(
+                            "[{}] Failed to join report multicast",
+                            self.radar_id
+                        ));
                         io.udp_close(socket);
                     }
                 } else {
@@ -172,7 +177,10 @@ impl RaymarineController {
                 }
             }
             Err(e) => {
-                io.debug(&format!("[{}] Failed to create report socket: {}", self.radar_id, e));
+                io.debug(&format!(
+                    "[{}] Failed to create report socket: {}",
+                    self.radar_id, e
+                ));
             }
         }
     }
@@ -183,7 +191,7 @@ impl RaymarineController {
         // Process incoming reports
         if let Some(socket) = self.report_socket {
             let mut buf = [0u8; 2048];
-            while let Some((len, _addr, _port)) = io.udp_recv_from(&socket, &mut buf) {
+            while let Some((len, _addr)) = io.udp_recv_from(&socket, &mut buf) {
                 self.process_report(io, &buf[..len]);
                 activity = true;
                 if self.state == RaymarineControllerState::Listening {
@@ -204,7 +212,9 @@ impl RaymarineController {
         let report_id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         io.debug(&format!(
             "[{}] Report ID: 0x{:08X}, len: {}",
-            self.radar_id, report_id, data.len()
+            self.radar_id,
+            report_id,
+            data.len()
         ));
 
         // Quantum reports: 0x2800xx
@@ -213,8 +223,11 @@ impl RaymarineController {
 
     fn send_command<I: IoProvider>(&self, io: &mut I, data: &[u8]) {
         if let Some(socket) = self.command_socket {
-            if let Err(e) = io.udp_send_to(&socket, data, &self.command_addr, self.command_port) {
-                io.debug(&format!("[{}] Failed to send command: {}", self.radar_id, e));
+            if let Err(e) = io.udp_send_to(&socket, data, self.command_addr) {
+                io.debug(&format!(
+                    "[{}] Failed to send command: {}",
+                    self.radar_id, e
+                ));
             }
         }
     }
@@ -252,8 +265,8 @@ impl RaymarineController {
         let mut cmd = Vec::with_capacity(26);
         cmd.extend_from_slice(lead);
         cmd.extend_from_slice(&[
-            0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, value, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, value, 0x00, 0x00, 0x00,
         ]);
         cmd
     }
@@ -263,8 +276,8 @@ impl RaymarineController {
         let mut cmd = Vec::with_capacity(26);
         cmd.extend_from_slice(lead);
         cmd.extend_from_slice(&[
-            0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, on_off,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            on_off, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         cmd
     }
@@ -284,19 +297,32 @@ impl RaymarineController {
     /// Set range index
     pub fn set_range<I: IoProvider>(&mut self, io: &mut I, range_index: u8) {
         let cmd = match self.variant {
-            RaymarineVariant::Quantum => {
-                self.quantum_one_byte_command(0x0101, range_index)
-            }
+            RaymarineVariant::Quantum => self.quantum_one_byte_command(0x0101, range_index),
             RaymarineVariant::RD => {
                 // RD: [0x01, 0x81, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, range_index, 0x00, 0x00, 0x00]
                 let mut cmd = Vec::with_capacity(12);
-                cmd.extend_from_slice(&[0x01, 0x81, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
-                    range_index, 0x00, 0x00, 0x00]);
+                cmd.extend_from_slice(&[
+                    0x01,
+                    0x81,
+                    0x01,
+                    0x00,
+                    0x01,
+                    0x00,
+                    0x00,
+                    0x00,
+                    range_index,
+                    0x00,
+                    0x00,
+                    0x00,
+                ]);
                 cmd
             }
         };
         self.send_command(io, &cmd);
-        io.debug(&format!("[{}] Set range index: {}", self.radar_id, range_index));
+        io.debug(&format!(
+            "[{}] Set range index: {}",
+            self.radar_id, range_index
+        ));
     }
 
     /// Set gain (0-255)
@@ -324,7 +350,10 @@ impl RaymarineController {
                 }
             }
         }
-        io.debug(&format!("[{}] Set gain: {} auto={}", self.radar_id, value, auto));
+        io.debug(&format!(
+            "[{}] Set gain: {} auto={}",
+            self.radar_id, value, auto
+        ));
     }
 
     /// Set sea clutter (0-255)
@@ -352,7 +381,10 @@ impl RaymarineController {
                 }
             }
         }
-        io.debug(&format!("[{}] Set sea: {} auto={}", self.radar_id, value, auto));
+        io.debug(&format!(
+            "[{}] Set sea: {} auto={}",
+            self.radar_id, value, auto
+        ));
     }
 
     /// Set rain clutter (0-255)
@@ -380,15 +412,16 @@ impl RaymarineController {
                 }
             }
         }
-        io.debug(&format!("[{}] Set rain: {} enabled={}", self.radar_id, value, enabled));
+        io.debug(&format!(
+            "[{}] Set rain: {} enabled={}",
+            self.radar_id, value, enabled
+        ));
     }
 
     /// Set interference rejection (0-3)
     pub fn set_interference_rejection<I: IoProvider>(&mut self, io: &mut I, level: u8) {
         let cmd = match self.variant {
-            RaymarineVariant::Quantum => {
-                self.quantum_one_byte_command(0x0311, level)
-            }
+            RaymarineVariant::Quantum => self.quantum_one_byte_command(0x0311, level),
             RaymarineVariant::RD => {
                 // RD: [0x07, 0x83, 0x01, 0x00, level, 0x00, 0x00, 0x00]
                 let mut cmd = Vec::with_capacity(8);
@@ -403,9 +436,7 @@ impl RaymarineController {
     /// Set target expansion (0-2)
     pub fn set_target_expansion<I: IoProvider>(&mut self, io: &mut I, level: u8) {
         let cmd = match self.variant {
-            RaymarineVariant::Quantum => {
-                self.quantum_one_byte_command(0x030f, level)
-            }
+            RaymarineVariant::Quantum => self.quantum_one_byte_command(0x030f, level),
             RaymarineVariant::RD => {
                 // RD doesn't have target expansion, use target separation instead
                 let mut cmd = Vec::with_capacity(8);
@@ -415,7 +446,10 @@ impl RaymarineController {
             }
         };
         self.send_command(io, &cmd);
-        io.debug(&format!("[{}] Set target expansion: {}", self.radar_id, level));
+        io.debug(&format!(
+            "[{}] Set target expansion: {}",
+            self.radar_id, level
+        ));
     }
 
     /// Set bearing alignment in degrees (-180 to 180)
@@ -423,9 +457,7 @@ impl RaymarineController {
         // Convert to wire format (deci-degrees)
         let deci_value = (degrees * 10.0) as i16;
         let cmd = match self.variant {
-            RaymarineVariant::Quantum => {
-                self.quantum_two_byte_command(0x0401, deci_value as u16)
-            }
+            RaymarineVariant::Quantum => self.quantum_two_byte_command(0x0401, deci_value as u16),
             RaymarineVariant::RD => {
                 // RD: [0x07, 0x82, 0x01, 0x00, value_bytes...]
                 let mut cmd = Vec::with_capacity(8);
@@ -435,7 +467,10 @@ impl RaymarineController {
             }
         };
         self.send_command(io, &cmd);
-        io.debug(&format!("[{}] Set bearing alignment: {}", self.radar_id, degrees));
+        io.debug(&format!(
+            "[{}] Set bearing alignment: {}",
+            self.radar_id, degrees
+        ));
     }
 
     /// Set FTC (RD only, 0-255)
@@ -451,7 +486,10 @@ impl RaymarineController {
                 let cmd = self.rd_standard_command(&[0x04, 0x83], value);
                 self.send_command(io, &cmd);
             }
-            io.debug(&format!("[{}] Set FTC: {} enabled={}", self.radar_id, value, enabled));
+            io.debug(&format!(
+                "[{}] Set FTC: {} enabled={}",
+                self.radar_id, value, enabled
+            ));
         }
     }
 
@@ -459,12 +497,18 @@ impl RaymarineController {
     pub fn set_tune<I: IoProvider>(&mut self, io: &mut I, value: u8, auto: bool) {
         if self.variant == RaymarineVariant::RD {
             let auto_byte = if auto { 0x01 } else { 0x00 };
-            let cmd = self.rd_command(0x8701, &[
-                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                auto_byte, 0x00, 0x00, 0x00, value, 0x00, 0x00, 0x00,
-            ]);
+            let cmd = self.rd_command(
+                0x8701,
+                &[
+                    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, auto_byte, 0x00, 0x00, 0x00,
+                    value, 0x00, 0x00, 0x00,
+                ],
+            );
             self.send_command(io, &cmd);
-            io.debug(&format!("[{}] Set tune: {} auto={}", self.radar_id, value, auto));
+            io.debug(&format!(
+                "[{}] Set tune: {} auto={}",
+                self.radar_id, value, auto
+            ));
         }
     }
 
@@ -489,7 +533,10 @@ impl RaymarineController {
                 let cmd = self.quantum_one_byte_command(0x0304, value);
                 self.send_command(io, &cmd);
             }
-            io.debug(&format!("[{}] Set color gain: {} auto={}", self.radar_id, value, auto));
+            io.debug(&format!(
+                "[{}] Set color gain: {} auto={}",
+                self.radar_id, value, auto
+            ));
         }
     }
 
@@ -500,7 +547,10 @@ impl RaymarineController {
             let on_off = if enabled { 0x01u8 } else { 0x00u8 };
             let cmd = self.rd_standard_command(&[0x01, 0x82], on_off);
             self.send_command(io, &cmd);
-            io.debug(&format!("[{}] Set main bang suppression: {}", self.radar_id, enabled));
+            io.debug(&format!(
+                "[{}] Set main bang suppression: {}",
+                self.radar_id, enabled
+            ));
         }
     }
 
@@ -509,10 +559,14 @@ impl RaymarineController {
         if self.variant == RaymarineVariant::RD {
             // [0x02, 0x82, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, value, 0x00, 0x00, 0x00]
             let mut cmd = Vec::with_capacity(12);
-            cmd.extend_from_slice(&[0x02, 0x82, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
-                value, 0x00, 0x00, 0x00]);
+            cmd.extend_from_slice(&[
+                0x02, 0x82, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, value, 0x00, 0x00, 0x00,
+            ]);
             self.send_command(io, &cmd);
-            io.debug(&format!("[{}] Set display timing: {}", self.radar_id, value));
+            io.debug(&format!(
+                "[{}] Set display timing: {}",
+                self.radar_id, value
+            ));
         }
     }
 

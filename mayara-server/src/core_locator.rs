@@ -38,6 +38,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tokio_graceful_shutdown::SubsystemHandle;
 
+use crate::network::is_wireless_interface;
 use crate::tokio_io::TokioIoProvider;
 use crate::Brand;
 
@@ -76,9 +77,23 @@ impl CoreLocatorAdapter {
     /// * `session` - Session to update with locator status
     /// * `discovery_tx` - Channel to send radar discoveries to the server
     /// * `poll_interval` - How often to poll for beacons (default: 100ms = 10 polls/sec)
-    pub fn new(session: crate::Session, discovery_tx: mpsc::Sender<LocatorMessage>, poll_interval: Duration) -> Self {
+    pub fn new(
+        session: crate::Session,
+        discovery_tx: mpsc::Sender<LocatorMessage>,
+        poll_interval: Duration,
+    ) -> Self {
+        let brand_limitation = {
+            let session = session.read().unwrap();
+            session.args.brand.clone()
+        };
         Self {
-            locator: RadarLocator::new(),
+            locator: RadarLocator::new(brand_limitation.map(|b| match b {
+                Brand::Furuno => CoreBrand::Furuno,
+                Brand::Navico => CoreBrand::Navico,
+                Brand::Raymarine => CoreBrand::Raymarine,
+                Brand::Garmin => CoreBrand::Garmin,
+                Brand::Playback => panic!("Playback brand not supported in locator"),
+            })),
             io: TokioIoProvider::new(),
             discovery_tx,
             poll_interval,
@@ -87,7 +102,10 @@ impl CoreLocatorAdapter {
     }
 
     /// Create with default poll interval (100ms).
-    pub fn with_default_interval(session: crate::Session, discovery_tx: mpsc::Sender<LocatorMessage>) -> Self {
+    pub fn with_default_interval(
+        session: crate::Session,
+        discovery_tx: mpsc::Sender<LocatorMessage>,
+    ) -> Self {
         Self::new(session, discovery_tx, Duration::from_millis(100))
     }
 
@@ -97,11 +115,32 @@ impl CoreLocatorAdapter {
     pub fn start(&mut self) {
         log::info!("Starting core radar locator");
 
+        // CRITICAL: Configure multicast interfaces for multi-NIC setups
+        // Without this, multicast only joins on OS-chosen interface (often wrong one)
+        let (allow_wifi, interface) = {
+            let session = self.session.read().unwrap();
+            (session.args.allow_wifi, session.args.interface.clone())
+        };
+        let interfaces = find_all_interfaces(allow_wifi, &interface);
+        if interfaces.len() > 1 {
+            log::info!(
+                "Multi-NIC setup detected - joining multicast on {} interfaces: {:?}",
+                interfaces.len(),
+                interfaces
+            );
+        }
+        for iface in &interfaces {
+            self.locator.add_multicast_interface(*iface);
+        }
+
         // CRITICAL: Configure Furuno interface to prevent cross-NIC broadcast traffic
         // Furuno uses 172.31.x.x subnet - find the NIC that can reach it
-        if let Some(furuno_nic) = find_furuno_interface() {
-            log::info!("Found Furuno-capable NIC: {} - broadcasts will use this interface", furuno_nic);
-            self.locator.set_furuno_interface(&furuno_nic.to_string());
+        if let Some(furuno_nic) = find_furuno_interface(allow_wifi, &interface) {
+            log::info!(
+                "Found Furuno-capable NIC: {} - broadcasts will use this interface",
+                furuno_nic
+            );
+            self.locator.set_furuno_interface(furuno_nic);
         } else {
             log::warn!("No NIC found for Furuno subnet (172.31.x.x) - broadcasts may go to wrong interface");
         }
@@ -111,7 +150,10 @@ impl CoreLocatorAdapter {
         // Update session with locator status
         if let Ok(mut session) = self.session.write() {
             session.locator_status = self.locator.status().clone();
-            log::info!("Updated session with {} brand statuses", session.locator_status.brands.len());
+            log::info!(
+                "Updated session with {} brand statuses",
+                session.locator_status.brands.len()
+            );
         }
     }
 
@@ -145,7 +187,10 @@ impl CoreLocatorAdapter {
     ///
     /// This is the main entry point for running the locator in a tokio task.
     /// It polls the core locator periodically and sends discoveries to the server.
-    pub async fn run(mut self, subsys: SubsystemHandle) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn run(
+        mut self,
+        subsys: SubsystemHandle,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         log::info!("CoreLocatorAdapter: Starting locator task");
 
         // Start the core locator (opens sockets)
@@ -282,15 +327,30 @@ use crate::Session;
 /// This routes `RadarDiscovery` from the core locator to the brand's
 /// `process_discovery` function which creates a `RadarInfo` and spawns
 /// the necessary subsystems.
+///
+/// If `--brand` was specified, only radars of that brand will be processed.
 pub fn dispatch_discovery(
     session: Session,
     discovery: &RadarDiscovery,
     radars: &SharedRadars,
     subsys: &SubsystemHandle,
 ) -> Result<(), std::io::Error> {
-    // Determine NIC address for this radar
-    let radar_addr = parse_address(&discovery.address);
-    let nic_addr = radar_addr.map(|a| get_nic_for_radar(&a)).unwrap_or(Ipv4Addr::UNSPECIFIED);
+    // Check brand filter - if --brand was specified, only process matching brands
+    if let Some(allowed_brand) = session.read().unwrap().args.brand {
+        let discovery_brand = core_brand_to_server_brand(discovery.brand);
+        if discovery_brand != allowed_brand {
+            log::debug!(
+                "Ignoring {} radar '{}' (--brand {} specified)",
+                discovery.brand,
+                discovery.name,
+                allowed_brand
+            );
+            return Ok(());
+        }
+    }
+
+    // Determine NIC address for this radar (address is now SocketAddrV4)
+    let nic_addr = get_nic_for_radar(&discovery.address);
 
     log::info!(
         "Processing {} discovery: {} at {} via {}",
@@ -348,13 +408,22 @@ const FURUNO_NETMASK: Ipv4Addr = Ipv4Addr::new(255, 255, 0, 0);
 ///
 /// This is critical for multi-NIC setups to ensure broadcast packets
 /// go out on the correct interface.
-fn find_furuno_interface() -> Option<Ipv4Addr> {
+fn find_furuno_interface(allow_wifi: bool, interface: &Option<String>) -> Option<Ipv4Addr> {
     use network_interface::{NetworkInterface, NetworkInterfaceConfig};
     use std::net::IpAddr;
 
     let interfaces = NetworkInterface::show().ok()?;
 
     for itf in &interfaces {
+        match interface {
+            Some(ref iface_name) if &itf.name != iface_name => continue,
+            _ => {
+                if !allow_wifi && is_wireless_interface(&itf.name) {
+                    log::debug!("Skipping WiFi interface {}", itf.name);
+                    continue;
+                }
+            }
+        }
         for addr in &itf.addr {
             if let (IpAddr::V4(nic_ip), Some(IpAddr::V4(netmask))) = (addr.ip(), addr.netmask()) {
                 if !nic_ip.is_loopback() {
@@ -365,11 +434,13 @@ fn find_furuno_interface() -> Option<Ipv4Addr> {
 
                     // Check if this NIC can reach 172.31.x.x
                     // Either the NIC is directly on 172.31.x.x, or its network contains it
-                    if nic_network == furuno_network ||
-                       (u32::from(nic_ip) & u32::from(FURUNO_NETMASK)) == furuno_network {
+                    if nic_network == furuno_network
+                        || (u32::from(nic_ip) & u32::from(FURUNO_NETMASK)) == furuno_network
+                    {
                         log::debug!(
                             "Interface {} ({}) can reach Furuno subnet 172.31.x.x",
-                            itf.name, nic_ip
+                            itf.name,
+                            nic_ip
                         );
                         return Some(nic_ip);
                     }
@@ -379,6 +450,42 @@ fn find_furuno_interface() -> Option<Ipv4Addr> {
     }
 
     None
+}
+
+/// Find all non-loopback IPv4 interface addresses.
+///
+/// This is used to join multicast groups on all interfaces, which is
+/// critical for multi-NIC setups where the radar might be on a different
+/// interface than the OS default.
+fn find_all_interfaces(allow_wifi: bool, interface: &Option<String>) -> Vec<Ipv4Addr> {
+    use network_interface::{NetworkInterface, NetworkInterfaceConfig};
+    use std::net::IpAddr;
+
+    let mut interfaces = Vec::new();
+
+    if let Ok(ifaces) = NetworkInterface::show() {
+        for itf in &ifaces {
+            match interface {
+                Some(ref iface_name) if &itf.name != iface_name => continue,
+                _ => {
+                    if !allow_wifi && is_wireless_interface(&itf.name) {
+                        log::debug!("Skipping WiFi interface {}", itf.name);
+                        continue;
+                    }
+                }
+            }
+            for addr in &itf.addr {
+                if let IpAddr::V4(nic_ip) = addr.ip() {
+                    if !nic_ip.is_loopback() || interface.is_some() {
+                        log::debug!("Found interface {} with IP {}", itf.name, nic_ip);
+                        interfaces.push(nic_ip);
+                    }
+                }
+            }
+        }
+    }
+
+    interfaces
 }
 
 #[cfg(test)]

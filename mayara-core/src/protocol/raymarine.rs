@@ -11,11 +11,11 @@
 //! - **Quantum**: Q24, Q24C, Q24D (with Doppler)
 //! - **Cyclone/Cyclone Pro**: Next-gen solid state
 
-use serde::Deserialize;
-use crate::error::ParseError;
-use crate::Brand;
-use crate::radar::RadarDiscovery;
 use super::c_string;
+use crate::error::ParseError;
+use crate::radar::RadarDiscovery;
+use crate::{Brand, BrandStatus, IoProvider};
+use serde::Deserialize;
 
 // =============================================================================
 // Constants
@@ -43,7 +43,9 @@ pub const HD_PIXEL_VALUES_RAW: u16 = 256;
 pub const HD_PIXEL_VALUES: u8 = 128;
 
 /// Beacon multicast address for classic Raymarine
-pub const BEACON_ADDR: &str = "224.0.0.1";
+use std::net::{Ipv4Addr, SocketAddrV4};
+
+pub const BEACON_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 1);
 pub const BEACON_PORT: u16 = 5800;
 
 /// Quantum WiFi multicast address
@@ -57,7 +59,7 @@ pub const QUANTUM_WIFI_ADDR: &str = "232.1.1.1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BaseModel {
     #[default]
-    RD,      // Analog radars: RD, HD, SHD, Magnum
+    RD, // Analog radars: RD, HD, SHD, Magnum
     Quantum, // Solid-state: Quantum, Cyclone
 }
 
@@ -80,7 +82,7 @@ impl std::fmt::Display for BaseModel {
 #[derive(Debug, Clone)]
 pub struct Model {
     pub base: BaseModel,
-    pub hd: bool,                  // HD = 256 bits per pixel
+    pub hd: bool, // HD = 256 bits per pixel
     pub spokes_per_revolution: u16,
     pub max_spoke_len: u16,
     pub doppler: bool,
@@ -91,38 +93,159 @@ pub struct Model {
 impl Model {
     /// Parse model from E-series part number
     pub fn from_part_number(part: &str) -> Option<Self> {
-        let (base, hd, spokes_per_revolution, max_spoke_len, doppler, name, part_number) = match part {
-            // Quantum models
-            "E70210" => (BaseModel::Quantum, true, QUANTUM_SPOKES_PER_REVOLUTION, QUANTUM_SPOKE_LEN, false, "Quantum Q24", "E70210"),
-            "E70344" => (BaseModel::Quantum, true, QUANTUM_SPOKES_PER_REVOLUTION, QUANTUM_SPOKE_LEN, false, "Quantum Q24C", "E70344"),
-            "E70498" => (BaseModel::Quantum, true, QUANTUM_SPOKES_PER_REVOLUTION, QUANTUM_SPOKE_LEN, true, "Quantum Q24D", "E70498"),
+        let (base, hd, spokes_per_revolution, max_spoke_len, doppler, name, part_number) =
+            match part {
+                // Quantum models
+                "E70210" => (
+                    BaseModel::Quantum,
+                    true,
+                    QUANTUM_SPOKES_PER_REVOLUTION,
+                    QUANTUM_SPOKE_LEN,
+                    false,
+                    "Quantum Q24",
+                    "E70210",
+                ),
+                "E70344" => (
+                    BaseModel::Quantum,
+                    true,
+                    QUANTUM_SPOKES_PER_REVOLUTION,
+                    QUANTUM_SPOKE_LEN,
+                    false,
+                    "Quantum Q24C",
+                    "E70344",
+                ),
+                "E70498" => (
+                    BaseModel::Quantum,
+                    true,
+                    QUANTUM_SPOKES_PER_REVOLUTION,
+                    QUANTUM_SPOKE_LEN,
+                    true,
+                    "Quantum Q24D",
+                    "E70498",
+                ),
 
-            // Cyclone models
-            "E70620" => (BaseModel::Quantum, true, QUANTUM_SPOKES_PER_REVOLUTION, QUANTUM_SPOKE_LEN, true, "Cyclone", "E70620"),
-            "E70621" => (BaseModel::Quantum, true, QUANTUM_SPOKES_PER_REVOLUTION, QUANTUM_SPOKE_LEN, true, "Cyclone Pro", "E70621"),
+                // Cyclone models
+                "E70620" => (
+                    BaseModel::Quantum,
+                    true,
+                    QUANTUM_SPOKES_PER_REVOLUTION,
+                    QUANTUM_SPOKE_LEN,
+                    true,
+                    "Cyclone",
+                    "E70620",
+                ),
+                "E70621" => (
+                    BaseModel::Quantum,
+                    true,
+                    QUANTUM_SPOKES_PER_REVOLUTION,
+                    QUANTUM_SPOKE_LEN,
+                    true,
+                    "Cyclone Pro",
+                    "E70621",
+                ),
 
-            // Magnum models
-            "E70484" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, false, "Magnum 4kW", "E70484"),
-            "E70487" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, false, "Magnum 12kW", "E70487"),
+                // Magnum models
+                "E70484" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    RD_SPOKE_LEN,
+                    false,
+                    "Magnum 4kW",
+                    "E70484",
+                ),
+                "E70487" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    RD_SPOKE_LEN,
+                    false,
+                    "Magnum 12kW",
+                    "E70487",
+                ),
 
-            // Open Array HD models
-            "E52069" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, false, "Open Array HD 4kW", "E52069"),
-            "E92160" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, false, "Open Array HD 12kW", "E92160"),
+                // Open Array HD models
+                "E52069" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    RD_SPOKE_LEN,
+                    false,
+                    "Open Array HD 4kW",
+                    "E52069",
+                ),
+                "E92160" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    RD_SPOKE_LEN,
+                    false,
+                    "Open Array HD 12kW",
+                    "E92160",
+                ),
 
-            // Open Array SHD models
-            "E52081" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, false, "Open Array SHD 4kW", "E52081"),
-            "E52082" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, false, "Open Array SHD 12kW", "E52082"),
+                // Open Array SHD models
+                "E52081" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    RD_SPOKE_LEN,
+                    false,
+                    "Open Array SHD 4kW",
+                    "E52081",
+                ),
+                "E52082" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    RD_SPOKE_LEN,
+                    false,
+                    "Open Array SHD 12kW",
+                    "E52082",
+                ),
 
-            // RD HD models
-            "E92142" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, false, "RD418HD", "E92142"),
-            "E92143" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, false, "RD424HD", "E92143"),
+                // RD HD models
+                "E92142" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    RD_SPOKE_LEN,
+                    false,
+                    "RD418HD",
+                    "E92142",
+                ),
+                "E92143" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    RD_SPOKE_LEN,
+                    false,
+                    "RD424HD",
+                    "E92143",
+                ),
 
-            // RD D models
-            "E92130" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, 512, false, "RD418D", "E92130"),
-            "E92132" => (BaseModel::RD, true, RD_SPOKES_PER_REVOLUTION, 512, false, "RD424D", "E92132"),
+                // RD D models
+                "E92130" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    512,
+                    false,
+                    "RD418D",
+                    "E92130",
+                ),
+                "E92132" => (
+                    BaseModel::RD,
+                    true,
+                    RD_SPOKES_PER_REVOLUTION,
+                    512,
+                    false,
+                    "RD424D",
+                    "E92132",
+                ),
 
-            _ => return None,
-        };
+                _ => return None,
+            };
 
         Some(Model {
             base,
@@ -165,18 +288,14 @@ impl LittleEndianSocketAddrV4 {
         le_val.to_be_bytes()
     }
 
-    /// Get IP address as string
-    ///
-    /// Raymarine stores IP addresses as little-endian u32, so we need
-    /// to interpret them correctly.
-    pub fn ip_string(&self) -> String {
-        // Read as little-endian u32, then extract octets
+    /// Get IP address as Ipv4Addr
+    pub fn to_ipv4(&self) -> Ipv4Addr {
         let ip_val = u32::from_le_bytes(self.addr);
-        let a = (ip_val >> 24) & 0xff;
-        let b = (ip_val >> 16) & 0xff;
-        let c = (ip_val >> 8) & 0xff;
-        let d = ip_val & 0xff;
-        format!("{}.{}.{}.{}", a, b, c, d)
+        let a = ((ip_val >> 24) & 0xff) as u8;
+        let b = ((ip_val >> 16) & 0xff) as u8;
+        let c = ((ip_val >> 8) & 0xff) as u8;
+        let d = (ip_val & 0xff) as u8;
+        Ipv4Addr::new(a, b, c, d)
     }
 
     /// Get port number
@@ -184,9 +303,14 @@ impl LittleEndianSocketAddrV4 {
         u16::from_le_bytes(self.port)
     }
 
+    /// Get as SocketAddrV4
+    pub fn to_socket_addr(&self) -> SocketAddrV4 {
+        SocketAddrV4::new(self.to_ipv4(), self.port())
+    }
+
     /// Get as "ip:port" string
     pub fn as_string(&self) -> String {
-        format!("{}:{}", self.ip_string(), self.port())
+        format!("{}:{}", self.to_ipv4(), self.port())
     }
 }
 
@@ -254,8 +378,8 @@ pub struct ParsedBeacon36 {
     pub beacon_type: u32,
     pub link_id: LinkId,
     pub subtype: u32,
-    pub report_addr: String,
-    pub command_addr: String,
+    pub report_addr: SocketAddrV4,
+    pub command_addr: SocketAddrV4,
 }
 
 /// Combined beacon result for radar discovery
@@ -264,8 +388,8 @@ pub struct ParsedRadarBeacon {
     pub link_id: LinkId,
     pub model_name: Option<String>,
     pub base_model: BaseModel,
-    pub report_addr: String,
-    pub command_addr: String,
+    pub report_addr: SocketAddrV4,
+    pub command_addr: SocketAddrV4,
 }
 
 // =============================================================================
@@ -337,9 +461,7 @@ pub fn parse_beacon_56(data: &[u8]) -> Result<ParsedBeacon56, ParseError> {
             let name = c_string(&beacon.model_name);
             (name, BaseModel::Quantum)
         }
-        SUBTYPE_RD_56 => {
-            (Some("RD/HD/Eseries".to_string()), BaseModel::RD)
-        }
+        SUBTYPE_RD_56 => (Some("RD/HD/Eseries".to_string()), BaseModel::RD),
         SUBTYPE_WIRELESS => {
             // Wireless variant (Quantum_W3)
             let name = c_string(&beacon.model_name);
@@ -392,8 +514,8 @@ pub fn parse_beacon_36(data: &[u8]) -> Result<ParsedBeacon36, ParseError> {
         beacon_type,
         link_id,
         subtype,
-        report_addr: beacon.report.as_string(),
-        command_addr: beacon.command.as_string(),
+        report_addr: beacon.report.to_socket_addr(),
+        command_addr: beacon.command.to_socket_addr(),
     })
 }
 
@@ -404,7 +526,7 @@ pub fn parse_beacon_36(data: &[u8]) -> Result<ParsedBeacon36, ParseError> {
 /// 2. Then, a 36-byte beacon provides endpoints (same link_id)
 ///
 /// This function handles either beacon type.
-pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDiscovery, ParseError> {
+pub fn parse_beacon_response(data: &[u8], source_addr: SocketAddrV4) -> Result<RadarDiscovery, ParseError> {
     if data.len() < 36 {
         return Err(ParseError::TooShort {
             expected: 36,
@@ -417,7 +539,11 @@ pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDisc
         let beacon = parse_beacon_56(data)?;
 
         let (spokes, spoke_len, pixels) = match beacon.base_model {
-            BaseModel::Quantum => (QUANTUM_SPOKES_PER_REVOLUTION, QUANTUM_SPOKE_LEN, HD_PIXEL_VALUES),
+            BaseModel::Quantum => (
+                QUANTUM_SPOKES_PER_REVOLUTION,
+                QUANTUM_SPOKE_LEN,
+                HD_PIXEL_VALUES,
+            ),
             BaseModel::RD => (RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, NON_HD_PIXEL_VALUES),
         };
 
@@ -425,9 +551,7 @@ pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDisc
             brand: Brand::Raymarine,
             model: beacon.model_name,
             name: format!("{:08X}", beacon.link_id),
-            address: source_addr.to_string(),
-            data_port: 0, // Will come from 36-byte beacon
-            command_port: 0,
+            address: source_addr,
             spokes_per_revolution: spokes,
             max_spoke_len: spoke_len,
             pixel_values: pixels,
@@ -451,39 +575,28 @@ pub fn parse_beacon_response(data: &[u8], source_addr: &str) -> Result<RadarDisc
         };
 
         let (spokes, spoke_len, pixels) = match base_model {
-            BaseModel::Quantum => (QUANTUM_SPOKES_PER_REVOLUTION, QUANTUM_SPOKE_LEN, HD_PIXEL_VALUES),
+            BaseModel::Quantum => (
+                QUANTUM_SPOKES_PER_REVOLUTION,
+                QUANTUM_SPOKE_LEN,
+                HD_PIXEL_VALUES,
+            ),
             BaseModel::RD => (RD_SPOKES_PER_REVOLUTION, RD_SPOKE_LEN, NON_HD_PIXEL_VALUES),
         };
-
-        // Parse port from report address
-        let data_port = beacon.report_addr
-            .rsplit(':')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
-        let command_port = beacon.command_addr
-            .rsplit(':')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
 
         return Ok(RadarDiscovery {
             brand: Brand::Raymarine,
             model: None,
             name: format!("{:08X}", beacon.link_id),
-            address: source_addr.to_string(),
-            data_port,
-            command_port,
+            address: source_addr,
             spokes_per_revolution: spokes,
             max_spoke_len: spoke_len,
             pixel_values: pixels,
             serial_number: None,
             nic_address: None, // Set by locator
             suffix: None,
-            data_address: None,
-            report_address: None,
-            send_address: None,
+            data_address: Some(beacon.report_addr),
+            report_address: Some(beacon.report_addr),
+            send_address: Some(beacon.command_addr),
         });
     }
 
@@ -635,7 +748,12 @@ pub fn parse_quantum_status(data: &[u8]) -> Result<ParsedQuantumStatus, ParseErr
     for i in 0..20 {
         let offset = 148 + i * 4;
         if offset + 4 <= data.len() {
-            let range = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+            let range = u32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
             ranges.push(range);
         }
     }
@@ -661,14 +779,14 @@ pub fn parse_quantum_status(data: &[u8]) -> Result<ParsedQuantumStatus, ParseErr
 #[derive(Deserialize, Debug, Copy, Clone)]
 #[repr(C, packed)]
 pub struct RdFrameHeader {
-    pub field01: u32,     // 0x00010003
+    pub field01: u32, // 0x00010003
     pub zero_1: u32,
     pub fieldx_1: u32,    // 0x0000001c
     pub nspokes: u32,     // 0x00000008 - usually but changes
     pub spoke_count: u32, // 0x00000000 in regular, counting in HD
     pub zero_3: u32,
-    pub fieldx_3: u32,    // 0x00000001
-    pub fieldx_4: u32,    // 0x00000000 or 0xffffffff in regular, 0x400 in HD
+    pub fieldx_3: u32, // 0x00000001
+    pub fieldx_4: u32, // 0x00000000 or 0xffffffff in regular, 0x400 in HD
 }
 
 pub const RD_FRAME_HEADER_SIZE: usize = std::mem::size_of::<RdFrameHeader>();
@@ -692,7 +810,10 @@ pub fn parse_rd_frame_header(data: &[u8]) -> Result<ParsedRdFrame, ParseError> {
     let header: RdFrameHeader = bincode::deserialize(&data[..RD_FRAME_HEADER_SIZE])?;
 
     // Validate frame header
-    if header.field01 != 0x00010003 || header.fieldx_1 != 0x0000001c || header.fieldx_3 != 0x00000001 {
+    if header.field01 != 0x00010003
+        || header.fieldx_1 != 0x0000001c
+        || header.fieldx_3 != 0x00000001
+    {
         return Err(ParseError::InvalidHeader {
             expected: vec![0x03, 0x00, 0x01, 0x00],
             actual: vec![(header.field01 & 0xFF) as u8],
@@ -760,7 +881,12 @@ pub fn parse_rd_status(data: &[u8]) -> Result<ParsedRdStatus, ParseError> {
     let mut ranges = Vec::with_capacity(11);
     for i in 0..11 {
         let offset = 4 + i * 4;
-        let range = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+        let range = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
         ranges.push(range);
     }
 
@@ -812,7 +938,11 @@ pub fn parse_rd_status(data: &[u8]) -> Result<ParsedRdStatus, ParseError> {
 // =============================================================================
 
 /// Decompress Quantum spoke data using RLE (0x5c escape byte)
-pub fn decompress_quantum_spoke(data: &[u8], doppler_lookup: &[u8; 256], returns_per_line: usize) -> Vec<u8> {
+pub fn decompress_quantum_spoke(
+    data: &[u8],
+    doppler_lookup: &[u8; 256],
+    returns_per_line: usize,
+) -> Vec<u8> {
     let mut unpacked = Vec::with_capacity(1024);
     let mut offset = 0;
 
@@ -899,8 +1029,53 @@ pub const MFD_BEACON: [u8; 56] = [
 ];
 
 /// Create the MFD beacon request
-pub fn create_mfd_beacon() -> &'static [u8] {
+fn create_address_request() -> &'static [u8] {
     &MFD_BEACON
+}
+
+pub fn poll_beacon_packets(
+    brand_status: &BrandStatus,
+    poll_count: u64,
+    io: &mut dyn IoProvider,
+    buf: &mut [u8],
+    discoveries: &mut Vec<RadarDiscovery>,
+    _model_reports: &mut Vec<(String, Option<String>, Option<String>)>,
+) {
+    if let Some(socket) = brand_status.socket {
+        const BEACON_POLL_INTERVAL: u64 = 20;
+        if poll_count % BEACON_POLL_INTERVAL == 0 {
+            if let (Some(addr_str), Some(port)) = (brand_status.multicast.as_ref(), brand_status.port) {
+                // Parse multicast address and send
+                if let Ok(addr) = addr_str.parse::<Ipv4Addr>() {
+                    let dest = SocketAddrV4::new(addr, port);
+                    if let Err(e) = io.udp_send_to(&socket, create_address_request(), dest) {
+                        io.debug(&format!(
+                            "Raymarine beacon address request send error: {}",
+                            e
+                        ));
+                    }
+                }
+            }
+        }
+        while let Some((len, addr)) = io.udp_recv_from(&socket, buf) {
+            let data = &buf[..len];
+            if !is_beacon_36(data) && !is_beacon_56(data) {
+                continue;
+            }
+            match parse_beacon_response(data, addr) {
+                Ok(discovery) => {
+                    io.debug(&format!(
+                        "Raymarine beacon from {}: {:?}",
+                        addr, discovery.model
+                    ));
+                    discoveries.push(discovery);
+                }
+                Err(e) => {
+                    io.debug(&format!("Raymarine parse error: {}", e));
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -913,38 +1088,35 @@ mod tests {
 
     // Real Quantum beacon data from pcap
     const QUANTUM_BEACON_36: [u8; 36] = [
-        0x0, 0x0, 0x0, 0x0, 0x58, 0x6b, 0x80, 0xd6, 0x28, 0x0, 0x0, 0x0, 0x3, 0x0, 0x64, 0x0,
-        0x6, 0x8, 0x10, 0x0, 0x1, 0xf3, 0x1, 0xe8, 0xe, 0xa, 0x11, 0x0, 0xd6, 0x6, 0x12, 0xc6,
-        0xf, 0xa, 0x36, 0x0,
+        0x0, 0x0, 0x0, 0x0, 0x58, 0x6b, 0x80, 0xd6, 0x28, 0x0, 0x0, 0x0, 0x3, 0x0, 0x64, 0x0, 0x6,
+        0x8, 0x10, 0x0, 0x1, 0xf3, 0x1, 0xe8, 0xe, 0xa, 0x11, 0x0, 0xd6, 0x6, 0x12, 0xc6, 0xf, 0xa,
+        0x36, 0x0,
     ];
 
     const QUANTUM_BEACON_56: [u8; 56] = [
-        0x1, 0x0, 0x0, 0x0, 0x66, 0x0, 0x0, 0x0, 0x58, 0x6b, 0x80, 0xd6, 0xf3, 0x0, 0x0, 0x0,
-        0xf3, 0x0, 0xa8, 0xc0, 0x51, 0x75, 0x61, 0x6e, 0x74, 0x75, 0x6d, 0x52, 0x61, 0x64,
-        0x61, 0x72, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-        0x0, 0x0, 0x0, 0x0, 0x0, 0x2, 0x0, 0x0, 0x0,
+        0x1, 0x0, 0x0, 0x0, 0x66, 0x0, 0x0, 0x0, 0x58, 0x6b, 0x80, 0xd6, 0xf3, 0x0, 0x0, 0x0, 0xf3,
+        0x0, 0xa8, 0xc0, 0x51, 0x75, 0x61, 0x6e, 0x74, 0x75, 0x6d, 0x52, 0x61, 0x64, 0x61, 0x72,
+        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+        0x0, 0x0, 0x2, 0x0, 0x0, 0x0,
     ];
 
     // RD series beacon data
     const RD_BEACON_36: [u8; 36] = [
-        0x0, 0x0, 0x0, 0x0,     // message_type
+        0x0, 0x0, 0x0, 0x0, // message_type
         0xb1, 0x69, 0xc2, 0xb2, // link_id
-        0x1, 0x0, 0x0, 0x0,     // sub_type 1
-        0x1, 0x0, 0x1e, 0x0,
-        0xb, 0x8, 0x10, 0x0,
-        231, 69, 29, 224, 0x6, 0xa, 0x0, 0x0, // 224.29.69.231:2566
-        47, 234, 0, 10, 11, 8, 0, 0,           // 10.0.234.47:2059
+        0x1, 0x0, 0x0, 0x0, // sub_type 1
+        0x1, 0x0, 0x1e, 0x0, 0xb, 0x8, 0x10, 0x0, 231, 69, 29, 224, 0x6, 0xa, 0x0,
+        0x0, // 224.29.69.231:2566
+        47, 234, 0, 10, 11, 8, 0, 0, // 10.0.234.47:2059
     ];
 
     const RD_BEACON_56: [u8; 56] = [
-        0x1, 0x0, 0x0, 0x0,     // message_type
-        0x1, 0x0, 0x0, 0x0,     // sub_type
+        0x1, 0x0, 0x0, 0x0, // message_type
+        0x1, 0x0, 0x0, 0x0, // sub_type
         0xb1, 0x69, 0xc2, 0xb2, // link_id
-        0xb, 0x2, 0x0, 0x0,
-        0x2f, 0xea, 0x0, 0xa, 0x0,
-        0x31, 0xcc, 0x33, 0xcc, 0x33, 0xcc, 0x33, 0xcc, 0x33, 0x4e, 0x37, 0xcc, 0x27, 0xcc,
-        0x33, 0xcc, 0x33, 0xcc, 0x33, 0xcc, 0x30, 0xcc, 0x13, 0xc8, 0x33, 0xcc, 0x13, 0xcc,
-        0x33, 0xc0, 0x13, 0x2, 0x0, 0x1, 0x0,
+        0xb, 0x2, 0x0, 0x0, 0x2f, 0xea, 0x0, 0xa, 0x0, 0x31, 0xcc, 0x33, 0xcc, 0x33, 0xcc, 0x33,
+        0xcc, 0x33, 0x4e, 0x37, 0xcc, 0x27, 0xcc, 0x33, 0xcc, 0x33, 0xcc, 0x33, 0xcc, 0x30, 0xcc,
+        0x13, 0xc8, 0x33, 0xcc, 0x13, 0xcc, 0x33, 0xc0, 0x13, 0x2, 0x0, 0x1, 0x0,
     ];
 
     #[test]
@@ -970,9 +1142,9 @@ mod tests {
         assert_eq!(beacon.link_id, 0xd6806b58);
         assert_eq!(beacon.subtype, SUBTYPE_QUANTUM_36);
         // Report address: 232.1.243.1:2574 (0xe, 0xa = 2574)
-        assert!(beacon.report_addr.starts_with("232.1.243.1:"));
+        assert_eq!(*beacon.report_addr.ip(), std::net::Ipv4Addr::new(232, 1, 243, 1));
         // Command address: 198.18.6.214:2575
-        assert!(beacon.command_addr.starts_with("198.18.6.214:"));
+        assert_eq!(*beacon.command_addr.ip(), std::net::Ipv4Addr::new(198, 18, 6, 214));
     }
 
     #[test]
@@ -1046,5 +1218,151 @@ mod tests {
 
         let result = parse_beacon_36(&[0u8; 10]);
         assert!(matches!(result, Err(ParseError::TooShort { .. })));
+    }
+
+    #[test]
+    fn test_spoke_processor_basic() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // Normal pixel: 0x80 → 0x80/2 = 64
+        let result = processor.process_spoke(&[0x80], DopplerMode::None);
+        assert_eq!(result, vec![64]);
+    }
+
+    #[test]
+    fn test_spoke_processor_doppler_markers() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // 0xFF = approaching, 0xFE = receding in Doppler mode
+        let result = processor.process_spoke(&[0xFF, 0xFE, 0x80], DopplerMode::Both);
+        assert_eq!(result, vec![20, 21, 64]); // approaching, receding, normal/2
+    }
+
+    #[test]
+    fn test_spoke_processor_no_doppler() {
+        let processor = SpokeProcessor::new(20, 21);
+
+        // Without Doppler, 0xFF and 0xFE are just normal values divided by 2
+        let result = processor.process_spoke(&[0xFF, 0xFE], DopplerMode::None);
+        assert_eq!(result, vec![127, 127]); // 0xFF/2=127, 0xFE/2=127
+    }
+}
+
+// =============================================================================
+// Spoke Processing with Lookup Tables
+// =============================================================================
+
+/// Number of possible byte values for lookup tables
+pub const BYTE_LOOKUP_LENGTH: usize = 256;
+
+/// Doppler mode for Raymarine spoke processing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DopplerMode {
+    #[default]
+    None = 0,
+    Both = 1,
+}
+
+/// Number of lookup variants for Doppler modes
+const LOOKUP_DOPPLER_LENGTH: usize = 2;
+
+/// Lookup table indices for Doppler processing
+#[derive(Debug, Clone, Copy)]
+#[repr(usize)]
+enum LookupDoppler {
+    Normal = 0,
+    Doppler = 1,
+}
+
+/// Pre-computed lookup table for fast Raymarine spoke processing.
+///
+/// Raymarine spoke processing differs from Navico:
+/// - Pixel values are divided by 2 (8-bit → 7-bit)
+/// - Doppler markers are 0xFF (approaching) and 0xFE (receding)
+///
+/// # Example
+///
+/// ```
+/// use mayara_core::protocol::raymarine::{SpokeProcessor, DopplerMode};
+///
+/// // Create processor with Doppler color indices
+/// let processor = SpokeProcessor::new(16, 17); // approaching=16, receding=17
+///
+/// // Process raw spoke data
+/// let raw_spoke = vec![0x80, 0xFF, 0xFE];
+/// let processed = processor.process_spoke(&raw_spoke, DopplerMode::Both);
+/// assert_eq!(processed, vec![64, 16, 17]); // 0x80/2, approaching, receding
+/// ```
+#[derive(Debug, Clone)]
+pub struct SpokeProcessor {
+    /// Lookup table: [doppler_variant][byte_value] → output_pixel
+    lookup: [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH],
+}
+
+impl SpokeProcessor {
+    /// Create a new spoke processor with Doppler color indices.
+    ///
+    /// # Arguments
+    /// * `doppler_approaching` - Pixel value for approaching targets (0xFF in raw data)
+    /// * `doppler_receding` - Pixel value for receding targets (0xFE in raw data)
+    pub fn new(doppler_approaching: u8, doppler_receding: u8) -> Self {
+        let mut lookup = [[0u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH];
+
+        for j in 0..BYTE_LOOKUP_LENGTH {
+            // Normal mode: divide by 2
+            lookup[LookupDoppler::Normal as usize][j] = (j as u8) / 2;
+
+            // Doppler mode: check for markers, otherwise divide by 2
+            lookup[LookupDoppler::Doppler as usize][j] = match j {
+                0xff => doppler_approaching,
+                0xfe => doppler_receding,
+                _ => (j as u8) / 2,
+            };
+        }
+
+        Self { lookup }
+    }
+
+    /// Process raw spoke data using pre-computed lookup table.
+    ///
+    /// # Arguments
+    /// * `spoke` - Raw spoke data
+    /// * `doppler` - Current Doppler mode
+    ///
+    /// # Returns
+    /// Processed spoke data with pixels divided by 2 and Doppler markers replaced
+    pub fn process_spoke(&self, spoke: &[u8], doppler: DopplerMode) -> Vec<u8> {
+        let mut output = Vec::with_capacity(spoke.len());
+
+        let lookup_index = match doppler {
+            DopplerMode::None => LookupDoppler::Normal,
+            DopplerMode::Both => LookupDoppler::Doppler,
+        } as usize;
+
+        for &pixel in spoke {
+            output.push(self.lookup[lookup_index][pixel as usize]);
+        }
+
+        output
+    }
+
+    /// Get the lookup array for a specific Doppler mode.
+    ///
+    /// This is useful for passing to decompression functions that need
+    /// a flat lookup table.
+    pub fn get_lookup(&self, doppler: DopplerMode) -> [u8; BYTE_LOOKUP_LENGTH] {
+        let lookup_index = match doppler {
+            DopplerMode::None => LookupDoppler::Normal,
+            DopplerMode::Both => LookupDoppler::Doppler,
+        } as usize;
+
+        self.lookup[lookup_index]
+    }
+}
+
+impl Default for SpokeProcessor {
+    /// Create a processor with default Doppler indices (255 for both).
+    fn default() -> Self {
+        Self::new(255, 255)
     }
 }
