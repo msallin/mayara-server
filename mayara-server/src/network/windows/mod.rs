@@ -6,6 +6,7 @@ pub fn has_carrier(_interface_name: &str) -> bool {
 
 pub fn is_wireless_interface(interface_name: &str) -> bool {
     use std::ptr::null_mut;
+    use windows::Win32::Foundation::{ERROR_SERVICE_NOT_ACTIVE, HANDLE};
     use windows::Win32::NetworkManagement::WiFi::{
         WlanCloseHandle, WlanEnumInterfaces, WlanFreeMemory, WlanOpenHandle,
         WLAN_INTERFACE_INFO_LIST,
