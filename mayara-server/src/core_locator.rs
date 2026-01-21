@@ -38,6 +38,8 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tokio_graceful_shutdown::SubsystemHandle;
 
+use crate::network::has_carrier;
+
 use crate::network::is_wireless_interface;
 use crate::tokio_io::TokioIoProvider;
 use crate::Brand;
@@ -423,6 +425,11 @@ fn find_furuno_interface(allow_wifi: bool, interface: &Option<String>) -> Option
                     continue;
                 }
             }
+        }
+        // Skip interfaces without carrier (link down)
+        if !has_carrier(&itf.name) {
+            log::debug!("Skipping interface {} (no carrier)", itf.name);
+            continue;
         }
         for addr in &itf.addr {
             if let (IpAddr::V4(nic_ip), Some(IpAddr::V4(netmask))) = (addr.ip(), addr.netmask()) {
