@@ -62,7 +62,7 @@ impl FurunoReportReceiver {
         let key = info.key();
 
         let replay = args.replay;
-        let command_sender = if replay {
+        let command_sender = if !replay {
             Some(Command::new(&info))
         } else {
             None
@@ -600,6 +600,7 @@ impl FurunoReportReceiver {
             if let Some(cs) = &mut self.command_sender {
                 cs.set_ranges(self.common.info.ranges.clone());
             }
+            self.common.update();
             return;
         }
         log::error!(
