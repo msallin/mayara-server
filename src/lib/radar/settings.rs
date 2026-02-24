@@ -1529,7 +1529,10 @@ impl ControlValue {
                 s.parse::<i64>().map_err(|_| RadarError::EnumerationFailed)
             }
             Value::Bool(b) => Ok(if b { 1 } else { 0 }),
-            Value::Number(n) => n.as_i64().ok_or(RadarError::EnumerationFailed),
+            Value::Number(n) => n
+                .as_i64()
+                .or_else(|| n.as_f64().map(|f| f as i64))
+                .ok_or(RadarError::EnumerationFailed),
             _ => Err(RadarError::EnumerationFailed),
         }
         .map_err(|_| RadarError::CannotSetControlId(self.id))

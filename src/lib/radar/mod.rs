@@ -964,8 +964,8 @@ impl CommonRadar {
             }
             if ((self.prev_angle + 1) % self.info.spokes_per_revolution) != angle {
                 let missing_spokes =
-                    ((angle + self.info.spokes_per_revolution) - self.prev_angle - 1)
-                        % self.info.spokes_per_revolution;
+                    ((angle as u32 + self.info.spokes_per_revolution as u32) - self.prev_angle as u32 - 1)
+                        % self.info.spokes_per_revolution as u32;
                 log::trace!(
                     "{}: Spoke angle {} is not consecutive to previous angle {}, missing spokes {}",
                     self.key,

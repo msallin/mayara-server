@@ -36,6 +36,8 @@ pub fn new(
         .build(&mut controls);
 
     new_string(ControlId::SerialNumber).build(&mut controls);
+    new_list(ControlId::ScanSpeed, &["Normal", "Fast", "Auto"]).build(&mut controls);
+    new_numeric(ControlId::MainBangSuppression, 0., 100.).build(&mut controls);
 
     // Furuno is nautical-only - no RangeUnits control, default is already 0 (Nautical)
     SharedControls::new(radar_id, sk_client_tx, args, controls)
