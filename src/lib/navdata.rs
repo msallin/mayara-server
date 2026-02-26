@@ -312,7 +312,7 @@ impl NavigationData {
                             let port = info.get_port();
 
                             for a in addr {
-                                known_addresses.insert(SocketAddr::new(*a, port));
+                                known_addresses.insert(SocketAddr::new(a.to_ip_addr(), port));
                             }
                         },
                         _ => {
