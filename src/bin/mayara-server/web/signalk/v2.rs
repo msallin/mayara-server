@@ -999,7 +999,6 @@ async fn ws_signalk_delta(
 
             // receive control values from the client
             r = socket.recv() => {
-                log::info!("Receiving {:?}", r);
                 match r {
                     Some(Ok(message)) => {
                         match message {

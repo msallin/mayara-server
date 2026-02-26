@@ -238,7 +238,7 @@ impl FurunoLocator {
             .set_string(&ControlId::UserName, info.key())
             .unwrap();
 
-        if let Some(mut info) = radars.located(info) {
+        if let Some(mut info) = radars.add(info) {
             // It's new, start the RadarProcessor thread
 
             let port: u16 = match login_to_radar(info.addr) {

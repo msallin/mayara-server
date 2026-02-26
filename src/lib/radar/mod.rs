@@ -303,6 +303,22 @@ impl RadarInfo {
         self.key.to_owned()
     }
 
+    //
+    // Once the ranges are set non-zero the radar is findable by the GUI,
+    // this version only to be called by config() that does not have CommonRadar.
+    //
+    pub(super) fn set_ranges(&mut self, ranges: Ranges) {
+        if self.ranges.is_empty() && !ranges.is_empty() {
+            log::info!(
+                "{}: supports ranges {} and is now findable in GUI",
+                self.key,
+                ranges
+            );
+        }
+        self.ranges = ranges;
+        self.controls.set_valid_ranges(&self.ranges);
+    }
+
     pub fn set_doppler(&mut self, doppler: bool) {
         if doppler != self.doppler {
             self.legend = default_legend(&self.targets, doppler, self.pixel_values);
@@ -340,11 +356,6 @@ impl RadarInfo {
         } else {
             0
         }
-    }
-
-    pub(crate) fn set_ranges(&mut self, ranges: Ranges) {
-        self.ranges = ranges;
-        self.controls.set_valid_ranges(&self.ranges);
     }
 
     pub(super) fn broadcast_radar_message(&self, message: RadarMessage) {
@@ -445,7 +456,7 @@ impl SharedRadars {
     }
 
     // A radar has been found
-    pub fn located(&self, mut new_info: RadarInfo) -> Option<RadarInfo> {
+    pub fn add(&self, mut new_info: RadarInfo) -> Option<RadarInfo> {
         let key = new_info.key.to_owned();
         let mut radars = self.radars.write().unwrap();
 
@@ -462,9 +473,10 @@ impl SharedRadars {
                 .update_info_from_persistence(&mut new_info);
 
             log::info!(
-                "Found radar: key '{}' name '{}'",
+                "Found radar: key '{}' name '{}' with {} ranges",
                 &new_info.key,
-                new_info.controls.user_name()
+                new_info.controls.user_name(),
+                new_info.ranges.len()
             );
             radars.info.insert(key, new_info.clone());
             Some(new_info)
@@ -866,6 +878,23 @@ impl CommonRadar {
         self.radars.update(&mut self.info);
     }
 
+    //
+    // Once the ranges are set non-zero the radar is findable by the GUI
+    //
+    pub(crate) fn set_ranges(&mut self, ranges: Ranges) {
+        if self.info.ranges.is_empty() && !ranges.is_empty() {
+            log::info!(
+                "{}: supports ranges {} and is now findable in GUI",
+                self.key,
+                ranges
+            );
+        }
+        self.info.ranges = ranges;
+        self.info.range_detection = None;
+        self.info.controls.set_valid_ranges(&self.info.ranges);
+        self.update();
+    }
+
     ///
     /// Received a control update from the (web) client over the receiver channel
     ///
@@ -963,9 +992,10 @@ impl CommonRadar {
                 self.max_spoke_length = 0;
             }
             if ((self.prev_angle + 1) % self.info.spokes_per_revolution) != angle {
-                let missing_spokes =
-                    ((angle as u32 + self.info.spokes_per_revolution as u32) - self.prev_angle as u32 - 1)
-                        % self.info.spokes_per_revolution as u32;
+                let missing_spokes = ((angle as u32 + self.info.spokes_per_revolution as u32)
+                    - self.prev_angle as u32
+                    - 1)
+                    % self.info.spokes_per_revolution as u32;
                 log::trace!(
                     "{}: Spoke angle {} is not consecutive to previous angle {}, missing spokes {}",
                     self.key,

@@ -266,7 +266,6 @@ impl RaymarineReportReceiver {
         if let Some(command_sender) = &mut self.command_sender {
             command_sender.set_ranges(ranges.clone());
         }
-        self.common.info.set_ranges(ranges);
-        self.common.update();
+        self.common.set_ranges(ranges);
     }
 }

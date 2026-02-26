@@ -423,7 +423,7 @@ impl RaymarineLocator {
                         // Request from an MFD, ignore it
                     }
                     _ => {
-                        // log::warn!("{}: Raymarine 56 report: unknown subtype {}", from, subtype);
+                        // log::w   arn!("{}: Raymarine 56 report: unknown subtype {}", from, subtype);
                     }
                 }
             }
@@ -439,7 +439,7 @@ impl RaymarineLocator {
             .set_string(&ControlId::UserName, info.key())
             .unwrap();
 
-        if let Some(mut info) = radars.located(info) {
+        if let Some(mut info) = radars.add(info) {
             // It's new, start the RadarProcessor thread
             info.start_forwarding_radar_messages_to_stdout(&subsys);
 

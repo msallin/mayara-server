@@ -443,7 +443,7 @@ impl NavicoLocator {
             .set_string(&ControlId::UserName, info.key())
             .unwrap();
 
-        if let Some(mut info) = radars.located(info) {
+        if let Some(mut info) = radars.add(info) {
             // It's new, start the RadarProcessor thread
 
             // Load the model name afresh, it may have been modified from persisted data

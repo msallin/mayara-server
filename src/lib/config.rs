@@ -18,7 +18,7 @@ pub fn get_project_dirs() -> ProjectDirs {
         .expect("Cannot find project directories")
 }
 
-fn default_range_units() -> i32 {
+pub(crate) fn default_range_units() -> i32 {
     0 // Nautical (default)
 }
 

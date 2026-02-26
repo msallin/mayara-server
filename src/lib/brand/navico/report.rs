@@ -886,11 +886,8 @@ impl NavicoReportReceiver {
                     return Ok(());
                 }
                 RangeDetectionResult::Complete(ranges, saved_range) => {
-                    self.common.info.set_ranges(ranges);
-                    self.common.info.range_detection = None;
+                    self.common.set_ranges(ranges);
                     self.range_timeout = Instant::now() + FAR_FUTURE;
-
-                    self.common.update();
 
                     self.send_range(saved_range).await?;
                     if self.transmit_after_range_detection {

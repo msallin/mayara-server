@@ -150,7 +150,7 @@ struct Server {
 }
 
 async fn endpoints(State(state): State<Web>, headers: hyper::header::HeaderMap) -> Json<Endpoints> {
-    log::info!("endpoints: headers: {:?}", headers);
+    log::debug!("endpoints: headers: {:?}", headers);
     let host: String = match headers.get(axum::http::header::HOST) {
         Some(host) => host.to_str().unwrap_or("localhost").to_string(),
         None => "localhost".to_string(),
