@@ -72,7 +72,7 @@ pub(crate) fn get_position() -> (Option<f64>, Option<f64>) {
 
 pub(crate) fn set_position(lat: Option<f64>, lon: Option<f64>) {
     if let (Some(lat), Some(lon)) = (lat, lon) {
-        log::debug!("navdata::set_position(lat={}, lon={})", lat, lon);
+        log::trace!("navdata::set_position(lat={}, lon={})", lat, lon);
         POSITION_LAT.store(lat, Ordering::Release);
         POSITION_LON.store(lon, Ordering::Release);
         POSITION_VALID.store(true, Ordering::Release);
@@ -438,7 +438,7 @@ impl NavigationData {
                 r = lines.next_line() => {
                     match r {
                         Ok(Some(line)) => {
-                            log::debug!("{} <- {}", self.what, line);
+                            log::trace!("{} <- {}", self.what, line);
                             if self.nmea0183_mode {
                                 // We are in NMEA0183 mode, so we need to parse
                                 // the data we get.
@@ -456,7 +456,7 @@ impl NavigationData {
                                 }
                                 else {
                                     match parse_signalk(&line) {
-                                        Err(e) => { log::debug!("{} parse error: {}", self.what, e)}
+                                        Err(e) => { log::trace!("{} parse error: {}", self.what, e)}
                                         Ok(_) => { }
                                     }
                                 }
@@ -588,20 +588,20 @@ impl NavigationData {
 //     "values":[{"path":"navigation.position","value":{"longitude":5.428445,"latitude":53.180205}}]}]}
 
 fn parse_signalk(s: &str) -> Result<(), RadarError> {
-    log::debug!("parse_signalk: parsing '{}'", s);
+    log::trace!("parse_signalk: parsing '{}'", s);
     match serde_json::from_str::<Value>(s) {
         Ok(v) => {
-            log::debug!("parse_signalk: parsed JSON successfully");
+            log::trace!("parse_signalk: parsed JSON successfully");
             let updates = &v["updates"][0];
             let values = &updates["values"][0];
             {
-                log::debug!("parse_signalk: values = {:?}", values);
+                log::trace!("parse_signalk: values = {:?}", values);
 
                 if let (Some(path), value) = (values["path"].as_str(), &values["value"]) {
-                    log::debug!("parse_signalk: path = '{}', value = {:?}", path, value);
+                    log::trace!("parse_signalk: path = '{}', value = {:?}", path, value);
                     match path {
                         "navigation.position" => {
-                            log::debug!(
+                            log::trace!(
                                 "parse_signalk: position lat={:?} lon={:?}",
                                 value["latitude"].as_f64(),
                                 value["longitude"].as_f64()
@@ -626,7 +626,7 @@ fn parse_signalk(s: &str) -> Result<(), RadarError> {
                         }
                     }
                 } else {
-                    log::debug!("parse_signalk: no path or value found in values");
+                    log::trace!("parse_signalk: no path or value found in values");
                 }
             }
         }

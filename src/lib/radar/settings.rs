@@ -876,7 +876,7 @@ impl SharedControls {
         Ok(())
     }
 
-    fn send_to_command_handler(
+    pub fn send_to_command_handler(
         &self,
         control_value: ControlValue,
         reply_tx: tokio::sync::mpsc::Sender<ControlValue>,

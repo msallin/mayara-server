@@ -11,7 +11,7 @@ use std::{
 
 use crate::radar::GeoPosition;
 
-use super::{ArpaTarget, Doppler, ExtendedPosition, TargetStatus};
+use super::{ArpaTarget, Doppler, ExtendedPosition, RefreshState, TargetStatus};
 
 /// Configuration for a radar participating in shared target management
 #[derive(Debug, Clone)]
@@ -221,6 +221,27 @@ impl SharedTargetManager {
         target_id
     }
 
+    /// Add an already-constructed target to the shared manager
+    pub(crate) fn add_target(&self, target_id: usize, target: ArpaTarget, radar_key: &str) {
+        let mut state = self.inner.write().unwrap();
+
+        let managed = ManagedTarget {
+            target,
+            tracking_radar: radar_key.to_string(),
+            source_radar: radar_key.to_string(),
+            transferred: false,
+            last_refresh: 0,
+        };
+
+        log::debug!(
+            "Added target {} to shared manager for radar '{}'",
+            target_id,
+            radar_key
+        );
+
+        state.targets.insert(target_id, managed);
+    }
+
     /// Get all targets currently assigned to a specific radar
     pub(crate) fn get_targets_for_radar(&self, radar_key: &str) -> Vec<(usize, ArpaTarget)> {
         let state = self.inner.read().unwrap();
@@ -344,12 +365,16 @@ impl SharedTargetManager {
         state.targets.clear();
     }
 
-    /// Clean up lost targets
+    /// Clean up lost targets and reset refresh state for the next cycle
     pub(crate) fn cleanup_lost_targets(&self) {
         let mut state = self.inner.write().unwrap();
         state
             .targets
             .retain(|_, managed| managed.target.m_status != TargetStatus::LOST);
+        // Reset refresh state for all remaining targets so they can be refreshed next cycle
+        for managed in state.targets.values_mut() {
+            managed.target.m_refreshed = RefreshState::NotFound;
+        }
     }
 
     /// Get the number of active targets

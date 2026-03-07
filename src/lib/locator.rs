@@ -189,6 +189,9 @@ impl Locator {
                                     spawn_receive(&mut set, locator_socket);
                                 } else {
                                     // we have found a radar
+                                    if self.args.transmit {
+                                        radars.request_transmit_all();
+                                    }
                                     break; // Restart the loop but now without locators
                                 }
                             }
@@ -217,6 +220,11 @@ impl Locator {
                                                 &interface_state.active_nic_addresses,
                                             )
                                             .await;
+                                        }
+
+                                        // Periodically request transmit mode for standby radars
+                                        if self.args.transmit {
+                                            radars.request_transmit_all();
                                         }
 
                                         // Respawn this task

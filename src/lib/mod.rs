@@ -94,6 +94,10 @@ pub struct Cli {
     /// Output OpenAPI specification to stdout and exit
     #[arg(long, default_value_t = false)]
     pub openapi: bool,
+
+    /// Automatically put detected radars into transmit mode
+    #[arg(long, default_value_t = false)]
+    pub transmit: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash, ToSchema)]

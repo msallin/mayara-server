@@ -32,19 +32,19 @@ impl Polar {
     }
 
     pub fn angle_in_rad(&self, spokes_per_revolution: f64) -> f64 {
-        self.angle as f64 * PI / 180. / spokes_per_revolution
+        self.angle as f64 * 2.0 * PI / spokes_per_revolution
     }
 
     // Is the polar angle between start and end, where
     // start and end are normalized on some polar angle [0..n>.
     pub fn angle_is_between(&self, start: i32, end: i32) -> bool {
-        if self.angle >= start && self.angle < end {
-            return true;
+        if start <= end {
+            // Normal case: no wrap-around
+            self.angle >= start && self.angle < end
+        } else {
+            // Wrap-around case: range spans 0 (e.g., 1812..276 means 1812..2048 and 0..276)
+            self.angle >= start || self.angle < end
         }
-        if end < start && (self.angle >= end || self.angle < start) {
-            return true;
-        }
-        false
     }
 }
 

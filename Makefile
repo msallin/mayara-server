@@ -49,12 +49,12 @@ mpi:
 	scp target/aarch64-unknown-linux-musl/release/mayara-server merrimac-pi:
 	ssh merrimac-pi RUST_BACKTRACE=full ./mayara-server 
 
-mpid: 
+mpid:
 	@echo "Building and running on merrimac-pi..."
 	cargo build --release --target aarch64-unknown-linux-musl
 	ssh merrimac-pi killall -9 mayara-server || :
 	scp target/aarch64-unknown-linux-musl/release/mayara-server merrimac-pi:
-	ssh merrimac-pi RUST_BACKTRACE=full ./mayara-server -v
+	ssh merrimac-pi RUST_BACKTRACE=full ./mayara-server -v --transmit
 
 # Build debug with dev feature (GUI served from filesystem, no embedding)
 # Useful for GUI development - just refresh browser after editing JS/HTML

@@ -20,10 +20,15 @@ mod arpa;
 mod kalman;
 pub(crate) mod manager;
 
-const MIN_CONTOUR_LENGTH: usize = 6;
-const MAX_CONTOUR_LENGTH: usize = 2000; // defines maximal size of target contour in pixels
+const MIN_BLOB_PIXELS: usize = 6; // minimum number of pixels for a valid blob
+const MAX_BLOB_PIXELS: usize = 10000; // maximum blob size (radar interference protection)
 const MAX_LOST_COUNT: i32 = 12; // number of sweeps that target can be missed before it is set to lost
 const MAX_DETECTION_SPEED_KN: f64 = 40.;
+const MIN_BLOB_RANGE: i32 = 4; // ignore blobs closer than this (main bang)
+
+// Legacy constants - to be removed after full migration to blob-based detection
+const MIN_CONTOUR_LENGTH: usize = 6;
+const MAX_CONTOUR_LENGTH: usize = 2000;
 
 pub const METERS_PER_DEGREE_LATITUDE: f64 = 60. * NAUTICAL_MILE_F64;
 pub const KN_TO_MS: f64 = NAUTICAL_MILE_F64 / 3600.;
@@ -362,6 +367,9 @@ pub struct TargetBuffer {
 
     /// Previous angle for detecting revolution completion
     prev_angle: usize,
+
+    /// Blobs currently being built as spokes arrive
+    blobs_in_progress: Vec<BlobInProgress>,
 }
 
 const REFRESH_START_PERCENTAGE: i32 = 25;
@@ -378,6 +386,79 @@ pub(self) struct TargetSetup {
     pixels_per_meter: f64,
     rotation_speed_ms: u32,
     stationary: bool,
+}
+
+/// A blob being incrementally built as spokes arrive
+#[derive(Debug, Clone)]
+struct BlobInProgress {
+    /// Range values present on the last spoke that contributed to this blob
+    /// Used to check adjacency with the next spoke
+    last_spoke_ranges: Vec<i32>,
+    /// The angle of the last spoke that contributed pixels
+    last_angle: i32,
+    /// Bounding box
+    min_angle: i32,
+    max_angle: i32,
+    min_r: i32,
+    max_r: i32,
+    /// Total pixel count
+    pixel_count: usize,
+    /// Time when first pixel was seen
+    start_time: u64,
+    /// Own ship position when blob started
+    start_pos: GeoPosition,
+}
+
+impl BlobInProgress {
+    fn new(angle: i32, r: i32, time: u64, pos: GeoPosition) -> Self {
+        Self {
+            last_spoke_ranges: vec![r],
+            last_angle: angle,
+            min_angle: angle,
+            max_angle: angle,
+            min_r: r,
+            max_r: r,
+            pixel_count: 1,
+            start_time: time,
+            start_pos: pos,
+        }
+    }
+
+    /// Add a pixel to this blob
+    fn add_pixel(&mut self, angle: i32, r: i32) {
+        self.max_angle = angle; // angle always increases as we process spokes
+        self.min_r = min(self.min_r, r);
+        self.max_r = max(self.max_r, r);
+        self.pixel_count += 1;
+    }
+
+    /// Start a new spoke - clear last_spoke_ranges and set last_angle
+    fn start_new_spoke(&mut self, angle: i32) {
+        self.last_spoke_ranges.clear();
+        self.last_angle = angle;
+    }
+
+    /// Check if a range value on the current spoke is adjacent to this blob
+    /// (i.e., within 1 pixel of any range on the previous spoke)
+    fn is_adjacent(&self, r: i32) -> bool {
+        self.last_spoke_ranges
+            .iter()
+            .any(|&prev_r| (prev_r - r).abs() <= 1)
+    }
+
+    /// Calculate center position in polar coordinates
+    fn center(&self) -> (i32, i32) {
+        let center_angle = (self.min_angle + self.max_angle) / 2;
+        let center_r = (self.min_r + self.max_r) / 2;
+        (center_angle, center_r)
+    }
+
+    /// Check if blob meets minimum size requirements
+    fn is_valid(&self) -> bool {
+        self.pixel_count >= MIN_BLOB_PIXELS
+            && self.pixel_count <= MAX_BLOB_PIXELS
+            && self.min_r >= MIN_BLOB_RANGE
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -845,6 +926,11 @@ impl HistorySpokes {
         const SHADOW_MARGIN: i32 = 5;
         const TARGET_DISTANCE_FOR_BLANKING_SHADOW: f64 = 6000.; // 6 km
 
+        let sweep_len = self.spokes[0].sweep.len();
+        if sweep_len == 0 {
+            return;
+        }
+
         for a in contour.min_angle - DISTANCE_BETWEEN_TARGETS
             ..=contour.max_angle + DISTANCE_BETWEEN_TARGETS
         {
@@ -852,7 +938,7 @@ impl HistorySpokes {
             for r in max(contour.min_r - DISTANCE_BETWEEN_TARGETS, 0)
                 ..=min(
                     contour.max_r + DISTANCE_BETWEEN_TARGETS,
-                    self.spokes[0].sweep.len() as i32 - 1,
+                    sweep_len as i32 - 1,
                 )
             {
                 self.spokes[a].sweep[r as usize] =
@@ -863,6 +949,7 @@ impl HistorySpokes {
 
         let distance_to_radar = pos.r as f64 / pixels_per_meter;
         // For larger targets clear the "shadow" of the target until 4 * r ????
+
         if contour.length > 20 && distance_to_radar < TARGET_DISTANCE_FOR_BLANKING_SHADOW {
             let mut max = contour.max_angle;
             if contour.min_angle - SHADOW_MARGIN > contour.max_angle + SHADOW_MARGIN {
@@ -870,9 +957,7 @@ impl HistorySpokes {
             }
             for a in contour.min_angle - SHADOW_MARGIN..=max + SHADOW_MARGIN {
                 let a = self.mod_spokes(a);
-                for r in
-                    contour.max_r as usize..=min(4 * contour.max_r as usize, self.spokes.len() - 1)
-                {
+                for r in contour.max_r as usize..=min(4 * contour.max_r as usize, sweep_len - 1) {
                     self.spokes[a].sweep[r] =
                         self.spokes[a].sweep[r].intersection(HistoryPixel::BACKUP);
                     // also clear both Doppler bits
@@ -882,7 +967,6 @@ impl HistorySpokes {
 
         // Draw the contour in the history. This is copied to the output data
         // on the next sweep.
-        let sweep_len = self.spokes[0].sweep.len();
         for p in &contour.contour {
             // Normalize angle (can be negative due to contour tracing) and check r bounds
             if p.r >= 0 && (p.r as usize) < sweep_len {
@@ -982,6 +1066,8 @@ impl TargetBuffer {
             ],
 
             prev_angle: 0,
+
+            blobs_in_progress: Vec::new(),
         }
     }
 
@@ -1038,6 +1124,8 @@ impl TargetBuffer {
             self.setup.spokes_per_revolution,
             self.setup.spoke_len,
         );
+        // Clear any blobs in progress since history was reset
+        self.blobs_in_progress.clear();
     }
 
     fn clear_contours(&mut self) {
@@ -1169,6 +1257,26 @@ impl TargetBuffer {
         if self.setup.pixels_per_meter == 0. {
             return;
         }
+
+        let target_count = self.targets.read().unwrap().len();
+        if target_count > 0 {
+            // Log target angles for each segment refresh
+            let target_angles: Vec<i32> = self
+                .targets
+                .read()
+                .unwrap()
+                .values()
+                .map(|t| t.contour.position.angle)
+                .collect();
+            log::debug!(
+                "refresh_all_arpa_targets: {} targets at angles {:?}, scanning range {}..{}",
+                target_count,
+                target_angles,
+                start_angle,
+                end_angle
+            );
+        }
+
         self.cleanup_lost_targets();
 
         // main target refresh loop
@@ -1183,6 +1291,11 @@ impl TargetBuffer {
         // In dual radar mode, get targets assigned to this radar from shared manager
         if let Some(ref manager) = self.shared_manager {
             let targets_for_radar = manager.get_targets_for_radar(&self.radar_key);
+            log::debug!(
+                "refresh_all_arpa_targets: shared manager mode, {} targets for radar {}",
+                targets_for_radar.len(),
+                self.radar_key
+            );
             for (target_id, target) in targets_for_radar {
                 self.refresh_single_target(
                     target_id,
@@ -1195,14 +1308,27 @@ impl TargetBuffer {
         } else {
             // Single radar mode - use local storage
             let target_ids: Vec<usize> = self.targets.read().unwrap().keys().cloned().collect();
+            log::debug!(
+                "refresh_all_arpa_targets: single radar mode, {} target_ids: {:?}",
+                target_ids.len(),
+                target_ids
+            );
             for target_id in target_ids {
                 let target = {
                     let targets = self.targets.read().unwrap();
                     match targets.get(&target_id) {
                         Some(t) => t.clone(),
-                        None => continue,
+                        None => {
+                            log::debug!("Target {} not found in storage", target_id);
+                            continue;
+                        }
                     }
                 };
+                log::debug!(
+                    "Processing local target {} at angle {}",
+                    target_id,
+                    target.contour.position.angle
+                );
                 self.refresh_single_target(
                     target_id,
                     target,
@@ -1230,6 +1356,15 @@ impl TargetBuffer {
             return;
         }
 
+        log::info!(
+            "Refreshing target {}: status={:?}, angle={}, range={}..{}",
+            target_id,
+            target.m_status,
+            target.contour.position.angle,
+            start_angle,
+            end_angle
+        );
+
         for pass in Pass::iter() {
             let radius = match pass {
                 Pass::First => search_radius / 4,
@@ -1245,6 +1380,7 @@ impl TargetBuffer {
                 continue;
             }
 
+            let prev_status = target.m_status.clone();
             let clone = target.clone();
             match ArpaTarget::refresh_target(
                 clone,
@@ -1253,17 +1389,29 @@ impl TargetBuffer {
                 radius / 4,
                 pass,
             ) {
-                Ok(t) => target = t,
-                Err(e) => {
-                    match e {
-                        Error::Lost => {
-                            // Mark target as lost - will be cleaned up later
-                        }
-                        _ => {
-                            log::debug!("Target {} refresh error {:?}", target.m_target_id, e);
-                        }
+                Ok(t) => {
+                    // Log status changes
+                    if t.m_status != prev_status {
+                        log::info!(
+                            "Target {} status: {:?} -> {:?}, speed={:.1}kn, lost_count={}",
+                            t.m_target_id,
+                            prev_status,
+                            t.m_status,
+                            t.position.speed_kn,
+                            t.m_lost_count
+                        );
                     }
+                    target = t;
                 }
+                Err(e) => match e {
+                    Error::Lost => {
+                        log::info!("Target {} lost", target.m_target_id);
+                        target.m_status = TargetStatus::LOST;
+                    }
+                    _ => {
+                        log::debug!("Target {} refresh error {:?}", target.m_target_id, e);
+                    }
+                },
             }
         }
 
@@ -1531,11 +1679,11 @@ impl TargetBuffer {
         doppler: &Doppler,
     ) {
         let epos = ExtendedPosition::new(own_pos.clone(), 0., 0., time, 0., 0.);
-        let epos = self.setup.polar2pos(&pol, &epos);
+        let target_pos = self.setup.polar2pos(&pol, &epos);
         let uid = self.get_next_target_id();
 
         let mut target = ArpaTarget::new(
-            epos,
+            target_pos.clone(),
             own_pos,
             uid,
             self.setup.spokes_per_revolution as usize,
@@ -1543,25 +1691,26 @@ impl TargetBuffer {
             *doppler == Doppler::AnyDoppler,
         );
 
-        // Do an initial refresh to find and draw the contour
-        let speed = MAX_DETECTION_SPEED_KN * KN_TO_MS; // m/sec
-        let search_radius =
-            (speed * TODO_ROTATION_SPEED_MS as f64 * self.setup.pixels_per_meter / 1000.) as i32;
-        match ArpaTarget::refresh_target(
-            target,
-            &self.setup,
-            &mut self.history,
-            search_radius,
-            Pass::First,
-        ) {
-            Ok(t) => target = t,
-            Err(e) => {
-                log::debug!("Initial refresh failed for target {}: {:?}", uid, e);
-                return; // Don't add target if initial refresh fails
-            }
-        }
+        // Set the contour position so refresh_targets can find this target
+        target.contour.position = pol;
+        target.expected = pol;
 
-        self.targets.write().unwrap().insert(uid, target);
+        log::info!(
+            "Target {} acquired: status={:?}, angle={}, range={}, lat={:.6}, lon={:.6}",
+            uid,
+            target.m_status,
+            pol.angle,
+            pol.r,
+            target_pos.pos.lat,
+            target_pos.pos.lon
+        );
+
+        // Store to shared manager in dual radar mode, otherwise local storage
+        if let Some(ref manager) = self.shared_manager {
+            manager.add_target(uid, target, &self.radar_key);
+        } else {
+            self.targets.write().unwrap().insert(uid, target);
+        }
     }
 
     /// Work on the targets when spoke `angle` has just been processed.
@@ -1575,216 +1724,33 @@ impl TargetBuffer {
         }
     }
 
-    /// Search for new targets within guard zones
-    /// This is the main target detection method that scans within configured guard zones
-    fn search_targets_in_guard_zones(&mut self, current_angle: usize) {
-        // Detect revolution completion (angle wrapped around)
-        let new_revolution = current_angle < self.prev_angle;
-        self.prev_angle = current_angle;
-
-        // Log once per revolution to show guard zone status
-        if new_revolution {
-            log::debug!(
-                "search_targets_in_guard_zones: zone0={} (angles {}..{}, range {}..{}), zone1={}, ppm={}",
-                self.guard_zones[0].enabled,
-                self.guard_zones[0].start_angle,
-                self.guard_zones[0].end_angle,
-                self.guard_zones[0].inner_range,
-                self.guard_zones[0].outer_range,
-                self.guard_zones[1].enabled,
-                self.setup.pixels_per_meter
-            );
-        }
-
-        if !self.has_active_guard_zone() {
-            return;
-        }
-
-        if self.target_count() >= MAX_NUMBER_OF_TARGETS - 2 {
-            log::debug!("Maximum number of targets reached, skipping guard zone search");
-            return;
-        }
-
-        if self.setup.pixels_per_meter == 0.0 {
-            return;
-        }
-
-        // Log once per revolution to confirm guard zone search is active
-        if new_revolution {
-            // Sample the history across the full guard zone range
-            let mut sample_count = 0;
-            let mut target_count = 0;
-            let mut edge_count = 0;
-            for zone_idx in 0..2 {
-                if !self.guard_zones[zone_idx].enabled {
-                    continue;
-                }
-                let inner = self.guard_zones[zone_idx].inner_range;
-                let outer = self.guard_zones[zone_idx].outer_range;
-                // Sample every 10th range value across the full range
-                for angle_offset in [0, 100, 200, 300, 400] {
-                    let angle = self
-                        .setup
-                        .mod_spokes(self.guard_zones[zone_idx].start_angle + angle_offset);
-                    let mut r = inner;
-                    while r < outer {
-                        sample_count += 1;
-                        if self.history.pix(&Doppler::Any, angle, r) {
-                            target_count += 1;
-                            // Check if any neighbor is NOT a target (edge detection)
-                            let has_clear_neighbor = !self.history.pix(&Doppler::Any, angle + 1, r)
-                                || !self.history.pix(&Doppler::Any, angle - 1, r)
-                                || !self.history.pix(&Doppler::Any, angle, r + 1)
-                                || !self.history.pix(&Doppler::Any, angle, r - 1);
-                            if has_clear_neighbor {
-                                edge_count += 1;
-                            }
-                        }
-                        r += 10; // Sample every 10th pixel
-                    }
-                }
-            }
-            log::info!(
-                "Guard zone: angles {}..{}, range {}..{} px, sampled {}/{} TARGET, {} edges",
-                self.guard_zones[0].start_angle,
-                self.guard_zones[0].end_angle,
-                self.guard_zones[0].inner_range,
-                self.guard_zones[0].outer_range,
-                target_count,
-                sample_count,
-                edge_count
-            );
-        }
-
-        // Scan margin: wait until beam has passed the angle we're checking
-        const SCAN_MARGIN_SPOKES: i32 = 10;
-
-        for zone_idx in 0..2 {
-            if !self.guard_zones[zone_idx].enabled {
-                continue;
-            }
-
-            let start_angle = self.guard_zones[zone_idx].start_angle;
-            let end_angle = if self.guard_zones[zone_idx].end_angle < start_angle {
-                self.guard_zones[zone_idx].end_angle + self.setup.spokes_per_revolution
-            } else {
-                self.guard_zones[zone_idx].end_angle
-            };
-            let inner_range = self.guard_zones[zone_idx].inner_range;
-            let outer_range = self.guard_zones[zone_idx].outer_range;
-
-            // Scan through the zone angles with +2 increment (target must be > 2 pixels wide)
-            let mut angle_iter = start_angle;
-            while angle_iter < end_angle {
-                let angle = self.setup.mod_spokes(angle_iter);
-
-                // Check timing: ensure beam has passed this angle
-                let time1 = self.history.spokes[angle as usize].time;
-                let check_angle = self.setup.mod_spokes(angle + SCAN_MARGIN_SPOKES);
-                let time2 = self.history.spokes[check_angle as usize].time;
-
-                // Only scan if beam has passed and we haven't scanned this angle recently
-                let last_scan = self.guard_zones[zone_idx].last_scan_time[angle as usize];
-                if time2 >= time1 && time1 > last_scan {
-                    self.guard_zones[zone_idx].last_scan_time[angle as usize] = time1;
-
-                    // Scan through the range within the zone
-                    for r in inner_range..outer_range {
-                        if self.target_count() >= MAX_NUMBER_OF_TARGETS - 1 {
-                            break;
-                        }
-
-                        // Use Any doppler to find all potential targets
-                        if self.history.multi_pix(&Doppler::Any, angle, r) {
-                            let time = self.history.spokes[angle as usize].time;
-                            let pol = Polar::new(angle, r, time);
-                            let own_pos = self.history.spokes[angle as usize].pos.clone();
-                            log::info!(
-                                "GuardZone target found at angle={}, range={} pixels",
-                                angle,
-                                r
-                            );
-                            // Acquire immediately so the blob is cleared before continuing
-                            // This prevents detecting the same blob at multiple r values
-                            self.acquire_new_arpa_target(
-                                pol,
-                                own_pos,
-                                time,
-                                TargetStatus::Acquire0,
-                                &Doppler::Any,
-                            );
-                            // After acquiring, the blob is cleared, so break out of range loop
-                            break;
-                        }
-                    }
-                }
-
-                angle_iter += 2;
-            }
-        }
-    }
-
-    /// Detect targets using doppler data
-    /// If guard zones are configured, only detects within those zones
-    fn detect_doppler_arpa(&mut self, angle: usize) {
-        let end_angle = self.setup.mod_spokes(
-            angle as i32 + SCAN_FOR_NEW_PERCENTAGE * self.setup.spokes_per_revolution / 100,
-        );
-
-        if self.scanned_angle == -1 {
-            self.scanned_angle = self.setup.mod_spokes(
-                angle as i32 + REFRESH_END_PERCENTAGE * self.setup.spokes_per_revolution / 100,
-            );
-        }
-
-        let has_guard_zones = self.has_active_guard_zone();
-
-        let mut scan_angle = self.scanned_angle;
-        loop {
-            scan_angle = self.setup.mod_spokes(scan_angle + 2);
-            if scan_angle >= end_angle {
-                break;
-            }
-
-            for r in 20..self.setup.spoke_len - 20 {
-                // If guard zones are configured, only detect within them
-                if has_guard_zones && !self.is_in_guard_zone(scan_angle, r) {
-                    continue;
-                }
-
-                if self.history.multi_pix(&Doppler::AnyDoppler, scan_angle, r) {
-                    let time = self.history.spokes[scan_angle as usize].time.clone();
-                    let pol = Polar::new(scan_angle, r, time);
-                    let own_pos = self.history.spokes[scan_angle as usize].pos.clone();
-
-                    self.acquire_new_arpa_target(
-                        pol,
-                        own_pos,
-                        time,
-                        TargetStatus::Acquire0,
-                        &Doppler::AnyDoppler,
-                    );
-                }
-            }
-        }
-        self.scanned_angle = scan_angle;
-    }
-
     /// Work on the targets when spoke `angle` has just been processed.
-    /// Refresh older targets from 3 quarters to 2 quarters before what is just received.
+    /// Refresh targets in 1/32th segments of the revolution, looking at the segment
+    /// that is 25-50% ahead of the current angle.
     fn refresh_targets(&mut self, angle: usize) {
-        let end_angle = self.setup.mod_spokes(
-            angle as i32 + REFRESH_END_PERCENTAGE * self.setup.spokes_per_revolution / 100,
-        );
+        // Segment size: 1/32th of revolution
+        let segment_size = self.setup.spokes_per_revolution / 32;
 
+        // Calculate which segment we should be refreshing (25-50% ahead)
+        let refresh_offset = REFRESH_START_PERCENTAGE * self.setup.spokes_per_revolution / 100;
+        let target_angle = self.setup.mod_spokes(angle as i32 + refresh_offset);
+
+        // Which segment does this angle fall into?
+        let current_segment = target_angle / segment_size;
+
+        // Initialize refreshed_angle to track which segment we last processed
         if self.refreshed_angle == -1 {
-            self.refreshed_angle = self.setup.mod_spokes(
-                angle as i32 + REFRESH_START_PERCENTAGE * self.setup.spokes_per_revolution / 100,
-            );
+            self.refreshed_angle = current_segment;
         }
 
-        self.refresh_all_arpa_targets(self.refreshed_angle, end_angle);
-        self.refreshed_angle = end_angle;
+        // Only process if we've moved to a new segment
+        if current_segment != self.refreshed_angle {
+            let start_angle = self.setup.mod_spokes(current_segment * segment_size);
+            let end_angle = self.setup.mod_spokes((current_segment + 1) * segment_size);
+
+            self.refresh_all_arpa_targets(start_angle, end_angle);
+            self.refreshed_angle = current_segment;
+        }
     }
 
     pub(crate) fn process_spoke(&mut self, spoke: &mut Spoke, legend: &Legend) {
@@ -1827,15 +1793,18 @@ impl TargetBuffer {
             }
         }
 
-        // TODO: Think about orientation -- I don't think we have one in mayara: it is always head up?
-
-        let stabilized_mode = spoke.bearing.is_some();
+        // For ARPA to work correctly, history must always be stored using geographic bearing
+        // (like the C++ code does with m_history[bearing]). pos2polar calculates geographic
+        // bearing, so the history index must also be geographic for lookups to work.
+        // When no bearing is available (no heading source), we fall back to relative angle
+        // but ARPA tracking will not work correctly in this case.
         let weakest_normal_blob = legend.strong_return;
-        let angle = if stabilized_mode {
-            spoke.bearing.unwrap()
+        let angle = if let Some(bearing) = spoke.bearing {
+            bearing as usize
         } else {
-            spoke.angle
-        } as usize;
+            // No heading available - fall back to relative angle (ARPA won't work correctly)
+            spoke.angle as usize
+        };
 
         let background_on = self.setup.stationary; // TODO m_autolearning_on_off.GetValue() == 1;
         self.history.spokes[angle].time = time;
@@ -1845,43 +1814,272 @@ impl TargetBuffer {
             .sweep
             .resize(spoke.data.len(), HistoryPixel::empty());
 
+        // Collect strong return pixels from this spoke
+        let mut strong_pixels: Vec<i32> = Vec::new();
         for radius in 0..spoke.data.len() {
             if spoke.data[radius] >= weakest_normal_blob {
-                // and add 1 if above threshold and set the left 0 and 1 bits, used for ARPA
-                self.history.spokes[angle].sweep[radius] = HistoryPixel::INITIAL; // 1100 0000
+                self.history.spokes[angle].sweep[radius] = HistoryPixel::INITIAL;
                 if background_on {
                     if let Some(layer) = self.history.stationary_layer.as_deref_mut() {
                         if layer[[angle, radius]] < u8::MAX {
                             layer[[angle, radius]] += 1;
                         }
                     }
-                    // count the number of hits for this pixel
+                }
+                // Only consider pixels beyond main bang for blob detection
+                if radius as i32 >= MIN_BLOB_RANGE {
+                    strong_pixels.push(radius as i32);
                 }
             }
 
             if Some(spoke.data[radius]) == legend.doppler_approaching {
-                //  approaching doppler target (255)
-                // and add 1 if above threshold and set bit 2, used for ARPA
                 self.history.spokes[angle].sweep[radius].insert(HistoryPixel::APPROACHING);
             }
 
             if Some(spoke.data[radius]) == legend.doppler_receding {
-                //  receding doppler target (254)
-                // and add 1 if above threshold and set bit 3, used for ARPA
                 self.history.spokes[angle].sweep[radius].insert(HistoryPixel::RECEDING);
-            }
-
-            // Draw the contour
-            if self.history.spokes[angle].sweep[radius].contains(HistoryPixel::CONTOUR) {
-                spoke.data[radius] = legend.target_border;
             }
         }
 
-        self.detect_doppler_arpa(angle);
-        self.refresh_targets(angle);
+        // Build blobs incrementally
+        self.process_blob_pixels(angle as i32, &strong_pixels, time, pos.clone());
 
-        // Search for new targets in guard zones
-        self.search_targets_in_guard_zones(angle);
+        self.refresh_targets(angle);
+    }
+
+    /// Process strong pixels from a spoke and update blobs in progress
+    fn process_blob_pixels(
+        &mut self,
+        angle: i32,
+        strong_pixels: &[i32],
+        time: u64,
+        pos: GeoPosition,
+    ) {
+        let spokes = self.setup.spokes_per_revolution;
+
+        // Check if any guard zone is enabled
+        let guard_zone_active = self.guard_zones[0].enabled || self.guard_zones[1].enabled;
+
+        // Handle angle wraparound - complete all blobs when we wrap
+        if !self.blobs_in_progress.is_empty() {
+            let first_blob_angle = self.blobs_in_progress[0].min_angle;
+            // If we've wrapped around and are back near where blobs started, complete them all
+            if angle < first_blob_angle && self.prev_angle as i32 > angle {
+                self.complete_all_blobs();
+            }
+        }
+
+        // Filter pixels by guard zone and group into contiguous runs
+        // A run is a sequence of pixels where each is adjacent (r differs by 1)
+        let mut runs: Vec<Vec<i32>> = Vec::new();
+        let mut current_run: Vec<i32> = Vec::new();
+
+        for &r in strong_pixels {
+            // Check if pixel is in a guard zone (if any are enabled)
+            if guard_zone_active {
+                let in_zone = self.guard_zones[0].contains(angle, r, spokes)
+                    || self.guard_zones[1].contains(angle, r, spokes);
+                if !in_zone {
+                    // End current run if any
+                    if !current_run.is_empty() {
+                        runs.push(std::mem::take(&mut current_run));
+                    }
+                    continue;
+                }
+            }
+
+            // Check if this pixel is adjacent to the last pixel in current run
+            if current_run.is_empty() || r == current_run.last().unwrap() + 1 {
+                current_run.push(r);
+            } else {
+                // Start a new run
+                runs.push(std::mem::take(&mut current_run));
+                current_run.push(r);
+            }
+        }
+        // Don't forget the last run
+        if !current_run.is_empty() {
+            runs.push(current_run);
+        }
+
+        let mut run_assigned: Vec<bool> = vec![false; runs.len()];
+        let prev_angle = (angle - 1).rem_euclid(spokes);
+
+        // For each run, find ALL adjacent blobs (there may be multiple that need merging)
+        for (run_idx, run) in runs.iter().enumerate() {
+            let mut adjacent_blob_indices: Vec<usize> = Vec::new();
+
+            for (blob_idx, blob) in self.blobs_in_progress.iter().enumerate() {
+                // Only consider blobs whose last_angle is the previous spoke
+                if blob.last_angle != prev_angle {
+                    continue;
+                }
+                // Check if any pixel in the run is adjacent to the blob
+                for &r in run {
+                    if blob.is_adjacent(r) {
+                        adjacent_blob_indices.push(blob_idx);
+                        break;
+                    }
+                }
+            }
+
+            if adjacent_blob_indices.is_empty() {
+                continue;
+            }
+
+            run_assigned[run_idx] = true;
+
+            // If multiple blobs are adjacent to this run, merge them all into the first one
+            let primary_idx = adjacent_blob_indices[0];
+
+            // First, merge any additional blobs into the primary blob
+            // Process in reverse order to preserve indices during removal
+            for &merge_idx in adjacent_blob_indices.iter().skip(1).rev() {
+                let merge_blob = self.blobs_in_progress.remove(merge_idx);
+                let primary = &mut self.blobs_in_progress[if merge_idx < primary_idx {
+                    primary_idx - 1
+                } else {
+                    primary_idx
+                }];
+                // Merge the blob data
+                primary.min_angle = min(primary.min_angle, merge_blob.min_angle);
+                primary.min_r = min(primary.min_r, merge_blob.min_r);
+                primary.max_r = max(primary.max_r, merge_blob.max_r);
+                primary.pixel_count += merge_blob.pixel_count;
+                // Note: last_spoke_ranges from merged blob are from prev spoke, not needed
+            }
+
+            // Now extend the primary blob with this run
+            // Need to recalculate primary_idx as it may have changed due to removals
+            let adjusted_primary_idx = adjacent_blob_indices[0]
+                - adjacent_blob_indices
+                    .iter()
+                    .skip(1)
+                    .filter(|&&i| i < adjacent_blob_indices[0])
+                    .count();
+            let blob = &mut self.blobs_in_progress[adjusted_primary_idx];
+            blob.start_new_spoke(angle);
+            for &r in run {
+                blob.add_pixel(angle, r);
+                blob.last_spoke_ranges.push(r);
+            }
+        }
+
+        // Start new blobs for unassigned runs
+        for (run_idx, run) in runs.iter().enumerate() {
+            if run_assigned[run_idx] {
+                continue;
+            }
+            // Create a new blob with all pixels in this run
+            let mut blob = BlobInProgress::new(angle, run[0], time, pos.clone());
+            for &r in run.iter().skip(1) {
+                blob.add_pixel(angle, r);
+                blob.last_spoke_ranges.push(r);
+            }
+            self.blobs_in_progress.push(blob);
+        }
+
+        // Find completed blobs: those that weren't extended this spoke
+        // AND whose last_angle is before the previous spoke (so they had a gap)
+        let mut completed_indices: Vec<usize> = Vec::new();
+        for (idx, blob) in self.blobs_in_progress.iter().enumerate() {
+            // Blob is complete if it wasn't extended and last_angle < prev_angle
+            // (meaning there's been at least one spoke with no contribution)
+            if blob.last_angle != angle && blob.last_angle != prev_angle {
+                completed_indices.push(idx);
+            }
+        }
+
+        // Process completed blobs (in reverse order to preserve indices during removal)
+        for &idx in completed_indices.iter().rev() {
+            let blob = self.blobs_in_progress.remove(idx);
+            self.process_completed_blob(blob);
+        }
+    }
+
+    /// Complete all blobs in progress (called on angle wraparound or range change)
+    fn complete_all_blobs(&mut self) {
+        let blobs: Vec<BlobInProgress> = self.blobs_in_progress.drain(..).collect();
+        for blob in blobs {
+            self.process_completed_blob(blob);
+        }
+    }
+
+    /// Process a completed blob - check validity and pass to target acquisition
+    fn process_completed_blob(&mut self, blob: BlobInProgress) {
+        if !blob.is_valid() {
+            log::trace!(
+                "Blob rejected: pixels={}, range={}..{}, angles={}..{}",
+                blob.pixel_count,
+                blob.min_r,
+                blob.max_r,
+                blob.min_angle,
+                blob.max_angle
+            );
+            return;
+        }
+
+        let (center_angle, center_r) = blob.center();
+        let spokes = self.setup.spokes_per_revolution;
+
+        // Verify blob is within guard zone (if enabled)
+        let guard_zone_active = self.guard_zones[0].enabled || self.guard_zones[1].enabled;
+        if guard_zone_active {
+            let in_zone0 = self.guard_zones[0].contains(center_angle, center_r, spokes);
+            let in_zone1 = self.guard_zones[1].contains(center_angle, center_r, spokes);
+            if !in_zone0 && !in_zone1 {
+                log::warn!(
+                    "Blob outside guard zones! center=({}, {}), zone0={}..{}/{}..{}, zone1={}..{}/{}..{}",
+                    center_angle,
+                    center_r,
+                    self.guard_zones[0].start_angle,
+                    self.guard_zones[0].end_angle,
+                    self.guard_zones[0].inner_range,
+                    self.guard_zones[0].outer_range,
+                    self.guard_zones[1].start_angle,
+                    self.guard_zones[1].end_angle,
+                    self.guard_zones[1].inner_range,
+                    self.guard_zones[1].outer_range
+                );
+                return;
+            }
+        }
+
+        log::info!(
+            "Blob detected: {} pixels, center=({}, {}), range={}..{}, angles={}..{}",
+            blob.pixel_count,
+            center_angle,
+            center_r,
+            blob.min_r,
+            blob.max_r,
+            blob.min_angle,
+            blob.max_angle
+        );
+
+        // Create a Polar position for the blob center
+        let pol = Polar::new(center_angle, center_r, blob.start_time);
+
+        // Pass to target acquisition
+        self.acquire_or_match_blob(blob, pol);
+    }
+
+    /// Try to match blob to existing target, or acquire as new target
+    fn acquire_or_match_blob(&mut self, blob: BlobInProgress, pol: Polar) {
+        // For now, just acquire as new target
+        // TODO: Match against existing targets based on predicted position
+
+        if self.target_count() >= MAX_NUMBER_OF_TARGETS - 1 {
+            log::debug!("Maximum number of targets reached, ignoring blob");
+            return;
+        }
+
+        self.acquire_new_arpa_target(
+            pol,
+            blob.start_pos,
+            blob.start_time,
+            TargetStatus::Acquire0,
+            &Doppler::Any,
+        );
     }
 }
 

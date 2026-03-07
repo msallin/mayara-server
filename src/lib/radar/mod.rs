@@ -648,6 +648,29 @@ impl SharedRadars {
     pub fn new_sk_client_subscription(&self) -> tokio::sync::broadcast::Receiver<SignalKDelta> {
         self.radars.read().unwrap().sk_client_tx.subscribe()
     }
+
+    /// Request all radars to switch to transmit mode
+    /// This sends a Power=Transmit control update to each radar's control handler
+    pub fn request_transmit_all(&self) {
+        let radars = self.radars.read().unwrap();
+        for (key, info) in radars.info.iter() {
+            // Check if radar is in standby (can be switched to transmit)
+            if let Some(status) = info.controls.get_status() {
+                if status == Power::Standby {
+                    log::info!("Requesting transmit mode for radar '{}'", key);
+                    let control_value = ControlValue::new(
+                        ControlId::Power,
+                        serde_json::Value::Number(serde_json::Number::from(2)), // 2 = Transmit
+                    );
+                    // Create a dummy reply channel - we don't need the response
+                    let (reply_tx, _reply_rx) = tokio::sync::mpsc::channel(1);
+                    if let Err(e) = info.controls.send_to_command_handler(control_value, reply_tx) {
+                        log::error!("Failed to send transmit command to '{}': {:?}", key, e);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
