@@ -3,12 +3,12 @@ use std::{f64::consts::PI, ops::Add};
 
 use crate::radar::GeoPosition;
 
+// NOISE controls how quickly targets can change heading in the Kalman filter.
+// Lower values make targets go straighter - good for stable targets.
+// Higher values allow targets to make curves - good for maneuvering targets.
 const NOISE_NORMAL: f64 = 0.015;
+const NOISE_MEDIUM: f64 = 0.1;
 const NOISE_FAST: f64 = 1.0;
-// NOISE controls how quickly targets can change heading.
-// Lower value (0.015) makes targets go straighter - good for stable targets.
-// Higher value (1.0) allows targets to make curves - good for maneuvering targets.
-// Original radar_pi value was 0.015, walradar_client changed to 1.0 for fast targets.
 
 // const CONVERT: f64 = (((1. / 1852.) / 1852.) / 60.) / 60.; // converts meters ^ 2 to degrees ^ 2
 
@@ -130,12 +130,17 @@ impl KalmanFilter {
         }
     }
 
-    /// Get noise value for Normal ARPA mode
+    /// Get noise value for Normal ARPA detect mode (max 25 kn)
     pub fn noise_normal() -> f64 {
         NOISE_NORMAL
     }
 
-    /// Get noise value for Fast ARPA mode
+    /// Get noise value for Medium ARPA detect mode (max 40 kn)
+    pub fn noise_medium() -> f64 {
+        NOISE_MEDIUM
+    }
+
+    /// Get noise value for Fast ARPA detect mode (max 50 kn)
     pub fn noise_fast() -> f64 {
         NOISE_FAST
     }

@@ -209,13 +209,13 @@ impl TrailBuffer {
                     Err(RadarError::CannotSetControlId(cv.id))
                 }
             }
-            ControlId::ArpaMode => {
+            ControlId::ArpaDetectMode => {
                 let v = cv.as_value()?;
                 let r = controls.set_value(&cv.id, v.clone());
                 if r.is_ok() {
                     let mode = controls.get(&cv.id).unwrap().as_u16().unwrap_or(0) as i32;
                     if let Some(ref mut targets) = self.targets {
-                        targets.set_arpa_mode(mode);
+                        targets.set_arpa_detect_mode(mode);
                     }
                 }
                 return r.map(|_| ()).map_err(|e| RadarError::ControlError(e));

@@ -81,8 +81,12 @@ pub struct TargetDangerApi {
 const MIN_BLOB_PIXELS: usize = 32; // minimum number of pixels for a valid blob
 const MAX_BLOB_PIXELS: usize = 10000; // maximum blob size (radar interference protection)
 const MAX_LOST_COUNT: i32 = 12; // number of sweeps that target can be missed before it is set to lost
-const MAX_DETECTION_SPEED_KN: f64 = 40.;
 const MIN_BLOB_RANGE: i32 = 4; // ignore blobs closer than this (main bang)
+
+// Maximum detection speed for each ARPA detect mode (in knots)
+const MAX_DETECTION_SPEED_NORMAL_KN: f64 = 25.;
+const MAX_DETECTION_SPEED_MEDIUM_KN: f64 = 40.;
+const MAX_DETECTION_SPEED_FAST_KN: f64 = 50.;
 
 // Legacy constants - to be removed after full migration to blob-based detection
 const MIN_CONTOUR_LENGTH: usize = 6;
@@ -92,142 +96,11 @@ pub const METERS_PER_DEGREE_LATITUDE: f64 = 60. * NAUTICAL_MILE_F64;
 pub const KN_TO_MS: f64 = NAUTICAL_MILE_F64 / 3600.;
 pub const MS_TO_KN: f64 = 3600. / NAUTICAL_MILE_F64;
 
-const TODO_ROTATION_SPEED_MS: i32 = 2500;
 const TODO_TARGET_AGE_TO_MIXER: u32 = 5;
 const MAX_NUMBER_OF_TARGETS: usize = 100;
 
-/// Guard zone configuration for target detection
-/// Angles are stored in spokes (radar units), distances in pixels
-#[derive(Debug, Clone)]
-pub(crate) struct DetectionGuardZone {
-    /// Start angle in spokes (0..spokes_per_revolution)
-    start_angle: i32,
-    /// End angle in spokes (0..spokes_per_revolution)
-    end_angle: i32,
-    /// Inner distance in pixels
-    inner_range: i32,
-    /// Outer distance in pixels
-    outer_range: i32,
-    /// Whether this guard zone is enabled for detection
-    enabled: bool,
-    /// Last scan time for each angle to avoid duplicate detections
-    last_scan_time: Vec<u64>,
-    // Original config values (for recalculation when pixels_per_meter changes)
-    config_start_angle_rad: f64,
-    config_end_angle_rad: f64,
-    config_inner_range_m: f64,
-    config_outer_range_m: f64,
-    config_enabled: bool,
-}
-
-impl DetectionGuardZone {
-    fn new(spokes_per_revolution: i32) -> Self {
-        Self {
-            start_angle: 0,
-            end_angle: 0,
-            inner_range: 0,
-            outer_range: 0,
-            enabled: false,
-            last_scan_time: vec![0; spokes_per_revolution as usize],
-            config_start_angle_rad: 0.0,
-            config_end_angle_rad: 0.0,
-            config_inner_range_m: 0.0,
-            config_outer_range_m: 0.0,
-            config_enabled: false,
-        }
-    }
-
-    /// Update zone from config (angles in radians, distances in meters)
-    fn update_from_config(
-        &mut self,
-        start_angle_rad: f64,
-        end_angle_rad: f64,
-        inner_range_m: f64,
-        outer_range_m: f64,
-        enabled: bool,
-        spokes_per_revolution: i32,
-        pixels_per_meter: f64,
-    ) {
-        // Store original config values for later recalculation
-        self.config_start_angle_rad = start_angle_rad;
-        self.config_end_angle_rad = end_angle_rad;
-        self.config_inner_range_m = inner_range_m;
-        self.config_outer_range_m = outer_range_m;
-        self.config_enabled = enabled;
-
-        self.recalculate(spokes_per_revolution, pixels_per_meter);
-    }
-
-    /// Recalculate pixel/spoke values from stored config when pixels_per_meter changes
-    fn recalculate(&mut self, spokes_per_revolution: i32, pixels_per_meter: f64) {
-        self.enabled = self.config_enabled && pixels_per_meter > 0.0;
-
-        if !self.enabled {
-            return;
-        }
-
-        // Convert angles from radians to spokes
-        let spokes_f64 = spokes_per_revolution as f64;
-        self.start_angle = ((self.config_start_angle_rad / (2.0 * PI) * spokes_f64) as i32)
-            .rem_euclid(spokes_per_revolution);
-        self.end_angle = ((self.config_end_angle_rad / (2.0 * PI) * spokes_f64) as i32)
-            .rem_euclid(spokes_per_revolution);
-
-        // Convert distances from meters to pixels
-        self.inner_range = (self.config_inner_range_m * pixels_per_meter).max(1.0) as i32;
-        self.outer_range = (self.config_outer_range_m * pixels_per_meter) as i32;
-
-        log::info!(
-            "GuardZone configured: angles={}..{} spokes, range={}..{} pixels (ppm={})",
-            self.start_angle,
-            self.end_angle,
-            self.inner_range,
-            self.outer_range,
-            pixels_per_meter
-        );
-    }
-
-    /// Check if this zone has config that needs recalculation
-    fn has_pending_config(&self) -> bool {
-        self.config_enabled && !self.enabled
-    }
-
-    /// Check if an angle (in spokes) is within this guard zone
-    /// The angle should be in relative coordinates (relative to ship heading)
-    fn contains_angle(&self, relative_angle: i32, spokes_per_revolution: i32) -> bool {
-        if !self.enabled {
-            return false;
-        }
-        let angle = relative_angle.rem_euclid(spokes_per_revolution);
-        if self.start_angle <= self.end_angle {
-            angle >= self.start_angle && angle <= self.end_angle
-        } else {
-            // Zone wraps around 0
-            angle >= self.start_angle || angle <= self.end_angle
-        }
-    }
-
-    /// Check if a range (in pixels) is within this guard zone
-    fn contains_range(&self, range: i32) -> bool {
-        self.enabled && range >= self.inner_range && range <= self.outer_range
-    }
-
-    /// Check if a position is within the guard zone
-    /// geographic_angle: the angle in geographic coordinates (0 = North)
-    /// heading: the ship's heading in spokes (to convert geographic to relative)
-    fn contains(
-        &self,
-        geographic_angle: i32,
-        range: i32,
-        spokes_per_revolution: i32,
-        heading: i32,
-    ) -> bool {
-        // Convert geographic angle to relative angle by subtracting heading
-        // Guard zone angles are stored relative to ship heading
-        let relative_angle = (geographic_angle - heading).rem_euclid(spokes_per_revolution);
-        self.contains_angle(relative_angle, spokes_per_revolution) && self.contains_range(range)
-    }
-}
+// Re-export ARPA types from the arpa module
+use arpa::{ArpaDetector, BlobInProgress};
 
 ///
 /// The length of a degree longitude varies by the latitude,
@@ -414,8 +287,8 @@ pub struct TargetBuffer {
 
     arpa_via_doppler: bool,
 
-    m_clear_contours: bool,
-    m_auto_learn_state: i32,
+    clear_contours: bool,
+    auto_learn_state: i32,
 
     // Average course
     course: f64,
@@ -434,17 +307,8 @@ pub struct TargetBuffer {
     /// Key identifying this radar
     radar_key: String,
 
-    /// Guard zones for target detection
-    guard_zones: [DetectionGuardZone; 2],
-
-    /// Previous angle for detecting revolution completion
-    prev_angle: usize,
-
-    /// Current heading in spokes (updated each spoke, used for guard zone checks)
-    current_heading: i32,
-
-    /// Blobs currently being built as spokes arrive
-    blobs_in_progress: Vec<BlobInProgress>,
+    /// ARPA detector for automatic target detection via guard zones
+    arpa_detector: ArpaDetector,
 
     /// Broadcast sender for pushing target updates to SignalK stream
     sk_client_tx: Option<tokio::sync::broadcast::Sender<crate::stream::SignalKDelta>>,
@@ -464,81 +328,8 @@ pub(self) struct TargetSetup {
     pixels_per_meter: f64,
     rotation_speed_ms: u32,
     stationary: bool,
-    /// ARPA mode: 0 = Normal, 1 = Fast, 2 = Static
-    arpa_mode: i32,
-}
-
-/// A blob being incrementally built as spokes arrive
-#[derive(Debug, Clone)]
-struct BlobInProgress {
-    /// Range values present on the last spoke that contributed to this blob
-    /// Used to check adjacency with the next spoke
-    last_spoke_ranges: Vec<i32>,
-    /// The angle of the last spoke that contributed pixels
-    last_angle: i32,
-    /// Bounding box
-    min_angle: i32,
-    max_angle: i32,
-    min_r: i32,
-    max_r: i32,
-    /// Total pixel count
-    pixel_count: usize,
-    /// Time when first pixel was seen
-    start_time: u64,
-    /// Own ship position when blob started
-    start_pos: GeoPosition,
-}
-
-impl BlobInProgress {
-    fn new(angle: i32, r: i32, time: u64, pos: GeoPosition) -> Self {
-        Self {
-            last_spoke_ranges: vec![r],
-            last_angle: angle,
-            min_angle: angle,
-            max_angle: angle,
-            min_r: r,
-            max_r: r,
-            pixel_count: 1,
-            start_time: time,
-            start_pos: pos,
-        }
-    }
-
-    /// Add a pixel to this blob
-    fn add_pixel(&mut self, angle: i32, r: i32) {
-        self.max_angle = angle; // angle always increases as we process spokes
-        self.min_r = min(self.min_r, r);
-        self.max_r = max(self.max_r, r);
-        self.pixel_count += 1;
-    }
-
-    /// Start a new spoke - clear last_spoke_ranges and set last_angle
-    fn start_new_spoke(&mut self, angle: i32) {
-        self.last_spoke_ranges.clear();
-        self.last_angle = angle;
-    }
-
-    /// Check if a range value on the current spoke is adjacent to this blob
-    /// (i.e., within 1 pixel of any range on the previous spoke)
-    fn is_adjacent(&self, r: i32) -> bool {
-        self.last_spoke_ranges
-            .iter()
-            .any(|&prev_r| (prev_r - r).abs() <= 1)
-    }
-
-    /// Calculate center position in polar coordinates
-    fn center(&self) -> (i32, i32) {
-        let center_angle = (self.min_angle + self.max_angle) / 2;
-        let center_r = (self.min_r + self.max_r) / 2;
-        (center_angle, center_r)
-    }
-
-    /// Check if blob meets minimum size requirements
-    fn is_valid(&self) -> bool {
-        self.pixel_count >= MIN_BLOB_PIXELS
-            && self.pixel_count <= MAX_BLOB_PIXELS
-            && self.min_r >= MIN_BLOB_RANGE
-    }
+    /// ARPA detect mode: 0 = Normal (25kn), 1 = Medium (40kn), 2 = Fast (50kn)
+    arpa_detect_mode: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -586,26 +377,26 @@ impl Sector {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ArpaTarget {
-    pub(crate) m_status: TargetStatus,
+    pub(crate) status: TargetStatus,
 
-    m_average_contour_length: i32,
-    m_small_fast: bool,
-    m_previous_contour_length: i32,
-    m_lost_count: i32,
-    m_refresh_time: u64,
-    m_automatic: bool,
-    m_radar_pos: GeoPosition,
-    m_course: f64,
-    m_stationary: i32,
-    m_doppler_target: Doppler,
-    pub(crate) m_refreshed: RefreshState,
-    pub(crate) m_target_id: usize,
-    pub(crate) m_transferred_target: bool,
-    m_kalman: KalmanFilter,
+    average_contour_length: i32,
+    small_fast: bool,
+    previous_contour_length: i32,
+    lost_count: i32,
+    refresh_time: u64,
+    automatic: bool,
+    radar_pos: GeoPosition,
+    course: f64,
+    stationary: i32,
+    doppler_target: Doppler,
+    pub(crate) refreshed: RefreshState,
+    pub(crate) target_id: usize,
+    pub(crate) transferred_target: bool,
+    kalman: KalmanFilter,
     pub(crate) contour: Contour,
-    m_total_pix: u32,
-    m_approaching_pix: u32,
-    m_receding_pix: u32,
+    total_pix: u32,
+    approaching_pix: u32,
+    receding_pix: u32,
     have_doppler: bool,
     pub(crate) position: ExtendedPosition,
     pub(crate) expected: Polar,
@@ -981,7 +772,7 @@ impl HistorySpokes {
         pol.r = (contour.max_r + contour.min_r) / 2;
         pol.time = self.spokes[pol.angle as usize].time;
 
-        // TODO        self.m_radar_pos = buffer.history.spokes[pol.angle as usize].pos;
+        // TODO        self.radar_pos = buffer.history.spokes[pol.angle as usize].pos;
 
         return Ok((contour, pol));
     }
@@ -1059,7 +850,9 @@ impl HistorySpokes {
                 if spoke_sweep_len == 0 {
                     continue;
                 }
-                for r in contour.max_r as usize..=min(4 * contour.max_r as usize, spoke_sweep_len - 1) {
+                for r in
+                    contour.max_r as usize..=min(4 * contour.max_r as usize, spoke_sweep_len - 1)
+                {
                     self.spokes[a].sweep[r] =
                         self.spokes[a].sweep[r].intersection(HistoryPixel::BACKUP);
                     // also clear both Doppler bits
@@ -1145,15 +938,15 @@ impl TargetBuffer {
 
                 rotation_speed_ms: 0,
                 stationary,
-                arpa_mode: 0, // Default to Normal mode
+                arpa_detect_mode: 0, // Default to Normal mode (25kn)
             },
             next_target_id: 0,
             arpa_via_doppler: false,
 
             history: HistorySpokes::new(stationary, spokes_per_revolution, spoke_len),
             targets: Arc::new(RwLock::new(HashMap::new())),
-            m_clear_contours: false,
-            m_auto_learn_state: 0,
+            clear_contours: false,
+            auto_learn_state: 0,
 
             course: 0.,
             course_weight: 0,
@@ -1165,16 +958,7 @@ impl TargetBuffer {
             shared_manager,
             radar_key,
 
-            guard_zones: [
-                DetectionGuardZone::new(spokes_per_revolution),
-                DetectionGuardZone::new(spokes_per_revolution),
-            ],
-
-            prev_angle: 0,
-
-            current_heading: 0,
-
-            blobs_in_progress: Vec::new(),
+            arpa_detector: ArpaDetector::new(spokes_per_revolution),
 
             sk_client_tx,
         }
@@ -1189,7 +973,7 @@ impl TargetBuffer {
         if let Some(ref tx) = self.sk_client_tx {
             let target_api = target.to_api(radar_position);
             let mut delta = crate::stream::SignalKDelta::new();
-            delta.add_target_update(&self.radar_key, target.m_target_id, Some(target_api));
+            delta.add_target_update(&self.radar_key, target.target_id, Some(target_api));
             // Ignore send errors - no receivers is normal when no clients connected
             let _ = tx.send(delta);
         }
@@ -1215,7 +999,7 @@ impl TargetBuffer {
         enabled: bool,
     ) {
         if zone_index < 2 {
-            self.guard_zones[zone_index].update_from_config(
+            self.arpa_detector.guard_zones[zone_index].update_from_config(
                 start_angle_rad,
                 end_angle_rad,
                 inner_range_m,
@@ -1225,18 +1009,6 @@ impl TargetBuffer {
                 self.setup.pixels_per_meter,
             );
         }
-    }
-
-    /// Check if any guard zone is enabled
-    fn has_active_guard_zone(&self) -> bool {
-        self.guard_zones.iter().any(|z| z.enabled)
-    }
-
-    /// Check if a position is within any enabled guard zone
-    fn is_in_guard_zone(&self, angle: i32, range: i32, heading: i32) -> bool {
-        self.guard_zones
-            .iter()
-            .any(|z| z.contains(angle, range, self.setup.spokes_per_revolution, heading))
     }
 
     pub fn set_rotation_speed(&mut self, ms: u32) {
@@ -1251,15 +1023,18 @@ impl TargetBuffer {
         Ok(())
     }
 
-    /// Set ARPA mode: 0 = Normal, 1 = Fast, 2 = Static
-    pub fn set_arpa_mode(&mut self, mode: i32) {
-        self.setup.arpa_mode = mode;
-        log::info!("ARPA mode set to {}", match mode {
-            0 => "Normal",
-            1 => "Fast",
-            2 => "Static",
-            _ => "Unknown",
-        });
+    /// Set ARPA detect mode: 0 = Normal (25kn), 1 = Medium (40kn), 2 = Fast (50kn)
+    pub fn set_arpa_detect_mode(&mut self, mode: i32) {
+        self.setup.arpa_detect_mode = mode;
+        log::info!(
+            "ARPA detect mode set to {}",
+            match mode {
+                0 => "Normal (25kn)",
+                1 => "Medium (40kn)",
+                2 => "Fast (50kn)",
+                _ => "Unknown",
+            }
+        );
     }
 
     fn reset_history(&mut self) {
@@ -1269,13 +1044,13 @@ impl TargetBuffer {
             self.setup.spoke_len,
         );
         // Clear any blobs in progress since history was reset
-        self.blobs_in_progress.clear();
+        self.arpa_detector.complete_all_blobs();
     }
 
     fn clear_contours(&mut self) {
         for (_, t) in self.targets.write().unwrap().iter_mut() {
             t.contour.length = 0;
-            t.m_average_contour_length = 0;
+            t.average_contour_length = 0;
         }
     }
     fn get_next_target_id(&mut self) -> usize {
@@ -1297,7 +1072,7 @@ impl TargetBuffer {
         let mut best_id = None;
         let mut min_dist = 1000.;
         for (id, target) in self.targets.read().unwrap().iter() {
-            if target.m_status != TargetStatus::Lost {
+            if target.status != TargetStatus::Lost {
                 let dif_lat = pos.lat - target.position.pos.lat;
                 let dif_lon = (pos.lon - target.position.pos.lon) * pos.lat.to_radians().cos();
                 let dist2 = dif_lat * dif_lat + dif_lon * dif_lon;
@@ -1388,9 +1163,9 @@ impl TargetBuffer {
         self.targets
             .write()
             .unwrap()
-            .retain(|_, t| t.m_status != TargetStatus::Lost);
+            .retain(|_, t| t.status != TargetStatus::Lost);
         for (_, v) in self.targets.write().unwrap().iter_mut() {
-            v.m_refreshed = RefreshState::NotFound;
+            v.refreshed = RefreshState::NotFound;
         }
     }
 
@@ -1423,14 +1198,24 @@ impl TargetBuffer {
 
         self.cleanup_lost_targets();
 
-        // main target refresh loop
-
-        // pass 0 of target refresh  Only search for moving targets faster than 2 knots as long as autolearnng is initializing
-        // When autolearn is ready, apply for all targets
-
-        let speed = MAX_DETECTION_SPEED_KN * KN_TO_MS; // m/sec
+        // Main target refresh loop
+        //
+        // Calculate the maximum search radius based on the ARPA detect mode.
+        // This is the distance (in pixels) a target could travel during one radar rotation.
+        // Normal: 25kn max, Medium: 40kn max, Fast: 50kn max
+        let max_speed_kn = match self.setup.arpa_detect_mode {
+            2 => MAX_DETECTION_SPEED_FAST_KN,
+            1 => MAX_DETECTION_SPEED_MEDIUM_KN,
+            _ => MAX_DETECTION_SPEED_NORMAL_KN,
+        };
+        let speed = max_speed_kn * KN_TO_MS; // m/sec
+        let rotation_ms = if self.setup.rotation_speed_ms > 0 {
+            self.setup.rotation_speed_ms
+        } else {
+            2500 // fallback if not yet computed
+        };
         let search_radius =
-            (speed * TODO_ROTATION_SPEED_MS as f64 * self.setup.pixels_per_meter / 1000.) as i32;
+            (speed * rotation_ms as f64 * self.setup.pixels_per_meter / 1000.) as i32;
 
         // In dual radar mode, get targets assigned to this radar from shared manager
         if let Some(ref manager) = self.shared_manager {
@@ -1503,12 +1288,20 @@ impl TargetBuffer {
         log::info!(
             "Refreshing target {}: status={:?}, angle={}, range={}..{}",
             target_id,
-            target.m_status,
+            target.status,
             target.contour.position.angle,
             start_angle,
             end_angle
         );
 
+        // Three-pass search strategy with expanding search radius:
+        // - Pass::First:  search_radius/4 - tight search, only for confirmed fast targets
+        // - Pass::Second: search_radius/3 - medium search for all targets
+        // - Pass::Third:  full search_radius - wide search to catch fast-moving targets
+        //
+        // The Kalman filter predicts where the target should be, then we search outward
+        // from that predicted position. Starting with a small radius reduces false matches
+        // on nearby blobs. If not found, we expand the search in subsequent passes.
         for pass in Pass::iter() {
             let radius = match pass {
                 Pass::First => search_radius / 4,
@@ -1516,54 +1309,50 @@ impl TargetBuffer {
                 Pass::Third => search_radius,
             };
 
+            // Pass::First only runs for targets that are already confirmed as moving fast,
+            // or when autolearn is ready. This avoids wasting time on slow/stationary targets.
             if pass == Pass::First
                 && !((target.position.speed_kn >= 2.5
                     && target.age_rotations >= TODO_TARGET_AGE_TO_MIXER)
-                    || self.m_auto_learn_state >= 1)
+                    || self.auto_learn_state >= 1)
             {
                 continue;
             }
 
-            let prev_status = target.m_status.clone();
+            let prev_status = target.status.clone();
             let clone = target.clone();
-            match ArpaTarget::refresh_target(
-                clone,
-                &self.setup,
-                &mut self.history,
-                radius / 4,
-                pass,
-            ) {
+            match ArpaTarget::refresh_target(clone, &self.setup, &mut self.history, radius, pass) {
                 Ok(t) => {
                     // Log status changes
-                    if t.m_status != prev_status {
+                    if t.status != prev_status {
                         log::info!(
                             "Target {} status: {:?} -> {:?}, speed={:.1}kn, lost_count={}",
-                            t.m_target_id,
+                            t.target_id,
                             prev_status,
-                            t.m_status,
+                            t.status,
                             t.position.speed_kn,
-                            t.m_lost_count
+                            t.lost_count
                         );
                     }
                     target = t;
                 }
                 Err(e) => match e {
                     Error::Lost => {
-                        log::info!("Target {} lost", target.m_target_id);
-                        target.m_status = TargetStatus::Lost;
+                        log::info!("Target {} lost", target.target_id);
+                        target.status = TargetStatus::Lost;
                     }
                     _ => {
-                        log::debug!("Target {} refresh error {:?}", target.m_target_id, e);
+                        log::debug!("Target {} refresh error {:?}", target.target_id, e);
                     }
                 },
             }
         }
 
         // Broadcast target state to SignalK clients
-        if target.m_status == TargetStatus::Lost {
+        if target.status == TargetStatus::Lost {
             self.broadcast_target_lost(target_id);
         } else {
-            self.broadcast_target_update(&target, &target.m_radar_pos);
+            self.broadcast_target_update(&target, &target.radar_pos);
         }
 
         // Update the target back to storage
@@ -1609,8 +1398,8 @@ impl TargetBuffer {
       LOG_ARPA(wxT("%s: InsertOrUpdateTarget id=%i"), m_ri.m_name, uid);
       ArpaTarget* updated_target = 0;
       for (auto target = m_targets.begin(); target != m_targets.end(); target++) {
-        //LOG_ARPA(wxT("%s: InsertOrUpdateTarget id=%i, found=%i"), m_ri.m_name, uid, (*target).m_target_id);
-        if ((*target).m_target_id == uid) {  // target found!
+        //LOG_ARPA(wxT("%s: InsertOrUpdateTarget id=%i, found=%i"), m_ri.m_name, uid, (*target).target_id);
+        if ((*target).target_id == uid) {  // target found!
           updated_target = (*target).get();
           found = true;
           LOG_ARPA(wxT("%s: InsertOrUpdateTarget found target id=%d pos=%d"), m_ri.m_name, uid, target - m_targets.begin());
@@ -1633,24 +1422,24 @@ impl TargetBuffer {
           Polar pol = updated_target->Pos2Polar(data->position, own_pos);
           LOG_ARPA(wxT("%s: InsertOrUpdateTarget new target id=%d polar=%i"), m_ri.m_name, uid, pol.angle);
           // set estimated time of last refresh as if it was a local target
-          updated_target.m_refresh_time = m_ri.m_history[MOD_SPOKES(pol.angle)].time;
+          updated_target.refresh_time = m_ri.m_history[MOD_SPOKES(pol.angle)].time;
         }
       }
       //LOG_ARPA(wxT("%s: InsertOrUpdateTarget processing id=%i"), m_ri.m_name, uid);
-      updated_target.m_kalman.P = data->P;
+      updated_target.kalman.P = data->P;
       updated_target.m_position = data->position;
-      updated_target.m_status = data->status;
-      LOG_ARPA(wxT("%s: transferred id=%i, lat= %f, lon= %f, status=%i,"), m_ri.m_name, updated_target.m_target_id,
-               updated_target.m_position.pos.lat, updated_target.m_position.pos.lon, updated_target.m_status);
-      updated_target.m_doppler_target = ANY;
-      updated_target.m_lost_count = 0;
-      updated_target.m_automatic = true;
+      updated_target.status = data->status;
+      LOG_ARPA(wxT("%s: transferred id=%i, lat= %f, lon= %f, status=%i,"), m_ri.m_name, updated_target.target_id,
+               updated_target.m_position.pos.lat, updated_target.m_position.pos.lon, updated_target.status);
+      updated_target.doppler_target = ANY;
+      updated_target.lost_count = 0;
+      updated_target.automatic = true;
       double s1 = updated_target.m_position.dlat_dt;  // m per second
       double s2 = updated_target.m_position.dlon_dt;                                   // m  per second
-      updated_target.m_course = rad2deg(atan2(s2, s1));
+      updated_target.course = rad2deg(atan2(s2, s1));
       if (remote) {   // inserted or updated target originated from another radar
-        updated_target.m_transferred_target = true;
-        //LOG_ARPA(wxT(" m_transferred_target = true targetid=%i"), updated_target.m_target_id);
+        updated_target.transferred_target = true;
+        //LOG_ARPA(wxT(" transferred_target = true targetid=%i"), updated_target.target_id);
       }
       return;
     }
@@ -1676,38 +1465,38 @@ impl TargetBuffer {
       std::unique_ptr<ArpaTarget> target = make_unique<ArpaTarget>(m_pi, m_ri, 0);
       #endif
       target_pos = target->Polar2Pos(pol, own_pos);
-      target.m_doppler_target = doppl;
+      target.doppler_target = doppl;
       target.m_position = target_pos;  // Expected position
       target.m_position.time = wxGetUTCTimeMillis();
       target.m_position.dlat_dt = 0.;
       target.m_position.dlon_dt = 0.;
       target.m_position.speed_kn = 0.;
       target.m_position.sd_speed_kn = 0.;
-      target.m_status = status;
+      target.status = status;
       target.m_max_angle.angle = 0;
       target.m_min_angle.angle = 0;
       target.m_max_r.r = 0;
       target.m_min_r.r = 0;
-      target.m_doppler_target = doppl;
-      target.m_refreshed = NOT_FOUND;
-      target.m_automatic = true;
+      target.doppler_target = doppl;
+      target.refreshed = NOT_FOUND;
+      target.automatic = true;
       target->RefreshTarget(TARGET_SEARCH_RADIUS1, 1);
 
       m_targets.push_back(std::move(target));
       return true;
     }
 
-    void RadarArpa::ClearContours() { m_clear_contours = true; }
+    void RadarArpa::ClearContours() { clear_contours = true; }
     */
 
     /*
     void RadarArpa::ProcessIncomingMessages() {
       DynamicTargetData* target;
-      if (m_clear_contours) {
-        m_clear_contours = false;
+      if (clear_contours) {
+        clear_contours = false;
         for (auto target = m_targets.begin(); target != m_targets.end(); target++) {
           (*target).m_contour_length = 0;
-          (*target).m_previous_contour_length = 0;
+          (*target).previous_contour_length = 0;
         }
       }
 
@@ -1856,12 +1645,12 @@ impl TargetBuffer {
         // Set the contour position so refresh_targets can find this target
         target.contour.position = pol;
         target.expected = pol;
-        target.m_automatic = automatic;
+        target.automatic = automatic;
 
         log::info!(
             "Target {} acquired: status={:?}, angle={}, range={}, lat={:.6}, lon={:.6}",
             uid,
-            target.m_status,
+            target.status,
             pol.angle,
             pol.r,
             target_pos.pos.lat,
@@ -1869,7 +1658,7 @@ impl TargetBuffer {
         );
 
         // Broadcast new target to SignalK clients
-        self.broadcast_target_update(&target, &target.m_radar_pos);
+        self.broadcast_target_update(&target, &target.radar_pos);
 
         // Store to shared manager in dual radar mode, otherwise local storage
         if let Some(ref manager) = self.shared_manager {
@@ -1952,11 +1741,8 @@ impl TargetBuffer {
             self.clear_contours();
 
             // Recalculate guard zones when pixels_per_meter changes
-            for zone in &mut self.guard_zones {
-                if zone.has_pending_config() || zone.enabled {
-                    zone.recalculate(self.setup.spokes_per_revolution, pixels_per_meter);
-                }
-            }
+            self.arpa_detector
+                .recalculate_zones(self.setup.spokes_per_revolution, pixels_per_meter);
         }
 
         // For ARPA to work correctly, history must always be stored using geographic bearing
@@ -1975,8 +1761,8 @@ impl TargetBuffer {
             (spoke.angle as usize, 0)
         };
 
-        // Store heading for use by process_completed_blob
-        self.current_heading = heading;
+        // Store heading for use by ARPA blob processing
+        self.arpa_detector.current_heading = heading;
 
         // Build up static background when in stationary mode
         let background_on = self.setup.stationary;
@@ -2058,7 +1844,8 @@ impl TargetBuffer {
         }
     }
 
-    /// Process strong pixels from a spoke and update blobs in progress
+    /// Process strong pixels from a spoke and update blobs in progress.
+    /// Delegates to ArpaDetector for automatic target detection within guard zones.
     fn process_blob_pixels(
         &mut self,
         angle: i32,
@@ -2069,173 +1856,18 @@ impl TargetBuffer {
     ) {
         let spokes = self.setup.spokes_per_revolution;
 
-        // Check if any guard zone is enabled - automatic target acquisition ONLY happens
-        // within enabled guard zones (matching C++ radar_pi behavior)
-        let guard_zone_active = self.guard_zones[0].enabled || self.guard_zones[1].enabled;
+        // Delegate blob detection to ArpaDetector
+        let completed_blobs = self.arpa_detector.process_blob_pixels(
+            angle,
+            heading,
+            strong_pixels,
+            time,
+            pos,
+            spokes,
+        );
 
-        // Log guard zone state once per rotation (at angle 0)
-        if angle == 0 {
-            log::debug!(
-                "Guard zone state: active={}, zone0_enabled={}, zone0 angles {}..{} range {}..{}, zone1_enabled={}",
-                guard_zone_active,
-                self.guard_zones[0].enabled,
-                self.guard_zones[0].start_angle,
-                self.guard_zones[0].end_angle,
-                self.guard_zones[0].inner_range,
-                self.guard_zones[0].outer_range,
-                self.guard_zones[1].enabled
-            );
-        }
-
-        // No automatic target acquisition without guard zones
-        if !guard_zone_active {
-            // Complete any in-progress blobs before returning
-            if !self.blobs_in_progress.is_empty() {
-                self.complete_all_blobs();
-            }
-            self.prev_angle = angle as usize;
-            return;
-        }
-
-        // Handle angle wraparound - complete all blobs when we wrap
-        if !self.blobs_in_progress.is_empty() {
-            let first_blob_angle = self.blobs_in_progress[0].min_angle;
-            // If we've wrapped around and are back near where blobs started, complete them all
-            if angle < first_blob_angle && self.prev_angle as i32 > angle {
-                self.complete_all_blobs();
-            }
-        }
-
-        // Filter pixels by guard zone and group into contiguous runs
-        // A run is a sequence of pixels where each is adjacent (r differs by 1)
-        let mut runs: Vec<Vec<i32>> = Vec::new();
-        let mut current_run: Vec<i32> = Vec::new();
-
-        for &r in strong_pixels {
-            // Check if pixel is in a guard zone
-            let in_zone = self.guard_zones[0].contains(angle, r, spokes, heading)
-                || self.guard_zones[1].contains(angle, r, spokes, heading);
-            if !in_zone {
-                // End current run if any
-                if !current_run.is_empty() {
-                    runs.push(std::mem::take(&mut current_run));
-                }
-                continue;
-            }
-
-            // Check if this pixel is adjacent to the last pixel in current run
-            if current_run.is_empty() || r == current_run.last().unwrap() + 1 {
-                current_run.push(r);
-            } else {
-                // Start a new run
-                runs.push(std::mem::take(&mut current_run));
-                current_run.push(r);
-            }
-        }
-        // Don't forget the last run
-        if !current_run.is_empty() {
-            runs.push(current_run);
-        }
-
-        let mut run_assigned: Vec<bool> = vec![false; runs.len()];
-        let prev_angle = (angle - 1).rem_euclid(spokes);
-
-        // For each run, find ALL adjacent blobs (there may be multiple that need merging)
-        for (run_idx, run) in runs.iter().enumerate() {
-            let mut adjacent_blob_indices: Vec<usize> = Vec::new();
-
-            for (blob_idx, blob) in self.blobs_in_progress.iter().enumerate() {
-                // Only consider blobs whose last_angle is the previous spoke
-                if blob.last_angle != prev_angle {
-                    continue;
-                }
-                // Check if any pixel in the run is adjacent to the blob
-                for &r in run {
-                    if blob.is_adjacent(r) {
-                        adjacent_blob_indices.push(blob_idx);
-                        break;
-                    }
-                }
-            }
-
-            if adjacent_blob_indices.is_empty() {
-                continue;
-            }
-
-            run_assigned[run_idx] = true;
-
-            // If multiple blobs are adjacent to this run, merge them all into the first one
-            let primary_idx = adjacent_blob_indices[0];
-
-            // First, merge any additional blobs into the primary blob
-            // Process in reverse order to preserve indices during removal
-            for &merge_idx in adjacent_blob_indices.iter().skip(1).rev() {
-                let merge_blob = self.blobs_in_progress.remove(merge_idx);
-                let primary = &mut self.blobs_in_progress[if merge_idx < primary_idx {
-                    primary_idx - 1
-                } else {
-                    primary_idx
-                }];
-                // Merge the blob data
-                primary.min_angle = min(primary.min_angle, merge_blob.min_angle);
-                primary.min_r = min(primary.min_r, merge_blob.min_r);
-                primary.max_r = max(primary.max_r, merge_blob.max_r);
-                primary.pixel_count += merge_blob.pixel_count;
-                // Note: last_spoke_ranges from merged blob are from prev spoke, not needed
-            }
-
-            // Now extend the primary blob with this run
-            // Need to recalculate primary_idx as it may have changed due to removals
-            let adjusted_primary_idx = adjacent_blob_indices[0]
-                - adjacent_blob_indices
-                    .iter()
-                    .skip(1)
-                    .filter(|&&i| i < adjacent_blob_indices[0])
-                    .count();
-            let blob = &mut self.blobs_in_progress[adjusted_primary_idx];
-            blob.start_new_spoke(angle);
-            for &r in run {
-                blob.add_pixel(angle, r);
-                blob.last_spoke_ranges.push(r);
-            }
-        }
-
-        // Start new blobs for unassigned runs
-        for (run_idx, run) in runs.iter().enumerate() {
-            if run_assigned[run_idx] {
-                continue;
-            }
-            // Create a new blob with all pixels in this run
-            let mut blob = BlobInProgress::new(angle, run[0], time, pos.clone());
-            for &r in run.iter().skip(1) {
-                blob.add_pixel(angle, r);
-                blob.last_spoke_ranges.push(r);
-            }
-            self.blobs_in_progress.push(blob);
-        }
-
-        // Find completed blobs: those that weren't extended this spoke
-        // AND whose last_angle is before the previous spoke (so they had a gap)
-        let mut completed_indices: Vec<usize> = Vec::new();
-        for (idx, blob) in self.blobs_in_progress.iter().enumerate() {
-            // Blob is complete if it wasn't extended and last_angle < prev_angle
-            // (meaning there's been at least one spoke with no contribution)
-            if blob.last_angle != angle && blob.last_angle != prev_angle {
-                completed_indices.push(idx);
-            }
-        }
-
-        // Process completed blobs (in reverse order to preserve indices during removal)
-        for &idx in completed_indices.iter().rev() {
-            let blob = self.blobs_in_progress.remove(idx);
-            self.process_completed_blob(blob);
-        }
-    }
-
-    /// Complete all blobs in progress (called on angle wraparound or range change)
-    fn complete_all_blobs(&mut self) {
-        let blobs: Vec<BlobInProgress> = self.blobs_in_progress.drain(..).collect();
-        for blob in blobs {
+        // Process each completed blob for target acquisition
+        for blob in completed_blobs {
             self.process_completed_blob(blob);
         }
     }
@@ -2256,26 +1888,19 @@ impl TargetBuffer {
 
         let (center_angle, center_r) = blob.center();
         let spokes = self.setup.spokes_per_revolution;
-        let heading = self.current_heading;
+        let heading = self.arpa_detector.current_heading;
 
         // Verify blob is within guard zone (if enabled)
-        let guard_zone_active = self.guard_zones[0].enabled || self.guard_zones[1].enabled;
+        let guard_zone_active = self.arpa_detector.has_active_guard_zone();
         if guard_zone_active {
-            let in_zone0 = self.guard_zones[0].contains(center_angle, center_r, spokes, heading);
-            let in_zone1 = self.guard_zones[1].contains(center_angle, center_r, spokes, heading);
-            if !in_zone0 && !in_zone1 {
+            let in_zone =
+                self.arpa_detector
+                    .is_in_guard_zone(center_angle, center_r, heading, spokes);
+            if !in_zone {
                 log::warn!(
-                    "Blob outside guard zones! center=({}, {}), zone0={}..{}/{}..{}, zone1={}..{}/{}..{}",
+                    "Blob outside guard zones! center=({}, {})",
                     center_angle,
-                    center_r,
-                    self.guard_zones[0].start_angle,
-                    self.guard_zones[0].end_angle,
-                    self.guard_zones[0].inner_range,
-                    self.guard_zones[0].outer_range,
-                    self.guard_zones[1].start_angle,
-                    self.guard_zones[1].end_angle,
-                    self.guard_zones[1].inner_range,
-                    self.guard_zones[1].outer_range
+                    center_r
                 );
                 return;
             }
@@ -2350,7 +1975,7 @@ impl TargetBuffer {
         let spokes = self.setup.spokes_per_revolution;
 
         for (target_id, target) in targets.iter() {
-            if target.m_status == TargetStatus::Lost {
+            if target.status == TargetStatus::Lost {
                 continue;
             }
 
@@ -2414,30 +2039,30 @@ impl ArpaTarget {
         radar_pos: GeoPosition,
         uid: usize,
         spokes_per_revolution: usize,
-        m_status: TargetStatus,
+        status: TargetStatus,
         have_doppler: bool,
     ) -> Self {
         // makes new target with an existing id
         Self {
-            m_status,
-            m_average_contour_length: 0,
-            m_small_fast: false,
-            m_previous_contour_length: 0,
-            m_lost_count: 0,
-            m_refresh_time: 0,
-            m_automatic: false,
-            m_radar_pos: radar_pos,
-            m_course: 0.,
-            m_stationary: 0,
-            m_doppler_target: Doppler::Any,
-            m_refreshed: RefreshState::NotFound,
-            m_target_id: uid,
-            m_transferred_target: false,
-            m_kalman: KalmanFilter::new(spokes_per_revolution),
+            status,
+            average_contour_length: 0,
+            small_fast: false,
+            previous_contour_length: 0,
+            lost_count: 0,
+            refresh_time: 0,
+            automatic: false,
+            radar_pos: radar_pos,
+            course: 0.,
+            stationary: 0,
+            doppler_target: Doppler::Any,
+            refreshed: RefreshState::NotFound,
+            target_id: uid,
+            transferred_target: false,
+            kalman: KalmanFilter::new(spokes_per_revolution),
             contour: Contour::new(),
-            m_total_pix: 0,
-            m_approaching_pix: 0,
-            m_receding_pix: 0,
+            total_pix: 0,
+            approaching_pix: 0,
+            receding_pix: 0,
             have_doppler,
             position,
             expected: Polar::new(0, 0, 0),
@@ -2455,59 +2080,57 @@ impl ArpaTarget {
         // target not found
         log::debug!(
             "Not found id={}, angle={}, r={}, pass={:?}, lost_count={}, status={:?}",
-            target.m_target_id,
+            target.target_id,
             pol.angle,
             pol.r,
             pass,
-            target.m_lost_count,
-            target.m_status
+            target.lost_count,
+            target.status
         );
 
-        if target.m_small_fast && pass == Pass::Second && target.m_status == TargetStatus::Acquire2
-        {
+        if target.small_fast && pass == Pass::Second && target.status == TargetStatus::Acquire2 {
             // status 2, as it was not found,status was not increased.
             // small and fast targets MUST be found in the third sweep, and on a small distance, that is in pass 1.
-            log::debug!("smallandfast set lost id={}", target.m_target_id);
+            log::debug!("smallandfast set lost id={}", target.target_id);
             return Err(Error::Lost);
         }
 
         // delete low status targets immediately when not found
-        if ((target.m_status == TargetStatus::Acquire1
-            || target.m_status == TargetStatus::Acquire2)
+        if ((target.status == TargetStatus::Acquire1 || target.status == TargetStatus::Acquire2)
             && pass == Pass::Third)
-            || target.m_status == TargetStatus::Acquire0
+            || target.status == TargetStatus::Acquire0
         {
             log::debug!(
                 "low status deleted id={}, angle={}, r={}, pass={:?}, lost_count={}",
-                target.m_target_id,
+                target.target_id,
                 pol.angle,
                 pol.r,
                 pass,
-                target.m_lost_count
+                target.lost_count
             );
             return Err(Error::Lost);
         }
         if pass == Pass::Third {
-            target.m_lost_count += 1;
+            target.lost_count += 1;
         }
 
         // delete if not found too often
-        if target.m_lost_count > MAX_LOST_COUNT {
+        if target.lost_count > MAX_LOST_COUNT {
             return Err(Error::Lost);
         }
-        target.m_refreshed = RefreshState::NotFound;
+        target.refreshed = RefreshState::NotFound;
         // Send RATTM message also for not seen messages
         /*
-        if (pass == LAST_PASS && m_status > m_ri.m_target_age_to_mixer.GetValue()) {
+        if (pass == LAST_PASS && status > m_ri.m_target_age_to_mixer.GetValue()) {
             pol = Pos2Polar(self.position, own_pos);
-            if (m_status >= m_ri.m_target_age_to_mixer.GetValue()) {
+            if (status >= m_ri.m_target_age_to_mixer.GetValue()) {
                 //   f64 dist2target = pol.r / self.pixels_per_meter;
-                LOG_ARPA(wxT(" pass not found as AIVDM targetid=%i"), m_target_id);
-                if (m_transferred_target) {
-                    //  LOG_ARPA(wxT(" passTTM targetid=%i"), m_target_id);
+                LOG_ARPA(wxT(" pass not found as AIVDM targetid=%i"), target_id);
+                if (transferred_target) {
+                    //  LOG_ARPA(wxT(" passTTM targetid=%i"), target_id);
                     //  f64 s1 = self.position.dlat_dt;                                   // m per second
                     //  f64 s2 = self.position.dlon_dt;                                   // m  per second
-                    //  m_course = rad2deg(atan2(s2, s1));
+                    //  course = rad2deg(atan2(s2, s1));
                     //  PassTTMtoOCPN(&pol, s);
 
                     PassAIVDMtoOCPN(&pol);
@@ -2520,7 +2143,7 @@ impl ArpaTarget {
 
         // The target wasn't found, but we do want to keep it around
         // as it may pop up on the next scan.
-        target.m_transferred_target = false;
+        target.transferred_target = false;
         return Ok(target);
     }
 
@@ -2533,13 +2156,13 @@ impl ArpaTarget {
     ) -> Result<Self, Error> {
         // refresh may be called from guard directly, better check
         let own_pos = crate::navdata::get_radar_position();
-        if target.m_status == TargetStatus::Lost
-            || target.m_refreshed == RefreshState::OutOfScope
+        if target.status == TargetStatus::Lost
+            || target.refreshed == RefreshState::OutOfScope
             || own_pos.is_none()
         {
             return Err(Error::Lost);
         }
-        if target.m_refreshed == RefreshState::Found {
+        if target.refreshed == RefreshState::Found {
             return Err(Error::AlreadyFound);
         }
 
@@ -2556,7 +2179,7 @@ impl ArpaTarget {
         if rotation_period == 0 {
             rotation_period = 2500; // default value
         }
-        if angle_time < target.m_refresh_time + rotation_period - 100 {
+        if angle_time < target.refresh_time + rotation_period - 100 {
             // the 100 is a margin on the rotation period
             // the next image of the target is not yet there
 
@@ -2564,15 +2187,15 @@ impl ArpaTarget {
         }
 
         // set new refresh time
-        target.m_refresh_time = history.spokes[pol.angle as usize].time;
+        target.refresh_time = history.spokes[pol.angle as usize].time;
         let prev_position = target.position.clone(); // save the previous target position
 
         // PREDICTION CYCLE
 
         log::debug!(
-            "Begin prediction cycle m_target_id={}, status={:?}, angle={}, r={}, contour={}, pass={:?}, lat={}, lon={}",
-            target.m_target_id,
-            target.m_status,
+            "Begin prediction cycle target_id={}, status={:?}, angle={}, r={}, contour={}, pass={:?}, lat={}, lon={}",
+            target.target_id,
+            target.status,
             pol.angle,
             pol.r,
             target.contour.length,
@@ -2582,16 +2205,16 @@ impl ArpaTarget {
         );
 
         // estimated new target time
-        let delta_t = if target.m_refresh_time >= prev_position.time
-            && target.m_status != TargetStatus::Acquire0
+        let delta_t = if target.refresh_time >= prev_position.time
+            && target.status != TargetStatus::Acquire0
         {
-            (target.m_refresh_time - prev_position.time) as f64 / 1000. // in seconds
+            (target.refresh_time - prev_position.time) as f64 / 1000. // in seconds
         } else {
             0.
         };
 
         if target.position.pos.lat > 90. || target.position.pos.lat < -90. {
-            log::trace!("Target {} has unlikely latitude", target.m_target_id);
+            log::trace!("Target {} has unlikely latitude", target.target_id);
             return Err(Error::Lost);
         }
 
@@ -2605,15 +2228,18 @@ impl ArpaTarget {
             target.position.dlon_dt,
         );
 
-        // Set Kalman filter noise based on ARPA mode: Normal (0) uses 0.015, Fast (1) uses 1.0
-        let noise = if setup.arpa_mode == 1 {
-            KalmanFilter::noise_fast()
-        } else {
-            KalmanFilter::noise_normal()
+        // Set Kalman filter noise based on ARPA detect mode:
+        // Normal (0): 0.015 - straighter paths, max 25kn
+        // Medium (1): 0.1 - moderate maneuvering, max 40kn
+        // Fast (2): 1.0 - aggressive maneuvering, max 50kn
+        let noise = match setup.arpa_detect_mode {
+            2 => KalmanFilter::noise_fast(),
+            1 => KalmanFilter::noise_medium(),
+            _ => KalmanFilter::noise_normal(),
         };
-        target.m_kalman.set_noise(noise);
+        target.kalman.set_noise(noise);
 
-        target.m_kalman.predict(&mut x_local, delta_t); // x_local is new estimated local position of the target
+        target.kalman.predict(&mut x_local, delta_t); // x_local is new estimated local position of the target
         // now set the polar to expected angular position from the expected local position
 
         pol.angle = setup.mod_spokes(
@@ -2625,10 +2251,10 @@ impl ArpaTarget {
 
         // zooming and target movement may  cause r to be out of bounds
         log::trace!(
-            "PREDICTION m_target_id={}, pass={:?}, status={:?}, angle={}.{}, r={}.{}, contour={}, speed={}, sd_speed_kn={} doppler={:?}, lostcount={}",
-            target.m_target_id,
+            "PREDICTION target_id={}, pass={:?}, status={:?}, angle={}.{}, r={}.{}, contour={}, speed={}, sd_speed_kn={} doppler={:?}, lostcount={}",
+            target.target_id,
             pass,
-            target.m_status,
+            target.status,
             alfa0,
             pol.angle,
             r0,
@@ -2636,14 +2262,14 @@ impl ArpaTarget {
             target.contour.length,
             target.position.speed_kn,
             target.position.sd_speed_kn,
-            target.m_doppler_target,
-            target.m_lost_count
+            target.doppler_target,
+            target.lost_count
         );
         if pol.r >= setup.spoke_len || pol.r <= 0 {
             // delete target if too far out
             log::trace!(
-                "R out of bounds,  m_target_id={}, angle={}, r={}, contour={}, pass={:?}",
-                target.m_target_id,
+                "R out of bounds,  target_id={}, angle={}, r={}, contour={}, pass={:?}",
+                target.target_id,
                 pol.angle,
                 pol.r,
                 target.contour.length,
@@ -2659,9 +2285,7 @@ impl ArpaTarget {
 
         if pass == Pass::Third {
             // this is doubtfull $$$
-            if target.m_status == TargetStatus::Acquire0
-                || target.m_status == TargetStatus::Acquire1
-            {
+            if target.status == TargetStatus::Acquire0 || target.status == TargetStatus::Acquire1 {
                 dist1 *= 2;
             } else if target.position.speed_kn > 15. {
                 dist1 *= 2;
@@ -2674,9 +2298,9 @@ impl ArpaTarget {
 
         // here we really search for the target
         if pass == Pass::Third {
-            target.m_doppler_target = Doppler::Any; // in the last pass we are not critical
+            target.doppler_target = Doppler::Any; // in the last pass we are not critical
         }
-        let found = history.get_target(&target.m_doppler_target, pol.clone(), dist1); // main target search
+        let found = history.get_target(&target.doppler_target, pol.clone(), dist1); // main target search
 
         match found {
             Ok((contour, pos)) => {
@@ -2688,30 +2312,30 @@ impl ArpaTarget {
 
                 log::debug!(
                     "id={}, Found dist_angle={}, dist_radial={}, dist_total={}, pol.angle={}, starting_position.angle={}, doppler={:?}",
-                    target.m_target_id,
+                    target.target_id,
                     dist_angle,
                     dist_radial,
                     dist_total,
                     pol.angle,
                     starting_position.angle,
-                    target.m_doppler_target
+                    target.doppler_target
                 );
 
-                if target.m_doppler_target != Doppler::Any {
-                    let backup = target.m_doppler_target;
-                    target.m_doppler_target = Doppler::Any;
-                    let _ = history.get_target(&target.m_doppler_target, pol.clone(), dist1); // get the contour for the target ins ANY state
+                if target.doppler_target != Doppler::Any {
+                    let backup = target.doppler_target;
+                    target.doppler_target = Doppler::Any;
+                    let _ = history.get_target(&target.doppler_target, pol.clone(), dist1); // get the contour for the target ins ANY state
                     target.pixel_counter(history);
-                    target.m_doppler_target = backup;
-                    let _ = history.get_target(&target.m_doppler_target, pol.clone(), dist1); // restore target in original state
+                    target.doppler_target = backup;
+                    let _ = history.get_target(&target.doppler_target, pol.clone(), dist1); // restore target in original state
                     target.state_transition(); // adapt state if required
                 } else {
                     target.pixel_counter(history);
                     target.state_transition();
                 }
-                if target.m_average_contour_length != 0
-                    && (target.contour.length < target.m_average_contour_length / 2
-                        || target.contour.length > target.m_average_contour_length * 2)
+                if target.average_contour_length != 0
+                    && (target.contour.length < target.average_contour_length / 2
+                        || target.contour.length > target.average_contour_length * 2)
                     && pass != Pass::Third
                 {
                     return Err(Error::WeightedContourLengthTooHigh);
@@ -2719,20 +2343,20 @@ impl ArpaTarget {
 
                 history.reset_pixels(&contour, &pos, &setup.pixels_per_meter);
                 log::debug!(
-                    "target Found ResetPixels m_target_id={}, angle={}, r={}, contour={}, pass={:?}, doppler={:?}",
-                    target.m_target_id,
+                    "target Found ResetPixels target_id={}, angle={}, r={}, contour={}, pass={:?}, doppler={:?}",
+                    target.target_id,
                     pol.angle,
                     pol.r,
                     target.contour.length,
                     pass,
-                    target.m_doppler_target
+                    target.doppler_target
                 );
                 if target.contour.length >= MAX_CONTOUR_LENGTH as i32 - 2 {
                     // don't use this blob, could be radar interference
                     // The pixels of the blob have been reset, so you won't find it again
                     log::debug!(
                         "reset found because of max contour length id={}, angle={}, r={}, contour={}, pass={:?}",
-                        target.m_target_id,
+                        target.target_id,
                         pol.angle,
                         pol.r,
                         target.contour.length,
@@ -2741,18 +2365,18 @@ impl ArpaTarget {
                     return Err(Error::ContourLengthTooHigh);
                 }
 
-                target.m_lost_count = 0;
+                target.lost_count = 0;
                 let mut p_own = ExtendedPosition::empty();
                 p_own.pos = history.spokes[history.mod_spokes(pol.angle) as usize].pos;
                 target.age_rotations += 1;
-                target.m_status = match target.m_status {
+                target.status = match target.status {
                     TargetStatus::Acquire0 => TargetStatus::Acquire1,
                     TargetStatus::Acquire1 => TargetStatus::Acquire2,
                     TargetStatus::Acquire2 => TargetStatus::Acquire3,
                     TargetStatus::Acquire3 | TargetStatus::Active => TargetStatus::Active,
                     _ => TargetStatus::Acquire0,
                 };
-                if target.m_status == TargetStatus::Acquire0 {
+                if target.status == TargetStatus::Acquire0 {
                     // as this is the first measurement, move target to measured position
                     // ExtendedPosition p_own;
                     // p_own.pos = m_ri.m_history[MOD_SPOKES(pol.angle)].pos;  // get the position at receive time
@@ -2763,18 +2387,18 @@ impl ArpaTarget {
                     target.expected = pol;
                     log::debug!(
                         "calculated id={} pos={}",
-                        target.m_target_id,
+                        target.target_id,
                         target.position.pos
                     );
                     target.age_rotations = 0;
                 }
 
                 // Kalman filter to  calculate the apostriori local position and speed based on found position (pol)
-                if target.m_status == TargetStatus::Acquire2
-                    || target.m_status == TargetStatus::Acquire3
+                if target.status == TargetStatus::Acquire2
+                    || target.status == TargetStatus::Acquire3
                 {
-                    target.m_kalman.update_p();
-                    target.m_kalman.set_measurement(
+                    target.kalman.update_p();
+                    target.kalman.set_measurement(
                         &mut pol,
                         &mut x_local,
                         &target.expected,
@@ -2785,7 +2409,7 @@ impl ArpaTarget {
 
                 target.position.time = pol.time; // set the target time to the newly found time, this is the time the spoke was received
 
-                if target.m_status != TargetStatus::Acquire1 {
+                if target.status != TargetStatus::Acquire1 {
                     // if status == 1, then this was first measurement, keep position at measured position
                     target.position.pos.lat =
                         own_pos.pos.lat + x_local.pos.lat / METERS_PER_DEGREE_LATITUDE;
@@ -2801,7 +2425,7 @@ impl ArpaTarget {
                 // This method however only works for targets where the accuricy of the position is high,
                 // that is small targets in relation to the size of the target.
 
-                if target.m_status == TargetStatus::Acquire2 {
+                if target.status == TargetStatus::Acquire2 {
                     // determine if this is a small and fast target
                     let dist_angle = pol.angle - alfa0;
                     let dist_r = pol.r - r0;
@@ -2812,10 +2436,10 @@ impl ArpaTarget {
                     let size_r = max(target.contour.max_r - target.contour.min_r, 1);
                     let test = (dist_r as f64 / size_r as f64).abs()
                         + (dist_angle as f64 / size_angle as f64).abs();
-                    target.m_small_fast = test > 2.;
+                    target.small_fast = test > 2.;
                     log::debug!(
                         "smallandfast, id={}, test={}, dist_r={}, size_r={}, dist_angle={}, size_angle={}",
-                        target.m_target_id,
+                        target.target_id,
                         test,
                         dist_r,
                         size_r,
@@ -2827,7 +2451,7 @@ impl ArpaTarget {
                 const FORCED_POSITION_STATUS: u32 = 8;
                 const FORCED_POSITION_AGE_FAST: u32 = 5;
 
-                if target.m_small_fast
+                if target.small_fast
                     && target.age_rotations >= 2
                     && target.age_rotations < FORCED_POSITION_STATUS
                     && (target.age_rotations < FORCED_POSITION_AGE_FAST
@@ -2848,9 +2472,9 @@ impl ArpaTarget {
                             * meters_per_degree_longitude(&new_pos.lat)
                             * 1000.;
                         log::debug!(
-                            "id={}, FORCED m_status={:?}, d_lat_dt={}, d_lon_dt={}, delta_lon_meter={}, delta_lat_meter={}, deltat={}",
-                            target.m_target_id,
-                            target.m_status,
+                            "id={}, FORCED status={:?}, d_lat_dt={}, d_lon_dt={}, delta_lon_meter={}, delta_lat_meter={}, deltat={}",
+                            target.target_id,
+                            target.status,
                             d_lat_dt,
                             d_lon_dt,
                             delta_lon * METERS_PER_DEGREE_LATITUDE,
@@ -2869,21 +2493,21 @@ impl ArpaTarget {
                 }
 
                 // set refresh time to the time of the spoke where the target was found
-                target.m_refresh_time = target.position.time;
+                target.refresh_time = target.position.time;
                 if target.age_rotations >= 1 {
                     let s1 = target.position.dlat_dt; // m per second
                     let s2 = target.position.dlon_dt; // m  per second
                     target.position.speed_kn = (s1 * s1 + s2 * s2).sqrt() * MS_TO_KN; // and convert to nautical miles per hour
-                    target.m_course = f64::atan2(s2, s1).to_degrees();
-                    if target.m_course < 0. {
-                        target.m_course += 360.;
+                    target.course = f64::atan2(s2, s1).to_degrees();
+                    if target.course < 0. {
+                        target.course += 360.;
                     }
 
                     log::debug!(
                         "FOUND {:?} CYCLE id={}, status={:?}, age={}, angle={}.{}, r={}.{}, contour={}, speed={}, sd_speed_kn={}, doppler={:?}",
                         pass,
-                        target.m_target_id,
-                        target.m_status,
+                        target.target_id,
+                        target.status,
                         target.age_rotations,
                         alfa0,
                         pol.angle,
@@ -2892,25 +2516,25 @@ impl ArpaTarget {
                         target.contour.length,
                         target.position.speed_kn,
                         target.position.sd_speed_kn,
-                        target.m_doppler_target
+                        target.doppler_target
                     );
 
-                    target.m_previous_contour_length = target.contour.length;
+                    target.previous_contour_length = target.contour.length;
                     // send target data to OCPN and other radar
 
                     const WEIGHT_FACTOR: f64 = 0.1;
 
                     if target.contour.length != 0 {
-                        if target.m_average_contour_length == 0 && target.contour.length != 0 {
-                            target.m_average_contour_length = target.contour.length;
+                        if target.average_contour_length == 0 && target.contour.length != 0 {
+                            target.average_contour_length = target.contour.length;
                         } else {
-                            target.m_average_contour_length +=
-                                ((target.contour.length - target.m_average_contour_length) as f64
+                            target.average_contour_length +=
+                                ((target.contour.length - target.average_contour_length) as f64
                                     * WEIGHT_FACTOR) as i32;
                         }
                     }
 
-                    //if (m_status >= m_ri.m_target_age_to_mixer.GetValue()) {
+                    //if (status >= m_ri.m_target_age_to_mixer.GetValue()) {
                     //  f64 dist2target = pol.r / self.pixels_per_meter;
                     // TODO: PassAIVDMtoOCPN(&pol);  // status s not yet used
 
@@ -2919,9 +2543,9 @@ impl ArpaTarget {
                     // MakeAndTransmitCoT();
                     //}
 
-                    target.m_refreshed = RefreshState::Found;
+                    target.refreshed = RefreshState::Found;
                     // A target that has been found is no longer considered a transferred target
-                    target.m_transferred_target = false;
+                    target.transferred_target = false;
                 }
             }
             Err(_e) => return Self::refresh_target_not_found(target, pol, pass),
@@ -2938,9 +2562,9 @@ impl ArpaTarget {
     ///
     fn pixel_counter(&mut self, history: &HistorySpokes) {
         //  Counts total number of the various pixels in a blob
-        self.m_total_pix = 0;
-        self.m_approaching_pix = 0;
-        self.m_receding_pix = 0;
+        self.total_pix = 0;
+        self.approaching_pix = 0;
+        self.receding_pix = 0;
         for i in 0..self.contour.contour.len() {
             for radius in 0..history.spokes[0].sweep.len() {
                 let pixel =
@@ -2951,74 +2575,73 @@ impl ArpaTarget {
                 }
                 let approaching = pixel.contains(HistoryPixel::APPROACHING); // this is Doppler approaching bit
                 let receding = pixel.contains(HistoryPixel::RECEDING); // this is Doppler receding bit
-                self.m_total_pix += target as u32;
-                self.m_approaching_pix += approaching as u32;
-                self.m_receding_pix += receding as u32;
+                self.total_pix += target as u32;
+                self.approaching_pix += approaching as u32;
+                self.receding_pix += receding as u32;
             }
         }
     }
 
     /// Check doppler state of targets if Doppler is on
     fn state_transition(&mut self) {
-        if !self.have_doppler || self.m_doppler_target == Doppler::AnyPlus {
+        if !self.have_doppler || self.doppler_target == Doppler::AnyPlus {
             return;
         }
 
-        let check_to_doppler = (self.m_total_pix as f64 * 0.85) as u32;
-        let check_not_approaching =
-            ((self.m_total_pix - self.m_approaching_pix) as f64 * 0.80) as u32;
-        let check_not_receding = ((self.m_total_pix - self.m_receding_pix) as f64 * 0.80) as u32;
+        let check_to_doppler = (self.total_pix as f64 * 0.85) as u32;
+        let check_not_approaching = ((self.total_pix - self.approaching_pix) as f64 * 0.80) as u32;
+        let check_not_receding = ((self.total_pix - self.receding_pix) as f64 * 0.80) as u32;
 
-        let new = match self.m_doppler_target {
+        let new = match self.doppler_target {
             Doppler::AnyDoppler | Doppler::Any => {
                 // convert to APPROACHING or RECEDING
-                if self.m_approaching_pix > self.m_receding_pix
-                    && self.m_approaching_pix > check_to_doppler
+                if self.approaching_pix > self.receding_pix
+                    && self.approaching_pix > check_to_doppler
                 {
                     &Doppler::Approaching
-                } else if self.m_receding_pix > self.m_approaching_pix
-                    && self.m_receding_pix > check_to_doppler
+                } else if self.receding_pix > self.approaching_pix
+                    && self.receding_pix > check_to_doppler
                 {
                     &Doppler::Receding
-                } else if self.m_doppler_target == Doppler::AnyDoppler {
+                } else if self.doppler_target == Doppler::AnyDoppler {
                     &Doppler::Any
                 } else {
-                    &self.m_doppler_target
+                    &self.doppler_target
                 }
             }
 
             Doppler::Receding => {
-                if self.m_receding_pix < check_not_approaching {
+                if self.receding_pix < check_not_approaching {
                     &Doppler::Any
                 } else {
-                    &self.m_doppler_target
+                    &self.doppler_target
                 }
             }
 
             Doppler::Approaching => {
-                if self.m_approaching_pix < check_not_receding {
+                if self.approaching_pix < check_not_receding {
                     &Doppler::Any
                 } else {
-                    &self.m_doppler_target
+                    &self.doppler_target
                 }
             }
-            _ => &self.m_doppler_target,
+            _ => &self.doppler_target,
         };
-        if *new != self.m_doppler_target {
+        if *new != self.doppler_target {
             log::debug!(
                 "Target {} Doppler state changed from {:?} to {:?}",
-                self.m_target_id,
-                self.m_doppler_target,
+                self.target_id,
+                self.doppler_target,
                 new
             );
-            self.m_doppler_target = *new;
+            self.doppler_target = *new;
         }
     }
 
     /*
         void ArpaTarget::TransferTargetToOtherRadar() {
           RadarInfo* other_radar = 0;
-          LOG_ARPA(wxT("%s: TransferTargetToOtherRadar m_target_id=%i,"), m_ri.m_name, m_target_id);
+          LOG_ARPA(wxT("%s: TransferTargetToOtherRadar target_id=%i,"), m_ri.m_name, target_id);
           if (M_SETTINGS.radar_count != 2) {
             return;
           }
@@ -3046,29 +2669,29 @@ impl ArpaTarget {
             // we will only send larger range targets to other radar
           }
           DynamicTargetData data;
-          data.target_id = m_target_id;
-          data.P = m_kalman.P;
+          data.target_id = target_id;
+          data.P = kalman.P;
           data.position = self.position;
-          LOG_ARPA(wxT("%s: lat= %f, lon= %f, m_target_id=%i,"), m_ri.m_name, self.position.pos.lat, self.position.pos.lon, m_target_id);
-          data.status = m_status;
+          LOG_ARPA(wxT("%s: lat= %f, lon= %f, target_id=%i,"), m_ri.m_name, self.position.pos.lat, self.position.pos.lon, target_id);
+          data.status = status;
           other_radar.m_arpa.InsertOrUpdateTargetFromOtherRadar(&data, false);
         }
 
         void ArpaTarget::SendTargetToNearbyRadar() {
-          LOG_ARPA(wxT("%s: Send target to nearby radar, m_target_id=%i,"), m_ri.m_name, m_target_id);
+          LOG_ARPA(wxT("%s: Send target to nearby radar, target_id=%i,"), m_ri.m_name, target_id);
           RadarInfo* long_radar = m_pi.GetLongRangeRadar();
           if (m_ri != long_radar) {
             return;
           }
           DynamicTargetData data;
-          data.target_id = m_target_id;
-          data.P = m_kalman.P;
+          data.target_id = target_id;
+          data.P = kalman.P;
           data.position = self.position;
-          LOG_ARPA(wxT("%s: lat= %f, lon= %f, m_target_id=%i,"), m_ri.m_name, self.position.pos.lat, self.position.pos.lon, m_target_id);
-          data.status = m_status;
+          LOG_ARPA(wxT("%s: lat= %f, lon= %f, target_id=%i,"), m_ri.m_name, self.position.pos.lat, self.position.pos.lon, target_id);
+          data.status = status;
           if (m_pi.m_inter_radar) {
             m_pi.m_inter_radar.SendTarget(data);
-            LOG_ARPA(wxT(" %s, target data send id=%i"), m_ri.m_name, m_target_id);
+            LOG_ARPA(wxT(" %s, target data send id=%i"), m_ri.m_name, target_id);
           }
         }
 
@@ -3084,7 +2707,7 @@ impl ArpaTarget {
       wxString s_target_name;
       wxString nmea;
 
-      if (m_status == LOST) return;  // AIS has no "status lost" message
+      if (status == LOST) return;  // AIS has no "status lost" message
       s_Bear_Unit = wxEmptyString;   // Bearing Units  R or empty
       s_Course_Unit = wxT("T");      // Course type R; Realtive T; true
       s_Dist_Unit = wxT("N");        // Speed/Distance Unit K, N, S N= NM/h = Knots
@@ -3093,14 +2716,14 @@ impl ArpaTarget {
       f64 bearing = pol.angle * 360. / m_ri.m_spokes;
       if (bearing < 0) bearing += 360;
 
-      int mmsi = m_target_id % 1000000;
+      int mmsi = target_id % 1000000;
       GeoPosition radar_pos;
       m_ri.GetRadarPosition(&radar_pos);
       f64 target_lat, target_lon;
 
       target_lat = self.position.pos.lat;
       target_lon = self.position.pos.lon;
-      wxString result = EncodeAIVDM(mmsi, self.position.speed_kn, target_lon, target_lat, m_course);
+      wxString result = EncodeAIVDM(mmsi, self.position.speed_kn, target_lon, target_lat, course);
       PushNMEABuffer(result);
       m_pi.SendToTargetMixer(result);
     }
@@ -3127,12 +2750,12 @@ impl ArpaTarget {
       //   s_status = wxT("T");  // green
       //   break;
       // case L:
-      //   LOG_ARPA(wxT(" id=%i, status == lost"), m_target_id);
+      //   LOG_ARPA(wxT(" id=%i, status == lost"), target_id);
       //   s_status = wxT("L");  // ?
       //   break;
       // }
 
-      if (m_doppler_target == ANY) {
+      if (doppler_target == ANY) {
         s_status = wxT("Q");  // yellow
       } else {
         s_status = wxT("T");
@@ -3142,13 +2765,13 @@ impl ArpaTarget {
       f64 bearing = pol.angle * 360. / m_ri.m_spokes;
 
       if (bearing < 0) bearing += 360;
-      s_TargID = wxString::Format(wxT("%2i"), m_target_id);
+      s_TargID = wxString::Format(wxT("%2i"), target_id);
       s_speed = wxString::Format(wxT("%4.2f"), self.position.speed_kn);
-      s_course = wxString::Format(wxT("%3.1f"), m_course);
-      if (m_automatic) {
-        s_target_name = wxString::Format(wxT("ARPA%2i"), m_target_id);
+      s_course = wxString::Format(wxT("%3.1f"), course);
+      if (automatic) {
+        s_target_name = wxString::Format(wxT("ARPA%2i"), target_id);
       } else {
-        s_target_name = wxString::Format(wxT("MARPA%2i"), m_target_id);
+        s_target_name = wxString::Format(wxT("MARPA%2i"), target_id);
       }
       s_distance = wxString::Format(wxT("%f"), dist);
       s_bearing = wxString::Format(wxT("%f"), bearing);
@@ -3170,7 +2793,7 @@ impl ArpaTarget {
         checksum ^= *p;
       }
       nmea.Printf(wxT("$%s*%02X\r\n"), sentence, (unsigned)checksum);
-      LOG_ARPA(wxT("%s: send TTM, target=%i string=%s"), m_ri.m_name, m_target_id, nmea);
+      LOG_ARPA(wxT("%s: send TTM, target=%i string=%s"), m_ri.m_name, target_id, nmea);
       PushNMEABuffer(nmea);
     }
 
@@ -3242,7 +2865,7 @@ impl ArpaTarget {
     }
 
     void ArpaTarget::MakeAndTransmitCoT() {  // currently not used, CoT messages for WinTak are made bij the Targetmixer
-      int mmsi = m_target_id;
+      int mmsi = target_id;
       wxString mmsi_string;                                    // uid="MMSI - 001000001"
       mmsi_string.Printf(wxT(" uid=\"RADAR - %09i\""), mmsi);  // uid="MMSI - 001000002"
       wxString short_mmsi_string;
@@ -3258,7 +2881,7 @@ impl ArpaTarget {
       wxString speed_string;
       speed_string.Printf(wxT("\"%f\""), self.position.speed_kn);
       wxString course_string;
-      course_string.Printf(wxT("\"%f\""), m_course);
+      course_string.Printf(wxT("\"%f\""), course);
     #define LIFE 4
 
       wxString date_time_string;        // "2022-11-12T09:29:34.784
@@ -3306,7 +2929,7 @@ impl ArpaTarget {
   wxString message = wxT("{\"target\":{");
 
   message << wxT("\"uid\":");
-  message << m_target_id;
+  message << target_id;
 
   message << wxT(",\"source_id\":");
   message << m_pi.m_radar_id;
@@ -3326,12 +2949,12 @@ impl ArpaTarget {
   message << dt.FormatISOCombined() << wxString::Format(wxT(".%03uZ\""), dt.GetMillisecond(wxDateTime::TZ::GMT0));
 
   message << wxString::Format(wxT(",\"sog\":%5.2f"), self.position.speed_kn * NAUTICAL_MILE. / 3600.);
-  message << wxString::Format(wxT(",\"cog\":%4.1f"), m_course);
+  message << wxString::Format(wxT(",\"cog\":%4.1f"), course);
 
   message << wxT(",\"state\":");
-  message << m_status;
+  message << status;
   message << wxT(",\"lost_count\":");
-  message << m_lost_count;
+  message << lost_count;
 
   message << wxT("}}");
 
@@ -3341,14 +2964,14 @@ impl ArpaTarget {
 
     fn set_status_lost(&mut self) {
         self.contour = Contour::new();
-        self.m_previous_contour_length = 0;
-        self.m_lost_count = 0;
-        self.m_kalman.reset_filter();
-        self.m_status = TargetStatus::Lost;
-        self.m_automatic = false;
-        self.m_refresh_time = 0;
-        self.m_course = 0.;
-        self.m_stationary = 0;
+        self.previous_contour_length = 0;
+        self.lost_count = 0;
+        self.kalman.reset_filter();
+        self.status = TargetStatus::Lost;
+        self.automatic = false;
+        self.refresh_time = 0;
+        self.course = 0.;
+        self.stationary = 0;
         self.position.dlat_dt = 0.;
         self.position.dlon_dt = 0.;
         self.position.speed_kn = 0.;
@@ -3358,10 +2981,10 @@ impl ArpaTarget {
     /// Manual targets are broadcast immediately from Acquire0
     /// Automatic targets wait until Acquire3 or Active to avoid noise
     pub fn should_broadcast(&self) -> bool {
-        if !self.m_automatic {
+        if !self.automatic {
             // Manual targets: broadcast all acquiring states so user sees feedback
             matches!(
-                self.m_status,
+                self.status,
                 TargetStatus::Acquire0
                     | TargetStatus::Acquire1
                     | TargetStatus::Acquire2
@@ -3370,10 +2993,7 @@ impl ArpaTarget {
             )
         } else {
             // Automatic targets: only broadcast once confirmed
-            matches!(
-                self.m_status,
-                TargetStatus::Acquire3 | TargetStatus::Active
-            )
+            matches!(self.status, TargetStatus::Acquire3 | TargetStatus::Active)
         }
     }
 
@@ -3381,8 +3001,8 @@ impl ArpaTarget {
     pub fn to_api(&self, radar_position: &GeoPosition) -> ArpaTargetApi {
         // Calculate bearing and distance from radar to target
         let dlat = self.position.pos.lat - radar_position.lat;
-        let dlon = (self.position.pos.lon - radar_position.lon)
-            * radar_position.lat.to_radians().cos();
+        let dlon =
+            (self.position.pos.lon - radar_position.lon) * radar_position.lat.to_radians().cos();
 
         let distance = (dlat * dlat + dlon * dlon).sqrt() * METERS_PER_DEGREE_LATITUDE;
         let mut bearing = dlon.atan2(dlat); // radians
@@ -3400,8 +3020,8 @@ impl ArpaTarget {
         let speed_ms = self.position.speed_kn * 0.514444;
 
         ArpaTargetApi {
-            id: self.m_target_id,
-            status: match self.m_status {
+            id: self.target_id,
+            status: match self.status {
                 TargetStatus::Active => "tracking".to_string(),
                 TargetStatus::Acquire3 => "acquiring".to_string(),
                 TargetStatus::Lost => "lost".to_string(),
@@ -3414,12 +3034,15 @@ impl ArpaTarget {
                 latitude: Some(self.position.pos.lat),
                 longitude: Some(self.position.pos.lon),
             },
-            motion: TargetMotionApi { course, speed: speed_ms },
+            motion: TargetMotionApi {
+                course,
+                speed: speed_ms,
+            },
             danger: TargetDangerApi {
                 cpa: 0.0,  // TODO: implement CPA calculation
                 tcpa: 0.0, // TODO: implement TCPA calculation
             },
-            acquisition: if self.m_automatic {
+            acquisition: if self.automatic {
                 "auto".to_string()
             } else {
                 "manual".to_string()

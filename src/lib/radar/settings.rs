@@ -87,7 +87,7 @@ pub enum ControlId {
     // Client Only, not here: Position,
     // Client Only, not here: Symbology,
     DopplerAutoTrack,
-    ArpaMode,
+    ArpaDetectMode,
     ClearTargets,
     MergeTargets,
     GuardZone1,
@@ -186,7 +186,7 @@ impl ControlId {
             | ControlId::Doppler
             | ControlId::DopplerMode => Category::Base,
             ControlId::DopplerAutoTrack
-            | ControlId::ArpaMode
+            | ControlId::ArpaDetectMode
             | ControlId::ClearTargets
             | ControlId::MergeTargets
             | ControlId::GuardZone1
@@ -249,8 +249,8 @@ impl ControlId {
             ControlId::DopplerAutoTrack => {
                 "Convert all Doppler targets to ARPA targets automatically"
             }
-            ControlId::ArpaMode => {
-                "ARPA tracking mode: Normal for stable targets, Fast for maneuvering targets"
+            ControlId::ArpaDetectMode => {
+                "ARPA detect mode: Normal (25kn max), Medium (40kn), Fast (50kn, maneuvering)"
             }
             ControlId::MergeTargets => {
                 "Merge targets from multiple radars into a single shared target list"
@@ -325,7 +325,7 @@ impl ControlId {
             ControlId::Doppler => "Doppler",
             ControlId::DopplerMode => "Doppler mode",
             ControlId::DopplerAutoTrack => "Doppler Auto Track",
-            ControlId::ArpaMode => "ARPA mode",
+            ControlId::ArpaDetectMode => "ARPA Detect Mode",
             ControlId::DopplerSpeedThreshold => "Doppler speed threshold",
             ControlId::DopplerTrailsOnly => "Doppler trails only",
             ControlId::FirmwareVersion => "Firmware version",
@@ -405,7 +405,7 @@ impl ControlId {
             ControlId::Doppler => ControlDestination::Command,
             ControlId::DopplerMode => ControlDestination::Command,
             ControlId::DopplerAutoTrack => ControlDestination::Target,
-            ControlId::ArpaMode => ControlDestination::Target,
+            ControlId::ArpaDetectMode => ControlDestination::Target,
             ControlId::DopplerSpeedThreshold => ControlDestination::Command,
             ControlId::TargetTrails => ControlDestination::Trail,
             ControlId::TrailsMotion => ControlDestination::Trail,
@@ -559,7 +559,7 @@ impl Controls {
 
             new_button(ControlId::ClearTrails).build(&mut controls);
 
-            new_list(ControlId::ArpaMode, &["Normal", "Fast"]).build(&mut controls);
+            new_list(ControlId::ArpaDetectMode, &["Normal", "Medium", "Fast"]).build(&mut controls);
 
             //TODO: Target tracking
             //if args.targets == TargetMode::Arpa {
@@ -1343,9 +1343,9 @@ impl SharedControls {
             .unwrap_or(0)
     }
 
-    /// Returns the current ARPA mode: 0 = Normal, 1 = Fast, 2 = Static
-    pub fn arpa_mode(&self) -> i32 {
-        self.get(&ControlId::ArpaMode)
+    /// Returns the current ARPA detect mode: 0 = Normal (25kn), 1 = Medium (40kn), 2 = Fast (50kn)
+    pub fn arpa_detect_mode(&self) -> i32 {
+        self.get(&ControlId::ArpaDetectMode)
             .and_then(|c| c.value)
             .map(|v| v as i32)
             .unwrap_or(0)
