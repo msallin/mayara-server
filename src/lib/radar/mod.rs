@@ -574,6 +574,19 @@ impl SharedRadars {
             radar_key
         );
 
+        // Get radar position for API conversion
+        let radar_pos = crate::navdata::get_radar_position()
+            .map(|p| GeoPosition::new(p.lat, p.lon))
+            .unwrap_or_else(|| GeoPosition::new(0., 0.));
+
+        // Broadcast the new target immediately so GUI shows it
+        if let Some(managed) = target_manager.get_target(target_id) {
+            let target_api = managed.target.to_api(&radar_pos);
+            let mut delta = SignalKDelta::new();
+            delta.add_target_update(radar_key, target_id, Some(target_api));
+            let _ = radars.sk_client_tx.send(delta);
+        }
+
         Ok(target_id)
     }
 

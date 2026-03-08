@@ -626,14 +626,11 @@ function controlUpdate(controlId, value) {
 
 // Handle stream messages (targets, navigation, etc.)
 function handleStreamMessage(path, value) {
-  console.log(`handleStreamMessage: path=${path}`, value);
   // Handle target updates: radars.{id}.targets.{targetId}
   if (path.includes(".targets.")) {
     const parts = path.split(".");
-    console.log(`Target path parts:`, parts);
     if (parts.length >= 4 && parts[2] === "targets") {
       const targetId = parseInt(parts[3]);
-      console.log(`Target update for id=${targetId}, ppi=${!!ppi}`);
       if (ppi) {
         if (value === null) {
           // Target lost

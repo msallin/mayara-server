@@ -298,7 +298,6 @@ class PPI {
    * @param {object} data - Target data from server (ArpaTargetApi format)
    */
   updateTarget(id, data) {
-    console.log(`PPI.updateTarget(${id}):`, data);
     this.targets.set(id, data);
     this.#drawOverlay();
   }
@@ -758,13 +757,11 @@ class PPI {
     // Use actual_range for target drawing (matches acquisition coordinate conversion)
     // Navico radars overscan - spoke data covers more distance than user-selected range
     const actualRange = this.actual_range || range;
-    console.log(`#drawTargets: targets.size=${this.targets.size}, actualRange=${actualRange}, beam_length=${this.beam_length}`);
     if (!actualRange || actualRange <= 0 || this.targets.size === 0) return;
 
     const pixelsPerMeter = this.beam_length / actualRange;
 
     for (const [id, target] of this.targets) {
-      console.log(`Drawing target ${id} at bearing=${target.position?.bearing}, distance=${target.position?.distance}`);
       this.#drawTarget(ctx, id, target, pixelsPerMeter);
     }
   }
@@ -789,8 +786,6 @@ class PPI {
     // Convert polar to cartesian (bearing is clockwise from north)
     const x = this.center_x + pixelDist * Math.sin(adjustedBearing);
     const y = this.center_y - pixelDist * Math.cos(adjustedBearing);
-
-    console.log(`#drawTarget ${id}: center=(${this.center_x},${this.center_y}), pixelDist=${pixelDist.toFixed(1)}, adjustedBearing=${adjustedBearing.toFixed(2)}, x=${x.toFixed(1)}, y=${y.toFixed(1)}, canvas=${this.width}x${this.height}`);
 
     // Determine color based on status
     let color;

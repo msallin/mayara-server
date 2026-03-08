@@ -3314,13 +3314,26 @@ impl ArpaTarget {
     }
 
     /// Check if this target should be broadcast to clients
-    /// Returns false for early acquiring states (Acquire0, Acquire1, Acquire2)
-    /// and for LOST targets
+    /// Manual targets are broadcast immediately from Acquire0
+    /// Automatic targets wait until Acquire3 or Active to avoid noise
     pub fn should_broadcast(&self) -> bool {
-        matches!(
-            self.m_status,
-            TargetStatus::Acquire3 | TargetStatus::Active
-        )
+        if !self.m_automatic {
+            // Manual targets: broadcast all acquiring states so user sees feedback
+            matches!(
+                self.m_status,
+                TargetStatus::Acquire0
+                    | TargetStatus::Acquire1
+                    | TargetStatus::Acquire2
+                    | TargetStatus::Acquire3
+                    | TargetStatus::Active
+            )
+        } else {
+            // Automatic targets: only broadcast once confirmed
+            matches!(
+                self.m_status,
+                TargetStatus::Acquire3 | TargetStatus::Active
+            )
+        }
     }
 
     /// Convert internal ArpaTarget to Signal K API format for streaming
