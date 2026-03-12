@@ -182,6 +182,10 @@ class PPI {
     if (this.data) {
       this.data.fill(0);
     }
+    // Update renderer scale when control range changes
+    if (this.renderer && this.renderer.setRangeScale) {
+      this.renderer.setRangeScale(this.range, this.spoke_range || this.range);
+    }
     this.redrawCanvas();
   }
 
@@ -513,6 +517,10 @@ class PPI {
       if (this.spokeProcessor) {
         this.spokeProcessor.reset();
       }
+      // Update renderer scale when spoke range changes
+      if (this.renderer && this.renderer.setRangeScale) {
+        this.renderer.setRangeScale(this.range || this.spoke_range, this.spoke_range);
+      }
       this.redrawCanvas();
 
       if (!wasInitialRange && this.spokeProcessor.needsRotationWait()) {
@@ -782,12 +790,11 @@ class PPI {
   }
 
   #drawTargets(ctx, range) {
-    // Use spoke_range for target drawing (matches acquisition coordinate conversion)
-    // Navico radars overscan - spoke data covers more distance than user-selected range
-    const actualRange = this.spoke_range || range;
-    if (!actualRange || actualRange <= 0 || this.targets.size === 0) return;
+    // Use control range for target drawing - the radar image is scaled to match
+    // (renderer applies spoke_range/range scale factor to the radar image)
+    if (!range || range <= 0 || this.targets.size === 0) return;
 
-    const pixelsPerMeter = this.beam_length / actualRange;
+    const pixelsPerMeter = this.beam_length / range;
 
     for (const [id, target] of this.targets) {
       this.#drawTarget(ctx, id, target, pixelsPerMeter);
