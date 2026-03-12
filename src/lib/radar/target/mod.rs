@@ -112,6 +112,9 @@ const MAX_DETECTION_SPEED_FAST_KN: f64 = 50.;
 const MIN_CONTOUR_LENGTH: usize = 6;
 const MAX_CONTOUR_LENGTH: usize = 2000;
 
+// Width of the contour line in pixels (for visibility)
+const CONTOUR_WIDTH: i32 = 3;
+
 pub const METERS_PER_DEGREE_LATITUDE: f64 = 60. * NAUTICAL_MILE_F64;
 pub const KN_TO_MS: f64 = NAUTICAL_MILE_F64 / 3600.;
 pub const MS_TO_KN: f64 = 3600. / NAUTICAL_MILE_F64;
@@ -236,10 +239,10 @@ pub(crate) enum Doppler {
 
 /// Directional offsets for contour tracing: (bearing_offset, r_offset)
 const FOUR_DIRECTIONS: [(i32, i32); 4] = [
-    (0, 1),   // Up (increase r)
-    (1, 0),   // Right (increase bearing)
-    (0, -1),  // Down (decrease r)
-    (-1, 0),  // Left (decrease bearing)
+    (0, 1),  // Up (increase r)
+    (1, 0),  // Right (increase bearing)
+    (0, -1), // Down (decrease r)
+    (-1, 0), // Left (decrease bearing)
 ];
 
 /// A point used for contour tracing, with raw bearing and range values.
@@ -264,8 +267,6 @@ bitflags! {
         const RECEDING = 0b00010000;
         /// The value `CONTOUR`, at bit position `3`.
         const CONTOUR = 0b00001000;
-        /// The value `BLOB_EDGE`, at bit position `2` - marks edges of detected blobs for overlay
-        const BLOB_EDGE = 0b00000100;
 
         /// The default value for a new one.
         const INITIAL = Self::TARGET.bits() | Self::BACKUP.bits();
@@ -342,6 +343,8 @@ pub(self) struct TargetSetup {
     spoke_len: i32,
     have_doppler: bool,
     pixels_per_meter: f64,
+    /// Current spoke range in meters (actual data range, may differ from control range)
+    spoke_range_m: u32,
     rotation_speed_ms: u32,
     stationary: bool,
     /// ARPA detect mode: 0 = Normal (25kn), 1 = Medium (40kn), 2 = Fast (50kn)
@@ -508,7 +511,10 @@ impl HistorySpokes {
             return false;
         }
         let length = MIN_CONTOUR_LENGTH;
-        let start = ContourPoint { bearing: ang, r: rad };
+        let start = ContourPoint {
+            bearing: ang,
+            r: rad,
+        };
 
         let mut current = start; // the 4 possible translations to move from a point on the contour to the next
 
@@ -891,13 +897,19 @@ impl HistorySpokes {
         }
 
         // Draw the contour in the history. This is copied to the output data
-        // on the next sweep.
+        // on the next sweep. Widen the contour for better visibility.
+        let half_width = CONTOUR_WIDTH / 2;
         for p in &contour.contour {
-            // Normalize bearing (can be negative due to contour tracing) and check r bounds
-            let bearing_idx = self.mod_spokes(p.raw_bearing());
-            let spoke_sweep_len = self.spokes[bearing_idx].sweep.len();
-            if p.r >= 0 && (p.r as usize) < spoke_sweep_len {
-                self.spokes[bearing_idx].sweep[p.r as usize].insert(HistoryPixel::CONTOUR);
+            // Set CONTOUR bits for pixels within CONTOUR_WIDTH in both bearing and range
+            for db in -half_width..=half_width {
+                for dr in -half_width..=half_width {
+                    let bearing_idx = self.mod_spokes(p.raw_bearing() + db);
+                    let r = p.r + dr;
+                    let spoke_sweep_len = self.spokes[bearing_idx].sweep.len();
+                    if r >= 0 && (r as usize) < spoke_sweep_len {
+                        self.spokes[bearing_idx].sweep[r as usize].insert(HistoryPixel::CONTOUR);
+                    }
+                }
             }
         }
     }
@@ -965,6 +977,7 @@ impl TargetBuffer {
                 spoke_len,
                 have_doppler: info.doppler,
                 pixels_per_meter: 0.0,
+                spoke_range_m: 0,
 
                 rotation_speed_ms: 0,
                 stationary,
@@ -1195,7 +1208,8 @@ impl TargetBuffer {
             let id = self.get_next_target_id();
 
             // Get current radar position for calculating polar coordinates
-            let radar_pos = crate::navdata::get_radar_position().unwrap_or(GeoPosition::new(0., 0.));
+            let radar_pos =
+                crate::navdata::get_radar_position().unwrap_or(GeoPosition::new(0., 0.));
 
             let mut target = ArpaTarget::new(
                 target_pos.clone(),
@@ -1368,13 +1382,7 @@ impl TargetBuffer {
                 target_id,
                 target.contour.position.bearing
             );
-            self.refresh_single_target(
-                target_id,
-                target,
-                start_angle,
-                end_angle,
-                search_radius,
-            );
+            self.refresh_single_target(target_id, target, start_angle, end_angle, search_radius);
         }
     }
 
@@ -1858,6 +1866,7 @@ impl TargetBuffer {
             );
             let old_ppm = self.setup.pixels_per_meter;
             self.setup.pixels_per_meter = pixels_per_meter;
+            self.setup.spoke_range_m = spoke.range;
             self.reset_history();
             self.clear_contours();
 
@@ -1962,7 +1971,7 @@ impl TargetBuffer {
         let blob_edge_color = legend.target_border;
 
         for (radius, pixel) in sweep.iter().enumerate() {
-            if pixel.contains(HistoryPixel::BLOB_EDGE) && radius < spoke.data.len() {
+            if pixel.contains(HistoryPixel::CONTOUR) && radius < spoke.data.len() {
                 spoke.data[radius] = blob_edge_color;
             }
         }
@@ -2021,9 +2030,9 @@ impl TargetBuffer {
         let heading = blob.start_heading;
 
         // Determine which guard zone (if any) contains this blob
-        let source_zone = self
-            .arpa_detector
-            .get_containing_zone(center_bearing, center_r, heading, spokes);
+        let source_zone =
+            self.arpa_detector
+                .get_containing_zone(center_bearing, center_r, heading, spokes);
 
         // Verify blob is within a guard zone - this should always pass since pixels
         // were filtered by guard zone during collection, but log details if it fails
@@ -2035,10 +2044,18 @@ impl TargetBuffer {
                 center_r,
                 heading,
                 current_heading,
-                (self.arpa_detector.guard_zones[0].start_angle, self.arpa_detector.guard_zones[0].end_angle,
-                 self.arpa_detector.guard_zones[0].inner_range, self.arpa_detector.guard_zones[0].outer_range),
-                (self.arpa_detector.guard_zones[1].start_angle, self.arpa_detector.guard_zones[1].end_angle,
-                 self.arpa_detector.guard_zones[1].inner_range, self.arpa_detector.guard_zones[1].outer_range)
+                (
+                    self.arpa_detector.guard_zones[0].start_angle,
+                    self.arpa_detector.guard_zones[0].end_angle,
+                    self.arpa_detector.guard_zones[0].inner_range,
+                    self.arpa_detector.guard_zones[0].outer_range
+                ),
+                (
+                    self.arpa_detector.guard_zones[1].start_angle,
+                    self.arpa_detector.guard_zones[1].end_angle,
+                    self.arpa_detector.guard_zones[1].inner_range,
+                    self.arpa_detector.guard_zones[1].outer_range
+                )
             );
             return;
         }
@@ -2049,64 +2066,40 @@ impl TargetBuffer {
         let center_pos = self.history.spokes[center_bearing_idx].pos.clone();
         let center_time = self.history.spokes[center_bearing_idx].time;
 
+        // Comprehensive logging for range debugging
+        let gz0 = &self.arpa_detector.guard_zones[0];
+        let gz1 = &self.arpa_detector.guard_zones[1];
         log::info!(
-            "Blob detected: {} pixels, center=({}, {}), range={}..{}, bearings={}..{}, pos=({:.6}, {:.6})",
-            blob.pixel_count,
-            center_bearing,
+            "Blob detected: spoke_range={}m, spoke_len={}, ppm={:.4}, gz0_config={}..{}m, gz0_px={}..{}, gz1_config={}..{}m, gz1_px={}..{}, blob_center_r={}, blob_r={}..{}, zone={}",
+            self.setup.spoke_range_m,
+            self.setup.spoke_len,
+            self.setup.pixels_per_meter,
+            gz0.config_inner_range_m as i32,
+            gz0.config_outer_range_m as i32,
+            gz0.inner_range,
+            gz0.outer_range,
+            gz1.config_inner_range_m as i32,
+            gz1.config_outer_range_m as i32,
+            gz1.inner_range,
+            gz1.outer_range,
             center_r,
             blob.min_r,
             blob.max_r,
-            blob.min_bearing,
-            blob.max_bearing,
-            center_pos.lat,
-            center_pos.lon
+            source_zone
         );
-
-        // Mark blob edges in history for overlay visualization
-        self.mark_blob_edges(&blob);
 
         // Create a Polar position for the blob center
         let pol = Polar::new(center_bearing, center_r, center_time);
 
+        // Trace the real contour and set CONTOUR bits for visualization
+        let dist = center_r / 2;
+        if let Ok((contour, _)) = self.history.get_target(&Doppler::Any, pol.clone(), dist) {
+            self.history
+                .reset_pixels(&contour, &pol, &self.setup.pixels_per_meter);
+        }
+
         // Pass to target acquisition with the ship position at the center angle
         self.acquire_or_match_blob(pol, center_pos, source_zone);
-    }
-
-    /// Mark the entire blob area in the history array for visualization overlay
-    fn mark_blob_edges(&mut self, blob: &BlobInProgress) {
-        let spokes = self.setup.spokes_per_revolution as usize;
-        let min_bearing = blob.min_bearing.raw() as usize;
-        let max_bearing = blob.max_bearing.raw() as usize;
-        log::debug!(
-            "mark_blob_edges: blob bearing=[{}..{}] r=[{}..{}]",
-            min_bearing,
-            max_bearing,
-            blob.min_r,
-            blob.max_r
-        );
-
-        // Fill the entire blob bounding box
-        // Handle wraparound: if max < min, we need to iterate min..spokes and 0..=max
-        let bearing_range: Vec<usize> = if max_bearing >= min_bearing {
-            (min_bearing..=max_bearing).collect()
-        } else {
-            (min_bearing..spokes).chain(0..=max_bearing).collect()
-        };
-
-        for bearing in bearing_range {
-            if bearing >= self.history.spokes.len() {
-                continue;
-            }
-            let sweep_len = self.history.spokes[bearing].sweep.len();
-
-            // Mark all pixels from min_r to max_r
-            for r in blob.min_r..=blob.max_r {
-                let r_idx = r as usize;
-                if r_idx < sweep_len {
-                    self.history.spokes[bearing].sweep[r_idx].insert(HistoryPixel::BLOB_EDGE);
-                }
-            }
-        }
     }
 
     /// Try to match blob to existing target, or acquire as new target
@@ -2319,7 +2312,8 @@ impl ArpaTarget {
         let bearing0 = pol.raw_bearing();
         let r0 = pol.r;
         let scan_margin = setup.scan_margin();
-        let bearing_time = history.spokes[setup.mod_spokes(pol.raw_bearing() + scan_margin) as usize].time;
+        let bearing_time =
+            history.spokes[setup.mod_spokes(pol.raw_bearing() + scan_margin) as usize].time;
         // bearing_time is the time of a spoke SCAN_MARGIN spokes forward of the target, if that spoke is refreshed we assume that the target has been refreshed
 
         let mut rotation_period = setup.rotation_speed_ms as u64;
@@ -2452,11 +2446,12 @@ impl ArpaTarget {
 
         match found {
             Ok((contour, pos)) => {
-                let dist_bearing =
-                    ((pol.raw_bearing() - starting_position.raw_bearing()) as f64 * pol.r as f64 / 326.) as i32;
+                let dist_bearing = ((pol.raw_bearing() - starting_position.raw_bearing()) as f64
+                    * pol.r as f64
+                    / 326.) as i32;
                 let dist_radial = pol.r - starting_position.r;
-                let dist_total =
-                    ((dist_bearing * dist_bearing + dist_radial * dist_radial) as f64).sqrt() as i32;
+                let dist_total = ((dist_bearing * dist_bearing + dist_radial * dist_radial) as f64)
+                    .sqrt() as i32;
 
                 log::debug!(
                     "id={}, Found dist_bearing={}, dist_radial={}, dist_total={}, pol.bearing={}, starting_position.bearing={}, doppler={:?}",
@@ -2715,8 +2710,9 @@ impl ArpaTarget {
         self.receding_pix = 0;
         for i in 0..self.contour.contour.len() {
             for radius in 0..history.spokes[0].sweep.len() {
-                let pixel =
-                    history.spokes[history.mod_spokes(self.contour.contour[i].raw_bearing())].sweep[radius];
+                let pixel = history.spokes
+                    [history.mod_spokes(self.contour.contour[i].raw_bearing())]
+                .sweep[radius];
                 let target = pixel.contains(HistoryPixel::TARGET); // above threshold bit
                 if !target {
                     break;

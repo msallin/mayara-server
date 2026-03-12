@@ -122,6 +122,57 @@ struct Color {
     a: u8,
 }
 
+impl Color {
+    /// Parse a CSS hex color string like "#rgb", "#rgba", "#rrggbb", or "#rrggbbaa"
+    fn from_css(s: &str) -> Self {
+        let s = s.trim_start_matches('#');
+        match s.len() {
+            3 => {
+                // #rgb -> #rrggbb
+                let r = u8::from_str_radix(&s[0..1], 16).unwrap_or(0) * 17;
+                let g = u8::from_str_radix(&s[1..2], 16).unwrap_or(0) * 17;
+                let b = u8::from_str_radix(&s[2..3], 16).unwrap_or(0) * 17;
+                Color { r, g, b, a: 255 }
+            }
+            4 => {
+                // #rgba -> #rrggbbaa
+                let r = u8::from_str_radix(&s[0..1], 16).unwrap_or(0) * 17;
+                let g = u8::from_str_radix(&s[1..2], 16).unwrap_or(0) * 17;
+                let b = u8::from_str_radix(&s[2..3], 16).unwrap_or(0) * 17;
+                let a = u8::from_str_radix(&s[3..4], 16).unwrap_or(0) * 17;
+                Color { r, g, b, a }
+            }
+            6 => {
+                // #rrggbb
+                let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(0);
+                let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(0);
+                let b = u8::from_str_radix(&s[4..6], 16).unwrap_or(0);
+                Color { r, g, b, a: 255 }
+            }
+            8 => {
+                // #rrggbbaa
+                let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(0);
+                let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(0);
+                let b = u8::from_str_radix(&s[4..6], 16).unwrap_or(0);
+                let a = u8::from_str_radix(&s[6..8], 16).unwrap_or(0);
+                Color { r, g, b, a }
+            }
+            _ => Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+        }
+    }
+}
+
+impl From<&str> for Color {
+    fn from(s: &str) -> Self {
+        Color::from_css(s)
+    }
+}
+
 impl fmt::Display for Color {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -541,7 +592,7 @@ impl SharedRadars {
             None => {
                 return Err(RadarError::InvalidControlId(
                     "Target tracking not enabled".to_string(),
-                ))
+                ));
             }
         };
 
@@ -786,7 +837,10 @@ impl SharedRadars {
                     );
                     // Create a dummy reply channel - we don't need the response
                     let (reply_tx, _reply_rx) = tokio::sync::mpsc::channel(1);
-                    if let Err(e) = info.controls.send_to_command_handler(control_value, reply_tx) {
+                    if let Err(e) = info
+                        .controls
+                        .send_to_command_handler(control_value, reply_tx)
+                    {
                         log::error!("Failed to send transmit command to '{}': {:?}", key, e);
                     }
                 }
@@ -862,7 +916,6 @@ impl fmt::Display for DopplerMode {
 
 pub const BLOB_HISTORY_COLORS: u8 = 32;
 const NONE_AND_BORDER_COLORS: u8 = 2;
-const TRANSPARENT: u8 = 0;
 const OPAQUE: u8 = 255;
 
 fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Legend {
@@ -892,15 +945,10 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
             - if doppler { 2 } else { 0 },
     );
 
-    // No return is black
+    // No return is transparent (black)
     legend.pixels.push(Lookup {
         r#type: PixelType::Normal,
-        color: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: TRANSPARENT,
-        },
+        color: Color::from("#00000000"),
     });
     legend.pixel_colors = pixel_values;
     if pixel_values == 0 {
@@ -949,24 +997,14 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
         legend.target_border = legend.pixels.len() as u8;
         legend.pixels.push(Lookup {
             r#type: PixelType::TargetBorder,
-            color: Color {
-                r: 255,
-                g: 255,
-                b: 0,
-                a: 128, // 50% transparent
-            },
+            color: Color::from("#00ff00"),
         });
 
         // Static background color (light grey) for Static ARPA mode
         legend.static_background = Some(legend.pixels.len() as u8);
         legend.pixels.push(Lookup {
             r#type: PixelType::History, // Reuse History type for static background
-            color: Color {
-                r: 80,
-                g: 80,
-                b: 80,
-                a: OPAQUE,
-            },
+            color: Color::from("#505050"),
         });
 
         // Set weakest return threshold (low_return is the weakest visible return)
@@ -977,24 +1015,12 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
         legend.doppler_approaching = Some(legend.pixels.len() as u8);
         legend.pixels.push(Lookup {
             r#type: PixelType::DopplerApproaching,
-            color: Color {
-                // Purple
-                r: 255,
-                g: 0,
-                b: 255,
-                a: OPAQUE,
-            },
+            color: Color::from("#ff00ff"), // Purple
         });
         legend.doppler_receding = Some(legend.pixels.len() as u8);
         legend.pixels.push(Lookup {
             r#type: PixelType::DopplerReceding,
-            color: Color {
-                // Green
-                r: 0x00,
-                g: 0xff,
-                b: 0x00,
-                a: OPAQUE,
-            },
+            color: Color::from("#00ff00"), // Green
         });
     }
 
@@ -1063,7 +1089,10 @@ impl CommonRadar {
     ) -> Self {
         // Get shared target manager and broadcast sender for dual radar support
         let (shared_target_manager, sk_client_tx) = if args.targets == TargetMode::Arpa {
-            (Some(radars.get_target_manager()), Some(radars.get_sk_client_tx()))
+            (
+                Some(radars.get_target_manager()),
+                Some(radars.get_sk_client_tx()),
+            )
         } else {
             (None, None)
         };
@@ -1182,7 +1211,8 @@ impl CommonRadar {
             );
             self.spoke_count += 1;
             self.max_spoke_length = max(self.max_spoke_length, spoke.data.len() as u32);
-            self.trails.update_trails(&mut spoke, &self.info.legend, &self.info.controls); // Add any pixels representing the trails
+            self.trails
+                .update_trails(&mut spoke, &self.info.legend, &self.info.controls); // Add any pixels representing the trails
             message.spokes.push(spoke);
 
             if angle < self.prev_angle {

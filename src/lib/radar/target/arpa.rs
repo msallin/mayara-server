@@ -37,8 +37,10 @@ pub(crate) struct DetectionGuardZone {
     // Original config values (for recalculation when pixels_per_meter changes)
     config_start_angle_rad: f64,
     config_end_angle_rad: f64,
-    config_inner_range_m: f64,
-    config_outer_range_m: f64,
+    /// Inner range in meters (from config)
+    pub(crate) config_inner_range_m: f64,
+    /// Outer range in meters (from config)
+    pub(crate) config_outer_range_m: f64,
     config_enabled: bool,
 }
 
