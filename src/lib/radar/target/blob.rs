@@ -514,6 +514,12 @@ impl BlobDetector {
         // Buffer this spoke for contour drawing and ready-check
         self.spoke_buffer.push_back(spoke.clone());
 
+        // Limit buffer to 1/4 revolution to prevent unbounded growth
+        let max_buffer_size = (self.spokes_per_revolution / 4) as usize;
+        while self.spoke_buffer.len() > max_buffer_size {
+            self.spoke_buffer.pop_front();
+        }
+
         completed
     }
 
