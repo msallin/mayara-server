@@ -68,7 +68,7 @@ impl EmulatorReportReceiver {
             boat_position: initial_pos,
             boat_heading: heading,
             boat_speed: speed,
-            current_range: NAUTICAL_MILE as u32, // Default 1nm
+            current_range: (NAUTICAL_MILE / 2) as u32, // Default 1/2 nm
             transmitting: false,
             current_spoke: 0,
             last_update: Instant::now(),

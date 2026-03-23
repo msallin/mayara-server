@@ -435,8 +435,9 @@ impl TargetTracker {
     }
 
     /// Try to match candidate against active targets
+    /// Returns the ID of the closest matching target within threshold
     fn match_active_target(&self, candidate: &TargetCandidate) -> Option<String> {
-        let mut matches: Vec<(String, f64)> = Vec::new();
+        let mut best_match: Option<(&str, f64)> = None;
 
         for (id, target) in &self.active_targets {
             let predicted_pos = target.predict_position(candidate.time);
@@ -461,18 +462,14 @@ impl TargetTracker {
             );
 
             if distance < threshold {
-                matches.push((id.clone(), distance));
+                // Track only the closest match
+                if best_match.map_or(true, |(_, best_dist)| distance < best_dist) {
+                    best_match = Some((id.as_str(), distance));
+                }
             }
         }
 
-        // If multiple targets could match, pick the closest one
-        // (this happens when two targets are near each other)
-        if matches.len() >= 1 {
-            matches.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-            Some(matches[0].0.clone())
-        } else {
-            None
-        }
+        best_match.map(|(id, _)| id.to_string())
     }
 
     /// Create a new active target in Acquiring status

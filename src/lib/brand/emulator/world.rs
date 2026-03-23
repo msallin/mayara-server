@@ -13,11 +13,12 @@ const CROSSING_SPEED_KNOTS: f64 = 10.0;
 const CROSSING_SPACING: f64 = 500.0; // meters between crossing boats
 const NUM_CROSSING_TARGETS: usize = 3;
 
-// Land area dimensions
-const LAND_DISTANCE_NE: f64 = 2000.0; // 2 km NE of initial position
-const LAND_WIDTH: f64 = 200.0; // meters (NW-SE axis)
-const LAND_LENGTH: f64 = 1000.0; // meters (NE-SW axis)
-const LAND_BEARING: f64 = 45.0; // degrees from North (NE)
+// Land area dimensions - 700m south, 600m west of radar, oriented east-west
+const LAND_DISTANCE_SOUTH: f64 = 700.0; // meters south
+const LAND_DISTANCE_WEST: f64 = 600.0; // meters west
+const LAND_WIDTH: f64 = 200.0; // meters (north-south extent)
+const LAND_LENGTH: f64 = 1000.0; // meters (east-west extent)
+const LAND_ORIENTATION: f64 = 90.0; // degrees from North (pointing East-West)
 
 // Conversion constants
 const KNOTS_TO_MS: f64 = 1852.0 / 3600.0; // 1 knot = 1852m/h = 0.5144 m/s
@@ -119,11 +120,17 @@ pub struct EmulatorWorld {
 
 impl EmulatorWorld {
     pub fn new(initial_boat_pos: GeoPosition) -> Self {
-        // Create land area 2km NE of initial position
-        let land_center =
-            initial_boat_pos.position_from_bearing(LAND_BEARING * DEG_TO_RAD, LAND_DISTANCE_NE);
-        // Orientation: NE-SW axis means the long axis points at 45 degrees
-        let land = LandArea::new(land_center, LAND_WIDTH, LAND_LENGTH, LAND_BEARING);
+        // Create land area 700m south, directly south of initial position
+        let south_bearing = 180.0 * DEG_TO_RAD;
+        let west_bearing = 270.0 * DEG_TO_RAD;
+        let land_south = initial_boat_pos.position_from_bearing(south_bearing, LAND_DISTANCE_SOUTH);
+        let land_center = if LAND_DISTANCE_WEST > 0.0 {
+            land_south.position_from_bearing(west_bearing, LAND_DISTANCE_WEST)
+        } else {
+            land_south
+        };
+        // Orientation: long axis points East-West (90 degrees from North)
+        let land = LandArea::new(land_center, LAND_WIDTH, LAND_LENGTH, LAND_ORIENTATION);
 
         // Create targets 500m south of initial boat position, moving East
         // They start at various positions West of the boat

@@ -8,7 +8,7 @@
 //! - MARPA (manual acquisition via user click)
 //! - DopplerAutoTrack (automatic acquisition of Doppler-colored targets)
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::f64::consts::PI;
 
 use crate::config::GuardZone;
@@ -38,6 +38,9 @@ struct BlobInProgress {
     #[allow(dead_code)] // Useful for debugging
     id: u32,
     pixels: Vec<BlobPixel>,
+    /// Spatial index: pixel positions by spoke for O(1) adjacency lookup
+    /// Key: spoke number, Value: sorted list of pixel indices on that spoke
+    pixels_by_spoke: HashMap<u16, Vec<usize>>,
     last_spoke_with_addition: u16,
     min_spoke: u16,
     max_spoke: u16,
@@ -47,35 +50,62 @@ struct BlobInProgress {
 
 impl BlobInProgress {
     fn new(id: u32, pixel: BlobPixel) -> Self {
+        let spoke = pixel.spoke;
+        let pixel_idx = pixel.pixel;
+        let mut pixels_by_spoke = HashMap::new();
+        pixels_by_spoke.insert(spoke, vec![pixel_idx]);
+
         BlobInProgress {
             id,
-            min_spoke: pixel.spoke,
-            max_spoke: pixel.spoke,
-            min_pixel: pixel.pixel,
-            max_pixel: pixel.pixel,
-            last_spoke_with_addition: pixel.spoke,
+            min_spoke: spoke,
+            max_spoke: spoke,
+            min_pixel: pixel_idx,
+            max_pixel: pixel_idx,
+            last_spoke_with_addition: spoke,
             pixels: vec![pixel],
+            pixels_by_spoke,
         }
     }
 
     fn add_pixel(&mut self, pixel: BlobPixel, current_spoke: u16) {
+        // Update spatial index
+        self.pixels_by_spoke
+            .entry(pixel.spoke)
+            .or_insert_with(Vec::new)
+            .push(pixel.pixel);
+
         // Update bounds
-        // Note: spoke wraparound is handled separately in size calculation
-        if pixel.pixel < self.min_pixel {
-            self.min_pixel = pixel.pixel;
-        }
-        if pixel.pixel > self.max_pixel {
-            self.max_pixel = pixel.pixel;
-        }
-        // Track spoke range (simplified - doesn't handle wraparound perfectly here)
+        self.min_pixel = self.min_pixel.min(pixel.pixel);
+        self.max_pixel = self.max_pixel.max(pixel.pixel);
         self.min_spoke = self.min_spoke.min(pixel.spoke);
         self.max_spoke = self.max_spoke.max(pixel.spoke);
         self.last_spoke_with_addition = current_spoke;
         self.pixels.push(pixel);
     }
 
-    fn touches_spoke(&self, spoke: u16, spokes_per_revolution: u16) -> bool {
-        // Check if any pixel in this blob is on the given spoke or adjacent
+    /// Merge another blob into this one
+    fn merge(&mut self, other: BlobInProgress, current_spoke: u16) {
+        // Merge spatial index
+        for (spoke, pixels) in other.pixels_by_spoke {
+            self.pixels_by_spoke
+                .entry(spoke)
+                .or_insert_with(Vec::new)
+                .extend(pixels);
+        }
+
+        // Merge bounds
+        self.min_pixel = self.min_pixel.min(other.min_pixel);
+        self.max_pixel = self.max_pixel.max(other.max_pixel);
+        self.min_spoke = self.min_spoke.min(other.min_spoke);
+        self.max_spoke = self.max_spoke.max(other.max_spoke);
+        self.last_spoke_with_addition = current_spoke;
+        self.pixels.extend(other.pixels);
+    }
+
+    /// Check if a pixel at (spoke, pixel_idx) is adjacent to any pixel in this blob
+    /// Uses spatial index for O(1) average case instead of O(n)
+    fn is_adjacent_to(&self, spoke: u16, pixel_idx: usize, spokes_per_revolution: u16) -> bool {
+        // Get the three spokes we need to check (prev, current, next)
         let prev_spoke = if spoke == 0 {
             spokes_per_revolution - 1
         } else {
@@ -83,9 +113,32 @@ impl BlobInProgress {
         };
         let next_spoke = (spoke + 1) % spokes_per_revolution;
 
-        self.pixels
-            .iter()
-            .any(|p| p.spoke == spoke || p.spoke == prev_spoke || p.spoke == next_spoke)
+        // Check each relevant spoke
+        for &check_spoke in &[prev_spoke, spoke, next_spoke] {
+            if let Some(pixels) = self.pixels_by_spoke.get(&check_spoke) {
+                // Check if any pixel on this spoke is adjacent (within 1 pixel distance)
+                for &p in pixels {
+                    let diff = if p > pixel_idx { p - pixel_idx } else { pixel_idx - p };
+                    if diff <= 1 {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn touches_spoke(&self, spoke: u16, spokes_per_revolution: u16) -> bool {
+        let prev_spoke = if spoke == 0 {
+            spokes_per_revolution - 1
+        } else {
+            spoke - 1
+        };
+        let next_spoke = (spoke + 1) % spokes_per_revolution;
+
+        self.pixels_by_spoke.contains_key(&spoke)
+            || self.pixels_by_spoke.contains_key(&prev_spoke)
+            || self.pixels_by_spoke.contains_key(&next_spoke)
     }
 }
 
@@ -266,31 +319,13 @@ impl BlobDetector {
         zones
     }
 
-    /// Check if two pixels are adjacent
-    fn is_adjacent(&self, p1: &BlobPixel, p2_spoke: u16, p2_pixel: usize) -> bool {
-        let spoke_diff = {
-            let diff1 = (p1.spoke as i32 - p2_spoke as i32).abs();
-            let diff2 = self.spokes_per_revolution as i32 - diff1;
-            diff1.min(diff2)
-        };
-        let pixel_diff = (p1.pixel as i32 - p2_pixel as i32).abs();
-
-        // Adjacent if same spoke and consecutive pixels, or adjacent spokes and overlapping pixels
-        (spoke_diff == 0 && pixel_diff <= 1) || (spoke_diff == 1 && pixel_diff <= 1)
-    }
-
     /// Calculate the physical size of a blob in meters
     fn calculate_size(&self, blob: &BlobInProgress) -> f64 {
-        if self.current_range == 0 {
+        if self.current_range == 0 || self.current_spoke_len == 0 {
             return 0.0;
         }
 
-        let spoke_len = self
-            .spoke_buffer
-            .front()
-            .map(|s| s.data.len())
-            .unwrap_or(1024);
-        let meters_per_pixel = self.current_range as f64 / spoke_len as f64;
+        let meters_per_pixel = self.current_range as f64 / self.current_spoke_len as f64;
 
         // Radial extent
         let radial_extent = (blob.max_pixel - blob.min_pixel + 1) as f64 * meters_per_pixel;
@@ -311,27 +346,33 @@ impl BlobDetector {
     }
 
     /// Calculate the contour (edge pixels) of a blob
+    /// Uses the blob's spatial index for O(1) neighbor lookups
     fn calculate_contour(&self, blob: &BlobInProgress) -> Vec<(u16, usize)> {
-        let pixel_set: HashSet<(u16, usize)> =
-            blob.pixels.iter().map(|p| (p.spoke, p.pixel)).collect();
-
         blob.pixels
             .iter()
             .filter(|p| {
+                let prev_spoke = if p.spoke == 0 {
+                    self.spokes_per_revolution - 1
+                } else {
+                    p.spoke - 1
+                };
+                let next_spoke = (p.spoke + 1) % self.spokes_per_revolution;
+
+                // Check 4-neighbors using spatial index
+                // A pixel is on the contour if any neighbor is missing
                 let neighbors = [
-                    (p.spoke, p.pixel.saturating_sub(1)),
-                    (p.spoke, p.pixel + 1),
-                    ((p.spoke + 1) % self.spokes_per_revolution, p.pixel),
-                    (
-                        if p.spoke == 0 {
-                            self.spokes_per_revolution - 1
-                        } else {
-                            p.spoke - 1
-                        },
-                        p.pixel,
-                    ),
+                    (p.spoke, p.pixel.wrapping_sub(1)),  // inner
+                    (p.spoke, p.pixel + 1),              // outer
+                    (prev_spoke, p.pixel),               // ccw
+                    (next_spoke, p.pixel),               // cw
                 ];
-                neighbors.iter().any(|n| !pixel_set.contains(n))
+
+                neighbors.iter().any(|(spoke, pixel)| {
+                    !blob.pixels_by_spoke
+                        .get(spoke)
+                        .map(|pixels| pixels.contains(pixel))
+                        .unwrap_or(false)
+                })
             })
             .map(|p| (p.spoke, p.pixel))
             .collect()
@@ -371,16 +412,13 @@ impl BlobDetector {
             }
         }
 
-        // Process each strong pixel
+        // Process each strong pixel - use spatial index for O(1) adjacency lookup
         for pixel in strong_pixels {
-            // Find which blobs this pixel is adjacent to
+            // Find which blobs this pixel is adjacent to using spatial index
             let mut adjacent_blob_indices: Vec<usize> = Vec::new();
             for (idx, blob) in self.active_blobs.iter().enumerate() {
-                for bp in &blob.pixels {
-                    if self.is_adjacent(bp, pixel.spoke, pixel.pixel) {
-                        adjacent_blob_indices.push(idx);
-                        break;
-                    }
+                if blob.is_adjacent_to(pixel.spoke, pixel.pixel, self.spokes_per_revolution) {
+                    adjacent_blob_indices.push(idx);
                 }
             }
 
@@ -396,30 +434,18 @@ impl BlobDetector {
                     self.active_blobs[adjacent_blob_indices[0]].add_pixel(pixel, spoke_angle);
                 }
                 _ => {
-                    // Merge multiple blobs
+                    // Merge multiple blobs - use dedicated merge method
                     adjacent_blob_indices.sort_unstable();
                     adjacent_blob_indices.reverse();
 
-                    // Merge all into the first (lowest index)
+                    // Remove all but the target (lowest index) and merge them
                     let target_idx = *adjacent_blob_indices.last().unwrap();
                     for &idx in adjacent_blob_indices
                         .iter()
                         .take(adjacent_blob_indices.len() - 1)
                     {
                         let removed = self.active_blobs.remove(idx);
-                        self.active_blobs[target_idx].pixels.extend(removed.pixels);
-                        self.active_blobs[target_idx].min_pixel = self.active_blobs[target_idx]
-                            .min_pixel
-                            .min(removed.min_pixel);
-                        self.active_blobs[target_idx].max_pixel = self.active_blobs[target_idx]
-                            .max_pixel
-                            .max(removed.max_pixel);
-                        self.active_blobs[target_idx].min_spoke = self.active_blobs[target_idx]
-                            .min_spoke
-                            .min(removed.min_spoke);
-                        self.active_blobs[target_idx].max_spoke = self.active_blobs[target_idx]
-                            .max_spoke
-                            .max(removed.max_spoke);
+                        self.active_blobs[target_idx].merge(removed, spoke_angle);
                     }
                     self.active_blobs[target_idx].add_pixel(pixel, spoke_angle);
                 }
@@ -451,8 +477,17 @@ impl BlobDetector {
                         let contour = self.calculate_contour(blob);
                         let all_pixels: Vec<(u16, usize)> =
                             blob.pixels.iter().map(|p| (p.spoke, p.pixel)).collect();
-                        let center_spoke =
-                            ((blob.min_spoke as u32 + blob.max_spoke as u32) / 2) as u16;
+                        // Calculate center spoke, handling wraparound
+                        let center_spoke = if blob.max_spoke >= blob.min_spoke {
+                            // Normal case: no wraparound
+                            ((blob.min_spoke as u32 + blob.max_spoke as u32) / 2) as u16
+                        } else {
+                            // Wraparound case: blob spans spoke 0
+                            // Add spokes_per_revolution to max_spoke for averaging, then normalize
+                            let adjusted_max = blob.max_spoke as u32 + self.spokes_per_revolution as u32;
+                            let center = (blob.min_spoke as u32 + adjusted_max) / 2;
+                            (center % self.spokes_per_revolution as u32) as u16
+                        };
                         let center_pixel = (blob.min_pixel + blob.max_pixel) / 2;
                         let in_guard_zones = self.check_guard_zones(center_spoke, center_pixel);
                         completed.push(CompletedBlob {

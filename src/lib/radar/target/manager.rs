@@ -436,12 +436,21 @@ impl TrackerManager {
 fn blob_to_position(blob: &CompletedBlob, ctx: &SpokeContext) -> Option<GeoPosition> {
     let radar_lat = ctx.lat?;
     let radar_lon = ctx.lon?;
-    let bearing_spokes = ctx.bearing?;
+    // Get true bearing of the current spoke (requires heading info)
+    let spoke_true_bearing = ctx.bearing?;
 
     let radar_pos = GeoPosition::new(radar_lat, radar_lon);
 
-    // Convert bearing from spokes to radians
-    let bearing_rad = (bearing_spokes as f64 / ctx.spokes_per_revolution as f64) * 2.0 * PI;
+    // blob.center_spoke is head-relative (like ctx.angle)
+    // ctx.bearing is true bearing, ctx.angle is head-relative
+    // Heading offset = ctx.bearing - ctx.angle (in spokes)
+    // True bearing of blob = blob.center_spoke + heading_offset
+    let heading_offset = spoke_true_bearing as i32 - ctx.angle as i32;
+    let blob_true_bearing = (blob.center_spoke as i32 + heading_offset)
+        .rem_euclid(ctx.spokes_per_revolution as i32) as u16;
+
+    // Convert true bearing from spokes to radians
+    let bearing_rad = (blob_true_bearing as f64 / ctx.spokes_per_revolution as f64) * 2.0 * PI;
 
     // Calculate distance from pixel position
     let distance_m = if ctx.spoke_len > 0 {
@@ -575,13 +584,14 @@ mod tests {
 
     #[test]
     fn test_blob_to_position_north() {
-        let blob = make_blob(1024, 256, 30.0);
-        let ctx = make_context(1000, 0); // North
+        // Blob at center_spoke=0 (North), center_pixel=256
+        let blob = make_blob(0, 256, 30.0);
+        let ctx = make_context(1000, 0); // bearing must be Some for position calc
 
         let pos = blob_to_position(&blob, &ctx).unwrap();
 
         // Distance: 256/512 * 1000 = 500m
-        // Bearing: 0 = North
+        // Bearing: 0 = North (from blob.center_spoke)
         // Should be ~500m north of 52.0, 4.0
         assert!(pos.lat() > 52.0, "Position should be north: {}", pos.lat());
         assert!((pos.lon() - 4.0).abs() < 0.0001, "Longitude should be unchanged");
@@ -589,13 +599,34 @@ mod tests {
 
     #[test]
     fn test_blob_to_position_east() {
-        let blob = make_blob(1024, 256, 30.0);
-        let ctx = make_context(1000, 512); // East (512/2048 = 0.25 revolution = 90 degrees)
+        // Blob at center_spoke=512 (East = 512/2048 = 0.25 revolution = 90 degrees)
+        let blob = make_blob(512, 256, 30.0);
+        let ctx = make_context(1000, 512); // bearing must be Some for position calc
 
         let pos = blob_to_position(&blob, &ctx).unwrap();
 
         // Should be ~500m east
         assert!(pos.lon() > 4.0, "Position should be east: {}", pos.lon());
+        assert!(
+            (pos.lat() - 52.0).abs() < 0.001,
+            "Latitude should be nearly unchanged"
+        );
+    }
+
+    #[test]
+    fn test_blob_to_position_with_heading_offset() {
+        // Test that head-relative blob angle is converted to true bearing correctly
+        // Scenario: boat heading is 90 degrees (East), blob is dead ahead (head-relative 0)
+        // True bearing should be 90 degrees (East)
+        let blob = make_blob(0, 256, 30.0); // head-relative spoke 0 = dead ahead
+        let mut ctx = make_context(1000, 0);
+        ctx.angle = 0; // head-relative angle of spoke
+        ctx.bearing = Some(512); // true bearing = 512/2048 = 90 degrees (East)
+
+        let pos = blob_to_position(&blob, &ctx).unwrap();
+
+        // Should be east of radar (true bearing 90 degrees)
+        assert!(pos.lon() > 4.0, "Position should be east: lon={}", pos.lon());
         assert!(
             (pos.lat() - 52.0).abs() < 0.001,
             "Latitude should be nearly unchanged"
