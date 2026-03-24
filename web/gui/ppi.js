@@ -869,25 +869,37 @@ class PPI {
     const x = this.center_x + pixelDist * Math.sin(adjustedBearing);
     const y = this.center_y - pixelDist * Math.cos(adjustedBearing);
 
-    // Determine color based on status
+    // Determine color based on status and danger
+    // Dangerous: CPA < 0.5 NM (926m) and TCPA < 10 min (600s)
+    const isDangerous =
+      target.danger &&
+      target.danger.cpa < 926 &&
+      target.danger.tcpa > 0 &&
+      target.danger.tcpa < 600;
+
     let color;
     let fillColor;
-    switch (target.status) {
-      case "tracking":
-        color = "#ffffff"; // White for active tracking
-        fillColor = "rgba(255, 255, 255, 0.2)";
-        break;
-      case "acquiring":
-        color = "#ffff00"; // Yellow for acquiring
-        fillColor = "rgba(255, 255, 0, 0.2)";
-        break;
-      case "lost":
-        color = "#ff0000"; // Red for lost
-        fillColor = "rgba(255, 0, 0, 0.2)";
-        break;
-      default:
-        color = "#ffffff"; // White for unknown
-        fillColor = "rgba(255, 255, 255, 0.2)";
+    if (isDangerous && target.status === "tracking") {
+      color = "#ff0000"; // Red for dangerous
+      fillColor = "rgba(255, 0, 0, 0.3)";
+    } else {
+      switch (target.status) {
+        case "tracking":
+          color = "#ffffff"; // White for active tracking
+          fillColor = "rgba(255, 255, 255, 0.2)";
+          break;
+        case "acquiring":
+          color = "#ffff00"; // Yellow for acquiring
+          fillColor = "rgba(255, 255, 0, 0.2)";
+          break;
+        case "lost":
+          color = "#ffa500"; // Orange for lost
+          fillColor = "rgba(255, 165, 0, 0.2)";
+          break;
+        default:
+          color = "#ffffff"; // White for unknown
+          fillColor = "rgba(255, 255, 255, 0.2)";
+      }
     }
 
     ctx.save();
@@ -951,35 +963,31 @@ class PPI {
     ctx.textBaseline = "top";
     ctx.fillText(`T${id}`, x + targetRadius + 4, y - targetRadius);
 
-    // Draw CPA/TCPA info only if values are set (non-zero) and target is tracking
+    // Draw CPA/TCPA info if CPA < 2 NM (3704m) and TCPA < 15 min (900s)
     if (target.danger && target.status === "tracking") {
       const cpa = target.danger.cpa;
       const tcpa = target.danger.tcpa;
 
-      // Only show if at least one value is set
-      if (cpa > 0 || tcpa > 0) {
+      // Only show if within thresholds
+      if (cpa > 0 && cpa < 3704 && tcpa > 0 && tcpa < 900) {
         ctx.font = "10px/1 Verdana, Geneva, sans-serif";
         let yOffset = 13;
 
-        // Format and show CPA (in meters or nm) only if set
-        if (cpa > 0) {
-          let cpaText;
-          if (cpa >= 1852) {
-            cpaText = `CPA: ${(cpa / 1852).toFixed(2)} nm`;
-          } else {
-            cpaText = `CPA: ${Math.round(cpa)} m`;
-          }
-          ctx.fillText(cpaText, x + targetRadius + 4, y - targetRadius + yOffset);
-          yOffset += 11;
+        // Format CPA (in meters or nm)
+        let cpaText;
+        if (cpa >= 1852) {
+          cpaText = `CPA: ${(cpa / 1852).toFixed(2)} nm`;
+        } else {
+          cpaText = `CPA: ${Math.round(cpa)} m`;
         }
+        ctx.fillText(cpaText, x + targetRadius + 4, y - targetRadius + yOffset);
+        yOffset += 11;
 
-        // Format and show TCPA (in minutes:seconds) only if set
-        if (tcpa > 0) {
-          const minutes = Math.floor(tcpa / 60);
-          const seconds = Math.round(tcpa % 60);
-          const tcpaText = `TCPA: ${minutes}:${seconds.toString().padStart(2, "0")}`;
-          ctx.fillText(tcpaText, x + targetRadius + 4, y - targetRadius + yOffset);
-        }
+        // Format TCPA (in minutes:seconds)
+        const minutes = Math.floor(tcpa / 60);
+        const seconds = Math.round(tcpa % 60);
+        const tcpaText = `TCPA: ${minutes}:${seconds.toString().padStart(2, "0")}`;
+        ctx.fillText(tcpaText, x + targetRadius + 4, y - targetRadius + yOffset);
       }
     }
 
