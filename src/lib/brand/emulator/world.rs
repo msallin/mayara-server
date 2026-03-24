@@ -224,18 +224,18 @@ impl EmulatorWorld {
         }
 
         // Create crossing targets: boats coming from North, heading South at 10 knots
-        // The first one passes 30m behind (west of) the front east-moving boat
-        // Front east-moving boat is at base_pos (500m south of initial_boat_pos)
+        // The first one passes 20m ahead (east of) the front east-moving boat,
+        // creating a close-pass scenario for CPA/TCPA testing
         let mut crossing_targets = Vec::with_capacity(NUM_CROSSING_TARGETS);
 
         // Calculate crossing point: where the first crossing boat will pass
-        // It should pass 30m behind (west of) the front east-moving boat
         // Place crossing boats 600m north of the east-moving boats' track
         let crossing_start_distance_north = 600.0; // meters north of east-boat track
-        let behind_distance = 30.0; // meters behind (west of) front boat
+        let ahead_distance = 20.0; // meters ahead (east of) front boat - creates close pass
 
-        // Position where crossing will happen: 30m west of front east-boat, at same latitude
-        let crossing_point = base_pos.position_from_bearing(west_bearing, behind_distance);
+        // Position where crossing will happen: 20m east of front east-boat, at same latitude
+        let east_bearing_for_crossing = 90.0 * DEG_TO_RAD;
+        let crossing_point = base_pos.position_from_bearing(east_bearing_for_crossing, ahead_distance);
 
         // Starting position for first crossing boat: 400m north of crossing point
         let north_bearing = 0.0 * DEG_TO_RAD; // North
@@ -253,7 +253,6 @@ impl EmulatorWorld {
 
         // Create a static buoy near the east-moving boats' path
         // Place it 10m south of their track, 200m east of the front boat
-        // This is at least 150m away from where the crossing happens (30m west)
         let buoy_east_offset = 200.0; // meters east of front boat
         let buoy_south_offset = 10.0; // meters south of track
         let east_bearing = 90.0 * DEG_TO_RAD;

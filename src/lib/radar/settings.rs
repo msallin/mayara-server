@@ -87,12 +87,16 @@ pub enum ControlId {
     // Client Only, not here: Position,
     // Client Only, not here: Symbology,
     ShowAis,
-    DopplerAutoTrack,
-    ArpaDetectMaxSpeed,
-    ArpaDetectMode,
-    ClearTargets,
+
+    // Target tracking
     GuardZone1,
     GuardZone2,
+    ClearTargets,
+    DopplerAutoTrack,
+    ArpaDetectMaxSpeed,
+    ArpaTrackingStrategy,
+
+    // Trails
     TargetTrails,
     TrailsMotion,
     DopplerTrailsOnly,
@@ -189,7 +193,7 @@ impl ControlId {
             ControlId::ShowAis
             | ControlId::DopplerAutoTrack
             | ControlId::ArpaDetectMaxSpeed
-            | ControlId::ArpaDetectMode
+            | ControlId::ArpaTrackingStrategy
             | ControlId::ClearTargets
             | ControlId::GuardZone1
             | ControlId::GuardZone2 => Category::Targets,
@@ -259,7 +263,7 @@ impl ControlId {
             ControlId::ArpaDetectMaxSpeed => {
                 "Maximum target speed: Normal (25kn), Medium (40kn), Fast (50kn)"
             }
-            ControlId::ArpaDetectMode => "Target tracking algorithm: Kalman or IMM",
+            ControlId::ArpaTrackingStrategy => "Target tracking algorithm: Kalman or IMM",
             ControlId::ClearTargets => "Clear all ARPA targets",
             ControlId::GuardZone1 => "First guard zone for target detection",
             ControlId::GuardZone2 => "Second guard zone for target detection",
@@ -327,7 +331,7 @@ impl ControlId {
             ControlId::DopplerMode => "Doppler mode",
             ControlId::DopplerAutoTrack => "Doppler Auto Track",
             ControlId::ArpaDetectMaxSpeed => "ARPA Max Speed",
-            ControlId::ArpaDetectMode => "ARPA Detect Mode",
+            ControlId::ArpaTrackingStrategy => "ARPA Tracking",
             ControlId::DopplerSpeedThreshold => "Doppler speed threshold",
             ControlId::DopplerTrailsOnly => "Doppler trails only",
             ControlId::FirmwareVersion => "Firmware version",
@@ -408,7 +412,7 @@ impl ControlId {
             ControlId::DopplerMode => ControlDestination::Command,
             ControlId::DopplerAutoTrack => ControlDestination::Target,
             ControlId::ArpaDetectMaxSpeed => ControlDestination::Target,
-            ControlId::ArpaDetectMode => ControlDestination::Target,
+            ControlId::ArpaTrackingStrategy => ControlDestination::Target,
             ControlId::DopplerSpeedThreshold => ControlDestination::Command,
             ControlId::TargetTrails => ControlDestination::Trail,
             ControlId::TrailsMotion => ControlDestination::Trail,
@@ -539,7 +543,11 @@ impl Controls {
                 .build(&mut controls);
         }
 
-        new_list(ControlId::SpokeProcessing, &["Clean", "Fill", "Reduce", "Smooth"]).build(&mut controls);
+        new_list(
+            ControlId::SpokeProcessing,
+            &["Clean", "Fill", "Reduce", "Smooth"],
+        )
+        .build(&mut controls);
 
         if args.targets != TargetMode::None {
             new_map(
@@ -564,8 +572,9 @@ impl Controls {
 
             new_button(ControlId::ClearTrails).build(&mut controls);
 
-            new_list(ControlId::ArpaDetectMaxSpeed, &["Normal", "Medium", "Fast"]).build(&mut controls);
-            new_list(ControlId::ArpaDetectMode, &["Kalman", "IMM"]).build(&mut controls);
+            new_list(ControlId::ArpaDetectMaxSpeed, &["Normal", "Medium", "Fast"])
+                .build(&mut controls);
+            new_list(ControlId::ArpaTrackingStrategy, &["Kalman", "IMM"]).build(&mut controls);
 
             new_button(ControlId::ClearTargets).build(&mut controls);
         }
@@ -828,8 +837,7 @@ impl SharedControls {
                 // Handle zone controls specially - they have multiple values and are stored directly
                 // This applies to both Internal and Target destinations (guard zones are Target)
                 if c.item.data_type == ControlDataType::Zone {
-                    let start_angle =
-                        cv.value.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let start_angle = cv.value.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let end_angle = cv.end_value.unwrap_or(0.0);
                     let start_distance = cv.start_distance.unwrap_or(0.0);
                     let end_distance = cv.end_distance.unwrap_or(0.0);
@@ -1365,12 +1373,26 @@ impl SharedControls {
             .unwrap_or(0)
     }
 
-    /// Returns the current ARPA detect mode: 0 = Kalman, 1 = IMM
-    pub fn arpa_detect_mode(&self) -> i32 {
-        self.get(&ControlId::ArpaDetectMode)
+    /// Returns the current ARPA tracking strategy: 0 = Kalman, 1 = IMM
+    pub fn arpa_tracking_strategy(&self) -> i32 {
+        self.get(&ControlId::ArpaTrackingStrategy)
             .and_then(|c| c.value)
             .map(|v| v as i32)
             .unwrap_or(0)
+    }
+
+    pub fn set_arpa_max_speed(&self, value: i32) {
+        let mut locked = self.controls.write().unwrap();
+        if let Some(control) = locked.controls.get_mut(&ControlId::ArpaDetectMaxSpeed) {
+            let _ = control.set(value as f64, None, None, None);
+        }
+    }
+
+    pub fn set_arpa_tracking_strategy(&self, value: i32) {
+        let mut locked = self.controls.write().unwrap();
+        if let Some(control) = locked.controls.get_mut(&ControlId::ArpaTrackingStrategy) {
+            let _ = control.set(value as f64, None, None, None);
+        }
     }
 
     pub fn set_range_units(&self, value: i32) {
@@ -1429,7 +1451,6 @@ impl SharedControls {
             control.enabled = Some(zone.enabled);
         }
     }
-
 
     pub(crate) fn set_valid_ranges(&self, ranges: &Ranges) {
         self.controls.write().unwrap().all_ranges = ranges.clone();

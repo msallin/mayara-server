@@ -128,6 +128,8 @@ pub struct ActiveTarget {
     pub status: TargetStatus,
     /// Whether target was manually or automatically acquired
     pub is_manual: bool,
+    /// Which guard zone acquired this target (1 or 2), or None for manual/doppler
+    pub source_zone: Option<u8>,
 }
 
 impl ActiveTarget {
@@ -152,6 +154,12 @@ impl ActiveTarget {
         // GuardZone(0) indicates manual/MARPA acquisition
         let is_manual = matches!(candidate.source, CandidateSource::GuardZone(0));
 
+        // Extract source zone from candidate (1 or 2 for guard zones, None for manual/doppler)
+        let source_zone = match candidate.source {
+            CandidateSource::GuardZone(zone) if zone > 0 => Some(zone),
+            _ => None,
+        };
+
         ActiveTarget {
             id,
             position: candidate.position,
@@ -164,6 +172,7 @@ impl ActiveTarget {
             update_count: 1,
             status: TargetStatus::Acquiring,
             is_manual,
+            source_zone,
         }
     }
 
@@ -583,7 +592,7 @@ impl TargetTracker {
         let target = ActiveTarget::new(id.clone(), candidate, self.tracking_mode);
 
         log::info!(
-            "Created acquiring target {} at ({:.6}, {:.6}), size={:.1}m, mode={:?}",
+            "Created acquiring target {} at ({:.6}, {:.6}), size={:.1}m, strategy={:?}",
             id,
             candidate.position.lat(),
             candidate.position.lon(),
@@ -604,7 +613,7 @@ impl TargetTracker {
         let target = ActiveTarget::new_with_uncertainty(id.clone(), candidate, 1250.0, self.tracking_mode);
 
         log::info!(
-            "MARPA: Created active target {} at ({:.6}, {:.6}), size={:.1}m, mode={:?}",
+            "MARPA: Created active target {} at ({:.6}, {:.6}), size={:.1}m, strategy={:?}",
             id,
             candidate.position.lat(),
             candidate.position.lon(),
@@ -1082,6 +1091,110 @@ mod tests {
         assert!(
             (tracked_speed - speed_ms).abs() < 2.0,
             "Target speed {:.1} m/s should be close to actual {:.1} m/s",
+            tracked_speed,
+            speed_ms
+        );
+    }
+
+    #[test]
+    fn test_circling_target_imm_strategy() {
+        // Same test as test_circling_target_tracks_continuously but using IMM strategy
+        // IMM should handle the constant turning better due to multiple motion models
+
+        let mut tracker = TargetTracker::new_merged_with_mode(2048, TrackingMode::Imm);
+
+        // Circle parameters (matching emulator world.rs)
+        let radius_m = 250.0;
+        let speed_knots = 15.0;
+        let speed_ms = speed_knots * 1852.0 / 3600.0; // ~7.72 m/s
+        let angular_velocity = speed_ms / radius_m; // ~0.031 rad/s
+
+        // Center of circle is 350m north of radar (at 52.0, 4.0)
+        let radar_lat = 52.0;
+        let radar_lon = 4.0;
+        let center_lat = radar_lat + 350.0 / METERS_PER_DEGREE_LATITUDE;
+        let center_lon = radar_lon;
+
+        // Helper to calculate position on circle at given angle
+        let position_at_angle = |angle: f64| -> (f64, f64) {
+            let bearing = PI + angle;
+            let lat = center_lat + radius_m * bearing.cos() / METERS_PER_DEGREE_LATITUDE;
+            let lon = center_lon
+                + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
+            (lat, lon)
+        };
+
+        let revolution_ms = 3000u64;
+
+        // Start tracking
+        let (lat0, lon0) = position_at_angle(0.0);
+        let candidate0 = make_candidate(lat0, lon0, 0);
+        tracker.process_candidate(candidate0);
+
+        // Second detection
+        let angle1 = angular_velocity * 3.0;
+        let (lat1, lon1) = position_at_angle(angle1);
+        let candidate1 = make_candidate(lat1, lon1, revolution_ms);
+        let result1 = tracker.process_candidate(candidate1);
+        assert!(
+            matches!(result1, ProcessResult::Promoted(_)),
+            "IMM should promote to tracking: {:?}",
+            result1
+        );
+
+        let mut successful_updates = 0;
+        let mut lost_count = 0;
+        let target_id = match result1 {
+            ProcessResult::Promoted(id) => id,
+            _ => panic!("Expected Promoted"),
+        };
+
+        for rev in 2..60 {
+            let time = rev * revolution_ms;
+            let angle = angular_velocity * (time as f64 / 1000.0);
+            let (lat, lon) = position_at_angle(angle);
+
+            let candidate = make_candidate(lat, lon, time);
+            let result = tracker.process_candidate(candidate);
+
+            match result {
+                ProcessResult::Updated(id) if id == target_id => {
+                    successful_updates += 1;
+                }
+                ProcessResult::NewAcquiring(_) => {
+                    lost_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        let total_circles = (angular_velocity * 60.0 * 3.0) / (2.0 * PI);
+        println!(
+            "IMM circling target: {} successful updates, {} lost, {:.1} full circles completed",
+            successful_updates, lost_count, total_circles
+        );
+
+        // IMM should maintain tracking through continuous turns
+        assert!(
+            successful_updates >= 50,
+            "IMM: Expected at least 50 successful updates for circling target, got {}",
+            successful_updates
+        );
+
+        // Should have only one active target (no fragmentation)
+        assert_eq!(
+            tracker.active_count(),
+            1,
+            "IMM: Expected exactly 1 target for circling boat, got {}",
+            tracker.active_count()
+        );
+
+        // Verify target has reasonable speed estimate
+        let target = tracker.get_target(&target_id).unwrap();
+        let tracked_speed = target.sog.unwrap_or(0.0);
+        assert!(
+            (tracked_speed - speed_ms).abs() < 3.0, // IMM may have slightly different estimates
+            "IMM: Target speed {:.1} m/s should be close to actual {:.1} m/s",
             tracked_speed,
             speed_ms
         );

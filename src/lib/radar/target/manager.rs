@@ -164,7 +164,7 @@ impl TrackerManager {
         for tracker in self.per_radar_trackers.values_mut() {
             tracker.set_tracking_mode(mode);
         }
-        log::info!("Set tracking mode to {:?}", mode);
+        log::info!("Set tracking strategy to {:?}", mode);
     }
 
     /// Process a blob message
@@ -543,7 +543,7 @@ fn active_target_to_api(
         },
         danger,
         acquisition: if target.is_manual { "manual" } else { "auto" }.to_string(),
-        source_zone: None,
+        source_zone: target.source_zone,
     }
 }
 
