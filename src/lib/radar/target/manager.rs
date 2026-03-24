@@ -73,6 +73,15 @@ pub struct MarpaRequest {
     pub size_meters: f64,
 }
 
+/// Command sent to the tracker manager
+#[derive(Clone, Debug)]
+pub enum TrackerCommand {
+    /// MARPA request from user click
+    Marpa(MarpaRequest),
+    /// Change tracking mode (Kalman or IMM)
+    SetTrackingMode(TrackingMode),
+}
+
 /// Manages target trackers for all radars
 pub struct TrackerManager {
     /// Per-radar trackers (when merge_mode = false)
@@ -85,19 +94,21 @@ pub struct TrackerManager {
     radar_indices: HashMap<String, usize>,
     /// Next radar index
     next_radar_index: usize,
+    /// Current tracking mode (applied to new trackers)
+    tracking_mode: TrackingMode,
     /// Broadcast sender for GUI updates
     sk_client_tx: broadcast::Sender<SignalKDelta>,
-    /// MARPA request receiver
-    marpa_rx: mpsc::Receiver<MarpaRequest>,
+    /// Command receiver for MARPA requests and control changes
+    command_rx: mpsc::Receiver<TrackerCommand>,
 }
 
 impl TrackerManager {
-    /// Create a new tracker manager, returns (manager, marpa_tx)
+    /// Create a new tracker manager, returns (manager, command_tx)
     pub fn new(
         merge_mode: bool,
         sk_client_tx: broadcast::Sender<SignalKDelta>,
-    ) -> (Self, mpsc::Sender<MarpaRequest>) {
-        let (marpa_tx, marpa_rx) = mpsc::channel(32);
+    ) -> (Self, mpsc::Sender<TrackerCommand>) {
+        let (command_tx, command_rx) = mpsc::channel(32);
 
         let manager = TrackerManager {
             per_radar_trackers: HashMap::new(),
@@ -109,11 +120,12 @@ impl TrackerManager {
             merge_mode,
             radar_indices: HashMap::new(),
             next_radar_index: 1,
+            tracking_mode: TrackingMode::Kalman, // Default, will be set from persisted settings
             sk_client_tx,
-            marpa_rx,
+            command_rx,
         };
 
-        (manager, marpa_tx)
+        (manager, command_tx)
     }
 
     /// Get or create tracker for a radar
@@ -128,13 +140,13 @@ impl TrackerManager {
                 return tracker;
             }
             // Should not happen, but create if missing
-            self.shared_tracker = Some(TargetTracker::new_merged(spokes_per_revolution));
+            self.shared_tracker = Some(TargetTracker::new_merged_with_mode(spokes_per_revolution, self.tracking_mode));
             self.shared_tracker.as_mut().unwrap()
         } else {
             // Per-radar mode
             if !self.per_radar_trackers.contains_key(radar_key) {
                 let index = self.get_radar_index(radar_key);
-                let tracker = TargetTracker::new_per_radar(index, spokes_per_revolution);
+                let tracker = TargetTracker::new_per_radar_with_mode(index, spokes_per_revolution, self.tracking_mode);
                 self.per_radar_trackers
                     .insert(radar_key.to_string(), tracker);
             }
@@ -158,6 +170,7 @@ impl TrackerManager {
     /// Update the tracking mode for all trackers
     /// New targets will use this mode; existing targets are not affected
     pub fn set_tracking_mode(&mut self, mode: TrackingMode) {
+        self.tracking_mode = mode;
         if let Some(ref mut tracker) = self.shared_tracker {
             tracker.set_tracking_mode(mode);
         }
@@ -347,8 +360,15 @@ impl TrackerManager {
                 Some(msg) = blob_rx.recv() => {
                     self.process_blob(msg);
                 }
-                Some(request) = self.marpa_rx.recv() => {
-                    self.process_marpa(request);
+                Some(command) = self.command_rx.recv() => {
+                    match command {
+                        TrackerCommand::Marpa(request) => {
+                            self.process_marpa(request);
+                        }
+                        TrackerCommand::SetTrackingMode(mode) => {
+                            self.set_tracking_mode(mode);
+                        }
+                    }
                 }
                 _ = tokio::time::sleep(Duration::from_millis(1000)) => {
                     // Periodic wake-up to check timeouts when idle
@@ -606,7 +626,7 @@ mod tests {
 
     fn make_test_manager(merge_mode: bool) -> TrackerManager {
         let (sk_tx, _rx) = broadcast::channel(16);
-        let (manager, _marpa_tx) = TrackerManager::new(merge_mode, sk_tx);
+        let (manager, _command_tx) = TrackerManager::new(merge_mode, sk_tx);
         manager
     }
 

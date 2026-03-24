@@ -33,7 +33,7 @@ use crate::radar::settings::{
     ControlDestination, ControlError, ControlId, ControlUpdate, ControlValue, SharedControls,
 };
 use crate::radar::spoke::{GenericSpoke, to_protobuf_spoke};
-use crate::radar::target::{BlobDetector, BlobMessage, MarpaRequest, SpokeContext};
+use crate::radar::target::{BlobDetector, BlobMessage, SpokeContext, TrackerCommand, TrackingMode};
 use crate::radar::trail::TrailBuffer;
 use crate::stream::SignalKDelta;
 use crate::{Brand, Cli, TargetMode};
@@ -540,7 +540,7 @@ impl SharedRadars {
                 persistent_data: Persistence::new(),
                 sk_client_tx,
                 blob_tx: None,
-                marpa_tx: None,
+                tracker_command_tx: None,
             })),
         }
     }
@@ -710,14 +710,14 @@ impl SharedRadars {
         self.radars.write().unwrap().blob_tx = Some(blob_tx);
     }
 
-    /// Get the MARPA request sender for manual target acquisition
-    pub fn get_marpa_tx(&self) -> Option<mpsc::Sender<MarpaRequest>> {
-        self.radars.read().unwrap().marpa_tx.clone()
+    /// Get the tracker command sender for MARPA requests and control changes
+    pub fn get_tracker_command_tx(&self) -> Option<mpsc::Sender<TrackerCommand>> {
+        self.radars.read().unwrap().tracker_command_tx.clone()
     }
 
-    /// Set the MARPA request sender for manual target acquisition
-    pub fn set_marpa_tx(&self, marpa_tx: mpsc::Sender<MarpaRequest>) {
-        self.radars.write().unwrap().marpa_tx = Some(marpa_tx);
+    /// Set the tracker command sender for MARPA requests and control changes
+    pub fn set_tracker_command_tx(&self, command_tx: mpsc::Sender<TrackerCommand>) {
+        self.radars.write().unwrap().tracker_command_tx = Some(command_tx);
     }
 
     /// Request all radars to switch to transmit mode
@@ -753,7 +753,7 @@ struct Radars {
     pub persistent_data: Persistence,
     sk_client_tx: tokio::sync::broadcast::Sender<SignalKDelta>,
     blob_tx: Option<mpsc::Sender<BlobMessage>>,
-    marpa_tx: Option<mpsc::Sender<MarpaRequest>>,
+    tracker_command_tx: Option<mpsc::Sender<TrackerCommand>>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1015,7 +1015,14 @@ impl CommonRadar {
             detector
         });
 
-        let common = CommonRadar {
+        // Send initial tracking mode from persisted settings to TrackerManager
+        let tracking_mode = TrackingMode::from_setting(info.controls.arpa_tracking_strategy());
+        if let Some(tx) = radars.get_tracker_command_tx() {
+            log::info!("{}: Initializing TrackerManager with tracking mode {:?}", key, tracking_mode);
+            let _ = tx.try_send(TrackerCommand::SetTrackingMode(tracking_mode));
+        }
+
+        CommonRadar {
             key,
             info,
             radars,
@@ -1029,9 +1036,7 @@ impl CommonRadar {
             prev_angle: 0,
             spoke_count: 0,
             max_spoke_length: 0,
-        };
-
-        common
+        }
     }
 
     pub(crate) fn update(&mut self) {
@@ -1082,6 +1087,48 @@ impl CommonRadar {
                         }
                         _ => {}
                     }
+                }
+
+                // Handle ARPA/target tracking controls directly - they just need to be stored and persisted
+                match cv.id {
+                    ControlId::ArpaTrackingStrategy => {
+                        let value = cv.as_value()?;
+                        // Extract mode before consuming value
+                        let mode = if value == 0 { TrackingMode::Kalman } else { TrackingMode::Imm };
+                        let result = self
+                            .info
+                            .controls
+                            .set_value(&cv.id, value)
+                            .map(|_| ())
+                            .map_err(|e| RadarError::ControlError(e));
+                        if result.is_ok() {
+                            self.update(); // Persist the change
+                            // Notify the TrackerManager of the mode change
+                            if let Some(tx) = self.radars.get_tracker_command_tx() {
+                                log::info!("Sending SetTrackingMode({:?}) to TrackerManager", mode);
+                                if let Err(e) = tx.try_send(TrackerCommand::SetTrackingMode(mode)) {
+                                    log::error!("Failed to send SetTrackingMode: {}", e);
+                                }
+                            } else {
+                                log::warn!("No tracker_command_tx available for SetTrackingMode");
+                            }
+                        }
+                        return result;
+                    }
+                    ControlId::ArpaDetectMaxSpeed => {
+                        let value = cv.as_value()?;
+                        let result = self
+                            .info
+                            .controls
+                            .set_value(&cv.id, value)
+                            .map(|_| ())
+                            .map_err(|e| RadarError::ControlError(e));
+                        if result.is_ok() {
+                            self.update(); // Persist the change
+                        }
+                        return result;
+                    }
+                    _ => {}
                 }
 
                 match self.trails.set_control_value(&self.info.controls, &cv) {

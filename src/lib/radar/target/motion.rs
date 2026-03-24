@@ -669,4 +669,173 @@ mod tests {
         assert_eq!(TrackingMode::from_setting(1), TrackingMode::Imm);
         assert_eq!(TrackingMode::from_setting(99), TrackingMode::Kalman); // Default
     }
+
+    #[test]
+    fn test_imm_model_continuous_circling() {
+        // Tests IMM model tracking a target circling at 15 knots in a 250m radius circle
+        // for 2 full revolutions. This tests the model's ability to adapt to continuous
+        // turning motion.
+
+        let mut model = ImmMotionModel::new();
+
+        // Circle parameters (matching emulator world.rs)
+        let radius_m = 250.0;
+        let speed_knots = 15.0;
+        let speed_ms = speed_knots * 1852.0 / 3600.0; // ~7.72 m/s
+        let angular_velocity = speed_ms / radius_m; // ~0.031 rad/s
+
+        // Time for one full circle = 2π / angular_velocity ≈ 203 seconds
+        let circle_time_s = 2.0 * PI / angular_velocity;
+
+        // Center of circle
+        let center_lat = 52.0 + 350.0 / super::super::METERS_PER_DEGREE_LATITUDE;
+        let center_lon = 4.0;
+
+        // Helper to calculate position on circle at given angle
+        let position_at_angle = |angle: f64| -> GeoPosition {
+            let bearing = PI + angle;
+            let lat = center_lat + radius_m * bearing.cos() / super::super::METERS_PER_DEGREE_LATITUDE;
+            let lon = center_lon + radius_m * bearing.sin() / super::super::meters_per_degree_longitude(&center_lat);
+            GeoPosition::new(lat, lon)
+        };
+
+        // Radar revolution time ~3 seconds
+        let revolution_ms = 3000u64;
+
+        // Number of radar revolutions for 2 full circles
+        let num_revolutions = (2.0 * circle_time_s / 3.0).ceil() as u64 + 2;
+
+        // Initialize at angle=0 (south of center)
+        let pos0 = position_at_angle(0.0);
+        model.init(pos0, 0);
+
+        // Track prediction errors
+        let mut max_prediction_error = 0.0f64;
+        let mut total_prediction_error = 0.0f64;
+        let mut prediction_count = 0;
+
+        // Update through 2 full circles
+        for rev in 1..num_revolutions {
+            let time = rev * revolution_ms;
+            let angle = angular_velocity * (time as f64 / 1000.0);
+            let actual_pos = position_at_angle(angle);
+
+            // Get prediction before update
+            let predicted_pos = model.predict(time);
+            let prediction_error = calculate_distance(&predicted_pos, &actual_pos);
+
+            max_prediction_error = max_prediction_error.max(prediction_error);
+            total_prediction_error += prediction_error;
+            prediction_count += 1;
+
+            // Update with actual position
+            model.update(actual_pos, time);
+        }
+
+        let avg_prediction_error = total_prediction_error / prediction_count as f64;
+        let total_circles = (angular_velocity * num_revolutions as f64 * 3.0) / (2.0 * PI);
+
+        println!(
+            "IMM continuous circling: {:.1} circles, avg error={:.1}m, max error={:.1}m, CT prob={:.2}",
+            total_circles, avg_prediction_error, max_prediction_error, model.model_probs[2]
+        );
+
+        // After continuous turning, CT model should have significant probability
+        assert!(
+            model.model_probs[2] > 0.2,
+            "CT model should have increased for continuous turning, got {:?}",
+            model.model_probs
+        );
+
+        // Average prediction error should be reasonable (< 100m for 3s predictions at 7.7 m/s)
+        // With circling, the model predicts ahead based on velocity, but target curves
+        assert!(
+            avg_prediction_error < 100.0,
+            "Average prediction error {:.1}m should be < 100m",
+            avg_prediction_error
+        );
+
+        // Final SOG should be close to actual speed
+        let final_motion = model.get_motion();
+        assert!(
+            (final_motion.sog - speed_ms).abs() < 3.0,
+            "Final SOG {:.1} m/s should be close to actual {:.1} m/s",
+            final_motion.sog,
+            speed_ms
+        );
+    }
+
+    #[test]
+    fn test_kalman_model_continuous_circling() {
+        // Same test for KalmanMotionModel to compare behavior
+
+        let mut model = KalmanMotionModel::new();
+
+        // Circle parameters
+        let radius_m = 250.0;
+        let speed_knots = 15.0;
+        let speed_ms = speed_knots * 1852.0 / 3600.0;
+        let angular_velocity = speed_ms / radius_m;
+
+        let circle_time_s = 2.0 * PI / angular_velocity;
+
+        let center_lat = 52.0 + 350.0 / super::super::METERS_PER_DEGREE_LATITUDE;
+        let center_lon = 4.0;
+
+        let position_at_angle = |angle: f64| -> GeoPosition {
+            let bearing = PI + angle;
+            let lat = center_lat + radius_m * bearing.cos() / super::super::METERS_PER_DEGREE_LATITUDE;
+            let lon = center_lon + radius_m * bearing.sin() / super::super::meters_per_degree_longitude(&center_lat);
+            GeoPosition::new(lat, lon)
+        };
+
+        let revolution_ms = 3000u64;
+        let num_revolutions = (2.0 * circle_time_s / 3.0).ceil() as u64 + 2;
+
+        let pos0 = position_at_angle(0.0);
+        model.init(pos0, 0);
+
+        let mut max_prediction_error = 0.0f64;
+        let mut total_prediction_error = 0.0f64;
+        let mut prediction_count = 0;
+
+        for rev in 1..num_revolutions {
+            let time = rev * revolution_ms;
+            let angle = angular_velocity * (time as f64 / 1000.0);
+            let actual_pos = position_at_angle(angle);
+
+            let predicted_pos = model.predict(time);
+            let prediction_error = calculate_distance(&predicted_pos, &actual_pos);
+
+            max_prediction_error = max_prediction_error.max(prediction_error);
+            total_prediction_error += prediction_error;
+            prediction_count += 1;
+
+            model.update(actual_pos, time);
+        }
+
+        let avg_prediction_error = total_prediction_error / prediction_count as f64;
+        let total_circles = (angular_velocity * num_revolutions as f64 * 3.0) / (2.0 * PI);
+
+        println!(
+            "Kalman continuous circling: {:.1} circles, avg error={:.1}m, max error={:.1}m",
+            total_circles, avg_prediction_error, max_prediction_error
+        );
+
+        // Average prediction error should be reasonable
+        assert!(
+            avg_prediction_error < 100.0,
+            "Average prediction error {:.1}m should be < 100m",
+            avg_prediction_error
+        );
+
+        // Final SOG should be close to actual speed
+        let final_motion = model.get_motion();
+        assert!(
+            (final_motion.sog - speed_ms).abs() < 3.0,
+            "Final SOG {:.1} m/s should be close to actual {:.1} m/s",
+            final_motion.sog,
+            speed_ms
+        );
+    }
 }

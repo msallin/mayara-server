@@ -33,7 +33,7 @@ use mayara::{
     radar::{
         GeoPosition, Legend, RadarError, RadarInfo, SharedRadars,
         settings::{BareControlValue, Control, ControlId, ControlValue, RadarControlValue},
-        target::MarpaRequest,
+        target::{MarpaRequest, TrackerCommand},
     },
     stream::{ActiveSubscriptions, Desubscription, SignalKDelta, Subscribe, Subscription},
 };
@@ -654,8 +654,8 @@ async fn acquire_target(
         None => return RadarError::NoSuchRadar(radar_id).into_response(),
     };
 
-    // Get MARPA channel
-    let marpa_tx = match state.radars.get_marpa_tx() {
+    // Get tracker command channel
+    let command_tx = match state.radars.get_tracker_command_tx() {
         Some(tx) => tx,
         None => {
             return (
@@ -711,7 +711,7 @@ async fn acquire_target(
     };
 
     // Send to tracker
-    if let Err(e) = marpa_tx.try_send(marpa_request) {
+    if let Err(e) = command_tx.try_send(TrackerCommand::Marpa(marpa_request)) {
         log::error!("Failed to send MARPA request: {}", e);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,

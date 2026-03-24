@@ -325,8 +325,8 @@ pub async fn start_session(
         radars.set_blob_tx(blob_tx);
 
         let sk_client_tx = radars.get_sk_client_tx();
-        let (tracker_manager, marpa_tx) = TrackerManager::new(args.merge_targets, sk_client_tx);
-        radars.set_marpa_tx(marpa_tx);
+        let (tracker_manager, command_tx) = TrackerManager::new(args.merge_targets, sk_client_tx);
+        radars.set_tracker_command_tx(command_tx);
 
         subsystem.start(SubsystemBuilder::new("TrackerManager", |subsys| async move {
             tokio::select! { biased;

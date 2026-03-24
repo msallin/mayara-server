@@ -669,13 +669,22 @@ mod tests {
     const TEST_MAX_SPEED_MS: f64 = 50.0 * 0.5144;
 
     fn make_candidate(lat: f64, lon: f64, time: u64) -> TargetCandidate {
+        make_candidate_with_source(lat, lon, time, CandidateSource::GuardZone(1))
+    }
+
+    fn make_candidate_with_source(
+        lat: f64,
+        lon: f64,
+        time: u64,
+        source: CandidateSource,
+    ) -> TargetCandidate {
         TargetCandidate {
             time,
             position: GeoPosition::new(lat, lon),
             size_meters: 30.0,
             radar_key: "test".to_string(),
             max_target_speed_ms: TEST_MAX_SPEED_MS,
-            source: CandidateSource::GuardZone(1), // Default to guard zone for tests
+            source,
         }
     }
 
@@ -987,6 +996,7 @@ mod tests {
     #[test]
     fn test_circling_target_tracks_continuously() {
         // Simulates a boat circling at 15 knots in a 250m radius circle
+        // for 2 full revolutions of the circle (not radar revolutions).
         // With forced position override, the tracker should maintain track
         // through continuous turns by blending measured velocities.
 
@@ -997,6 +1007,10 @@ mod tests {
         let speed_knots = 15.0;
         let speed_ms = speed_knots * 1852.0 / 3600.0; // ~7.72 m/s
         let angular_velocity = speed_ms / radius_m; // ~0.031 rad/s
+
+        // Time for one full circle = 2π / angular_velocity ≈ 203 seconds
+        // Time for 2 full circles ≈ 406 seconds
+        let circle_time_s = 2.0 * PI / angular_velocity;
 
         // Center of circle is 350m north of radar (at 52.0, 4.0)
         let radar_lat = 52.0;
@@ -1015,8 +1029,11 @@ mod tests {
             (lat, lon)
         };
 
-        // Revolution time ~3 seconds (typical radar)
+        // Radar revolution time ~3 seconds (typical radar)
         let revolution_ms = 3000u64;
+
+        // Number of radar revolutions needed for 2 full circles
+        let num_revolutions = (2.0 * circle_time_s / 3.0).ceil() as u64 + 2;
 
         // Start tracking: first detection at angle=0 (south of center)
         let (lat0, lon0) = position_at_angle(0.0);
@@ -1034,8 +1051,7 @@ mod tests {
             result1
         );
 
-        // Continue tracking through multiple full circles (180 seconds = 60 revolutions)
-        // This covers ~5.5 full circles at 32.5s per circle
+        // Continue tracking through 2 full circles
         let mut successful_updates = 0;
         let mut lost_count = 0;
         let target_id = match result1 {
@@ -1043,7 +1059,7 @@ mod tests {
             _ => panic!("Expected Promoted"),
         };
 
-        for rev in 2..60 {
+        for rev in 2..num_revolutions {
             let time = rev * revolution_ms;
             let angle = angular_velocity * (time as f64 / 1000.0);
             let (lat, lon) = position_at_angle(angle);
@@ -1063,17 +1079,21 @@ mod tests {
         }
 
         // With forced position override for fast targets, we should maintain tracking
-        // through the entire test (58 updates after initial 2)
-        let total_circles = (angular_velocity * 60.0 * 3.0) / (2.0 * PI);
+        // through the entire test
+        let total_circles = (angular_velocity * num_revolutions as f64 * 3.0) / (2.0 * PI);
         println!(
-            "Circling target: {} successful updates, {} lost, {:.1} full circles completed",
-            successful_updates, lost_count, total_circles
+            "Circling target: {} successful updates, {} lost, {:.1} full circles completed ({}s circle time, {} radar revs)",
+            successful_updates, lost_count, total_circles, circle_time_s as i32, num_revolutions
         );
 
         // Should have maintained tracking for at least 90% of updates
+        let expected_updates = (num_revolutions - 2) as usize;
+        let min_successful = (expected_updates as f64 * 0.9) as usize;
         assert!(
-            successful_updates >= 50,
-            "Expected at least 50 successful updates for circling target, got {}",
+            successful_updates >= min_successful,
+            "Expected at least {} successful updates (90% of {}), got {}",
+            min_successful,
+            expected_updates,
             successful_updates
         );
 
@@ -1099,6 +1119,7 @@ mod tests {
     #[test]
     fn test_circling_target_imm_strategy() {
         // Same test as test_circling_target_tracks_continuously but using IMM strategy
+        // for 2 full revolutions of the circle (not radar revolutions).
         // IMM should handle the constant turning better due to multiple motion models
 
         let mut tracker = TargetTracker::new_merged_with_mode(2048, TrackingMode::Imm);
@@ -1108,6 +1129,10 @@ mod tests {
         let speed_knots = 15.0;
         let speed_ms = speed_knots * 1852.0 / 3600.0; // ~7.72 m/s
         let angular_velocity = speed_ms / radius_m; // ~0.031 rad/s
+
+        // Time for one full circle = 2π / angular_velocity ≈ 203 seconds
+        // Time for 2 full circles ≈ 406 seconds
+        let circle_time_s = 2.0 * PI / angular_velocity;
 
         // Center of circle is 350m north of radar (at 52.0, 4.0)
         let radar_lat = 52.0;
@@ -1125,6 +1150,9 @@ mod tests {
         };
 
         let revolution_ms = 3000u64;
+
+        // Number of radar revolutions needed for 2 full circles
+        let num_revolutions = (2.0 * circle_time_s / 3.0).ceil() as u64 + 2;
 
         // Start tracking
         let (lat0, lon0) = position_at_angle(0.0);
@@ -1149,7 +1177,7 @@ mod tests {
             _ => panic!("Expected Promoted"),
         };
 
-        for rev in 2..60 {
+        for rev in 2..num_revolutions {
             let time = rev * revolution_ms;
             let angle = angular_velocity * (time as f64 / 1000.0);
             let (lat, lon) = position_at_angle(angle);
@@ -1168,16 +1196,20 @@ mod tests {
             }
         }
 
-        let total_circles = (angular_velocity * 60.0 * 3.0) / (2.0 * PI);
+        let total_circles = (angular_velocity * num_revolutions as f64 * 3.0) / (2.0 * PI);
         println!(
-            "IMM circling target: {} successful updates, {} lost, {:.1} full circles completed",
-            successful_updates, lost_count, total_circles
+            "IMM circling target: {} successful updates, {} lost, {:.1} full circles completed ({}s circle time, {} radar revs)",
+            successful_updates, lost_count, total_circles, circle_time_s as i32, num_revolutions
         );
 
         // IMM should maintain tracking through continuous turns
+        let expected_updates = (num_revolutions - 2) as usize;
+        let min_successful = (expected_updates as f64 * 0.9) as usize;
         assert!(
-            successful_updates >= 50,
-            "IMM: Expected at least 50 successful updates for circling target, got {}",
+            successful_updates >= min_successful,
+            "IMM: Expected at least {} successful updates (90% of {}), got {}",
+            min_successful,
+            expected_updates,
             successful_updates
         );
 
@@ -1198,5 +1230,233 @@ mod tests {
             tracked_speed,
             speed_ms
         );
+    }
+
+    #[test]
+    fn test_circling_target_leaves_guard_zone() {
+        // Simulates a circling target that is acquired in a guard zone, then
+        // leaves the zone but continues to be tracked via CandidateSource::Anywhere.
+        // This mimics real emulator behavior where guard zones may only cover
+        // part of the circle.
+
+        let mut tracker = TargetTracker::new_merged(2048);
+
+        // Circle parameters (matching emulator world.rs)
+        let radius_m = 250.0;
+        let speed_knots = 15.0;
+        let speed_ms = speed_knots * 1852.0 / 3600.0; // ~7.72 m/s
+        let angular_velocity = speed_ms / radius_m; // ~0.031 rad/s
+
+        let circle_time_s = 2.0 * PI / angular_velocity;
+
+        let radar_lat = 52.0;
+        let radar_lon = 4.0;
+        let center_lat = radar_lat + 350.0 / METERS_PER_DEGREE_LATITUDE;
+        let center_lon = radar_lon;
+
+        let position_at_angle = |angle: f64| -> (f64, f64) {
+            let bearing = PI + angle;
+            let lat = center_lat + radius_m * bearing.cos() / METERS_PER_DEGREE_LATITUDE;
+            let lon = center_lon
+                + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
+            (lat, lon)
+        };
+
+        let revolution_ms = 3000u64;
+        let num_revolutions = (2.0 * circle_time_s / 3.0).ceil() as u64 + 2;
+
+        // First 2 detections are in guard zone (target gets acquired)
+        let (lat0, lon0) = position_at_angle(0.0);
+        let candidate0 = make_candidate_with_source(lat0, lon0, 0, CandidateSource::GuardZone(1));
+        tracker.process_candidate(candidate0);
+
+        let angle1 = angular_velocity * 3.0;
+        let (lat1, lon1) = position_at_angle(angle1);
+        let candidate1 =
+            make_candidate_with_source(lat1, lon1, revolution_ms, CandidateSource::GuardZone(1));
+        let result1 = tracker.process_candidate(candidate1);
+        assert!(
+            matches!(result1, ProcessResult::Promoted(_)),
+            "Should promote to tracking: {:?}",
+            result1
+        );
+
+        let target_id = match result1 {
+            ProcessResult::Promoted(id) => id,
+            _ => panic!("Expected Promoted"),
+        };
+
+        // Remaining detections are OUTSIDE guard zone (CandidateSource::Anywhere)
+        // These should still match the existing active target
+        let mut successful_updates = 0;
+        let mut lost_count = 0;
+
+        for rev in 2..num_revolutions {
+            let time = rev * revolution_ms;
+            let angle = angular_velocity * (time as f64 / 1000.0);
+            let (lat, lon) = position_at_angle(angle);
+
+            // After initial acquisition, target is outside guard zone
+            let candidate =
+                make_candidate_with_source(lat, lon, time, CandidateSource::Anywhere);
+            let result = tracker.process_candidate(candidate);
+
+            match result {
+                ProcessResult::Updated(id) if id == target_id => {
+                    successful_updates += 1;
+                }
+                ProcessResult::NewAcquiring(_) => {
+                    lost_count += 1;
+                }
+                ProcessResult::Ignored => {
+                    // This is the problem case - candidate didn't match existing target
+                    lost_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        let total_circles = (angular_velocity * num_revolutions as f64 * 3.0) / (2.0 * PI);
+        println!(
+            "Circling outside guard zone: {} successful, {} lost, {:.1} circles ({}s circle, {} radar revs)",
+            successful_updates, lost_count, total_circles, circle_time_s as i32, num_revolutions
+        );
+
+        // Should maintain tracking even when leaving guard zone
+        let expected_updates = (num_revolutions - 2) as usize;
+        let min_successful = (expected_updates as f64 * 0.9) as usize;
+        assert!(
+            successful_updates >= min_successful,
+            "Expected at least {} successful updates (90% of {}), got {} (lost {})",
+            min_successful,
+            expected_updates,
+            successful_updates,
+            lost_count
+        );
+
+        // Should have only one active target
+        assert_eq!(
+            tracker.active_count(),
+            1,
+            "Expected 1 target, got {}",
+            tracker.active_count()
+        );
+    }
+
+    #[test]
+    fn test_circling_target_marpa_acquisition() {
+        // Simulates a circling target that is manually acquired via MARPA (user click).
+        // MARPA targets go directly to active status and should be tracked
+        // through continuous turns for 2 full circles.
+
+        let mut tracker = TargetTracker::new_merged(2048);
+
+        // Circle parameters (matching emulator world.rs)
+        let radius_m = 250.0;
+        let speed_knots = 15.0;
+        let speed_ms = speed_knots * 1852.0 / 3600.0; // ~7.72 m/s
+        let angular_velocity = speed_ms / radius_m; // ~0.031 rad/s
+
+        let circle_time_s = 2.0 * PI / angular_velocity;
+
+        let radar_lat = 52.0;
+        let radar_lon = 4.0;
+        let center_lat = radar_lat + 350.0 / METERS_PER_DEGREE_LATITUDE;
+        let center_lon = radar_lon;
+
+        let position_at_angle = |angle: f64| -> (f64, f64) {
+            let bearing = PI + angle;
+            let lat = center_lat + radius_m * bearing.cos() / METERS_PER_DEGREE_LATITUDE;
+            let lon = center_lon
+                + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
+            (lat, lon)
+        };
+
+        let revolution_ms = 3000u64;
+        let num_revolutions = (2.0 * circle_time_s / 3.0).ceil() as u64 + 2;
+
+        // MARPA acquisition - user clicks on the target (GuardZone(0) = manual)
+        let (lat0, lon0) = position_at_angle(0.0);
+        let candidate0 = make_candidate_with_source(lat0, lon0, 0, CandidateSource::GuardZone(0));
+
+        // Use add_active_target for MARPA (bypasses acquiring phase)
+        let target_id = tracker.add_active_target(&candidate0);
+
+        let target = tracker.get_target(&target_id).unwrap();
+        assert!(target.is_manual, "MARPA target should be marked as manual");
+        assert_eq!(
+            target.status,
+            TargetStatus::Acquiring,
+            "MARPA target starts in Acquiring"
+        );
+
+        // Second detection updates the target
+        let angle1 = angular_velocity * 3.0;
+        let (lat1, lon1) = position_at_angle(angle1);
+        let candidate1 =
+            make_candidate_with_source(lat1, lon1, revolution_ms, CandidateSource::Anywhere);
+        let result1 = tracker.process_candidate(candidate1);
+        assert!(
+            matches!(result1, ProcessResult::Promoted(_) | ProcessResult::Updated(_)),
+            "Should update/promote MARPA target: {:?}",
+            result1
+        );
+
+        // Continue tracking through 2 full circles (all detections outside guard zone)
+        let mut successful_updates = 0;
+        let mut lost_count = 0;
+
+        for rev in 2..num_revolutions {
+            let time = rev * revolution_ms;
+            let angle = angular_velocity * (time as f64 / 1000.0);
+            let (lat, lon) = position_at_angle(angle);
+
+            let candidate =
+                make_candidate_with_source(lat, lon, time, CandidateSource::Anywhere);
+            let result = tracker.process_candidate(candidate);
+
+            match result {
+                ProcessResult::Updated(id) if id == target_id => {
+                    successful_updates += 1;
+                }
+                ProcessResult::NewAcquiring(_) => {
+                    lost_count += 1;
+                }
+                ProcessResult::Ignored => {
+                    lost_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        let total_circles = (angular_velocity * num_revolutions as f64 * 3.0) / (2.0 * PI);
+        println!(
+            "MARPA circling target: {} successful, {} lost, {:.1} circles ({}s circle, {} radar revs)",
+            successful_updates, lost_count, total_circles, circle_time_s as i32, num_revolutions
+        );
+
+        // Should maintain tracking through continuous turns
+        let expected_updates = (num_revolutions - 2) as usize;
+        let min_successful = (expected_updates as f64 * 0.9) as usize;
+        assert!(
+            successful_updates >= min_successful,
+            "MARPA: Expected at least {} successful updates (90% of {}), got {} (lost {})",
+            min_successful,
+            expected_updates,
+            successful_updates,
+            lost_count
+        );
+
+        // Should have only one active target
+        assert_eq!(
+            tracker.active_count(),
+            1,
+            "MARPA: Expected 1 target, got {}",
+            tracker.active_count()
+        );
+
+        // Verify it's still marked as manual
+        let target = tracker.get_target(&target_id).unwrap();
+        assert!(target.is_manual, "Target should still be marked as manual");
     }
 }
