@@ -40,6 +40,25 @@ const MIN_UPDATES_FOR_STATIONARY: u32 = 5;
 /// the Kalman uncertainty grows large due to missed updates
 const MAX_MATCH_DISTANCE_M: f64 = 150.0;
 
+/// Extended match distance for fast targets (>10 knots / ~5 m/s)
+/// Fast maneuvering targets need wider search radius
+const MAX_MATCH_DISTANCE_FAST_M: f64 = 300.0;
+
+/// Speed threshold for "fast" targets that get extended matching (m/s)
+/// 10 knots = ~5.14 m/s
+const FAST_TARGET_SPEED_MS: f64 = 5.0;
+
+/// Update count threshold below which we use forced position override
+/// Radar_pi uses status < 8, we use update_count < 8 (roughly equivalent)
+const FORCED_POSITION_UPDATE_THRESHOLD: u32 = 8;
+
+/// Maximum allowed turn angle (degrees) for high-speed targets
+/// Targets appearing to turn more than this at speed are rejected as false matches
+const MAX_TURN_ANGLE_DEG: f64 = 130.0;
+
+/// Speed threshold (m/s) above which turn rejection is applied
+const TURN_REJECTION_SPEED_MS: f64 = 5.0;
+
 /// Status of a tracked target
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TargetStatus {
@@ -144,42 +163,135 @@ impl ActiveTarget {
         }
     }
 
-    fn update(&mut self, candidate: &TargetCandidate) {
-        // On first update, calculate direct COG from position difference
-        if self.update_count == 1 {
-            if let Some(prev_pos) = self.prev_position {
-                let delta_time = (candidate.time.saturating_sub(self.last_update)) as f64 / 1000.0;
-                if delta_time > 0.0 {
-                    let distance = calculate_distance(&prev_pos, &candidate.position);
-                    let sog = distance / delta_time;
-                    let cog = calculate_bearing(&prev_pos, &candidate.position);
-                    self.sog = Some(sog);
-                    self.cog = Some(cog);
+    /// Update target with new candidate position.
+    /// Returns false if update should be rejected (implausible maneuver).
+    fn update(&mut self, candidate: &TargetCandidate) -> bool {
+        let delta_time = (candidate.time.saturating_sub(self.last_update)) as f64 / 1000.0;
+
+        // Calculate direct velocity from measured positions
+        let (measured_sog, measured_cog) = if delta_time > 1.0 {
+            let distance = calculate_distance(&self.position, &candidate.position);
+            let sog = distance / delta_time;
+            let cog = calculate_bearing(&self.position, &candidate.position);
+            (Some(sog), Some(cog))
+        } else {
+            (None, None)
+        };
+
+        // Turn rejection: reject implausible maneuvers for fast targets in early tracking
+        // Based on radar_pi: turn > 130° at speed > 5 m/s for status < 5
+        if self.update_count >= 2 && self.update_count < 5 {
+            if let (Some(current_cog), Some(new_cog), Some(speed)) =
+                (self.cog, measured_cog, measured_sog)
+            {
+                if speed > TURN_REJECTION_SPEED_MS {
+                    let mut turn = (new_cog - current_cog).to_degrees();
+                    if turn > 180.0 {
+                        turn -= 360.0;
+                    }
+                    if turn < -180.0 {
+                        turn += 360.0;
+                    }
+                    if turn.abs() > MAX_TURN_ANGLE_DEG {
+                        log::debug!(
+                            "Target {}: rejecting update - turn {:.1}° at {:.1} m/s",
+                            self.id,
+                            turn,
+                            speed
+                        );
+                        return false;
+                    }
                 }
             }
-            self.prev_position = None; // No longer needed
         }
 
-        // Update Kalman filter
+        // Update Kalman filter (always, for state tracking)
         let (kalman_sog, kalman_cog) = self.kalman.update(candidate.position, candidate.time);
 
-        // After first update, use Kalman filter estimates
-        if self.update_count > 1 {
+        // Forced position override for early tracking phases or fast targets
+        // Based on radar_pi: bypass Kalman for status 2-7 OR fast targets (>10 knots)
+        // This allows rapid adaptation to course changes that Kalman can't track
+        let use_forced = self.update_count < FORCED_POSITION_UPDATE_THRESHOLD
+            || self.sog.map(|s| s > FAST_TARGET_SPEED_MS).unwrap_or(false);
+
+        if use_forced && delta_time > 1.0 {
+            if let (Some(m_sog), Some(m_cog)) = (measured_sog, measured_cog) {
+                // Blend measured and filtered values with exponential decay
+                // factor = 0.8^(update_count - 1), decreasing influence as target stabilizes
+                // For fast maneuvering targets, maintain minimum factor of 0.3 to stay responsive
+                let is_fast = self.sog.map(|s| s > FAST_TARGET_SPEED_MS).unwrap_or(false);
+                let min_factor = if is_fast { 0.3 } else { 0.0 };
+                let factor =
+                    0.8_f64.powi((self.update_count.saturating_sub(1)) as i32).max(min_factor);
+
+                let current_sog = self.sog.unwrap_or(0.0);
+                let current_cog = self.cog.unwrap_or(m_cog);
+
+                // Blend SOG
+                let blended_sog = current_sog + factor * (m_sog - current_sog);
+
+                // Blend COG (handle wraparound)
+                let mut cog_diff = m_cog - current_cog;
+                if cog_diff > PI {
+                    cog_diff -= 2.0 * PI;
+                }
+                if cog_diff < -PI {
+                    cog_diff += 2.0 * PI;
+                }
+                let mut blended_cog = current_cog + factor * cog_diff;
+                if blended_cog < 0.0 {
+                    blended_cog += 2.0 * PI;
+                }
+                if blended_cog >= 2.0 * PI {
+                    blended_cog -= 2.0 * PI;
+                }
+
+                self.sog = Some(blended_sog);
+                self.cog = Some(blended_cog);
+
+                // Force the Kalman filter state to match our blended values
+                // This ensures predict() returns positions consistent with our motion estimate
+                self.kalman
+                    .force_state(candidate.position, blended_sog, blended_cog, candidate.time);
+
+                log::trace!(
+                    "Target {}: forced override factor={:.2}, sog={:.1}->{:.1}, cog={:.1}°->{:.1}°",
+                    self.id,
+                    factor,
+                    current_sog,
+                    blended_sog,
+                    current_cog.to_degrees(),
+                    blended_cog.to_degrees()
+                );
+            }
+        } else if self.update_count >= 1 {
+            // Use Kalman filter estimates for stable targets
             self.sog = Some(kalman_sog);
             self.cog = Some(kalman_cog);
+        }
+
+        // On first update, just use measured values directly
+        if self.update_count == 1 {
+            if let (Some(m_sog), Some(m_cog)) = (measured_sog, measured_cog) {
+                self.sog = Some(m_sog);
+                self.cog = Some(m_cog);
+            }
+            self.prev_position = None;
         }
 
         self.position = candidate.position;
         self.size_meters = candidate.size_meters;
         self.last_update = candidate.time;
         self.update_count += 1;
+
         // Set to Tracking once we have COG, otherwise stay Acquiring
-        // (but reset from Lost if we were lost)
         if self.cog.is_some() {
             self.status = TargetStatus::Tracking;
         } else if self.status == TargetStatus::Lost {
             self.status = TargetStatus::Acquiring;
         }
+
+        true
     }
 
     /// Predict position at given time using Kalman filter
@@ -397,32 +509,42 @@ impl TargetTracker {
         if let Some(target_id) = self.match_active_target(&candidate) {
             if let Some(target) = self.active_targets.get_mut(&target_id) {
                 let was_acquiring = target.status == TargetStatus::Acquiring;
-                target.update(&candidate);
-                self.stats.active_matches += 1;
 
-                // If target transitioned from Acquiring to Tracking, report as Promoted
-                if was_acquiring && target.status == TargetStatus::Tracking {
-                    log::info!(
-                        "Promoted target {} to tracking at ({:.6}, {:.6}), SOG={:.1}m/s, COG={:.1}°",
+                // Update may return false if the maneuver is rejected as implausible
+                if !target.update(&candidate) {
+                    // Rejected - don't count as match, let it potentially create new target
+                    log::debug!(
+                        "Update rejected for target {} - maneuver implausible",
+                        target_id
+                    );
+                    // Fall through to create new target if from guard zone
+                } else {
+                    self.stats.active_matches += 1;
+
+                    // If target transitioned from Acquiring to Tracking, report as Promoted
+                    if was_acquiring && target.status == TargetStatus::Tracking {
+                        log::info!(
+                            "Promoted target {} to tracking at ({:.6}, {:.6}), SOG={:.1}m/s, COG={:.1}°",
+                            target_id,
+                            target.position.lat(),
+                            target.position.lon(),
+                            target.sog.unwrap_or(0.0),
+                            target.cog.map(|c| c.to_degrees()).unwrap_or(0.0)
+                        );
+                        return ProcessResult::Promoted(target_id);
+                    }
+
+                    log::debug!(
+                        "Updated active target {} at ({:.6}, {:.6}), SOG={:.1}m/s, COG={:.1}°",
                         target_id,
                         target.position.lat(),
                         target.position.lon(),
                         target.sog.unwrap_or(0.0),
                         target.cog.map(|c| c.to_degrees()).unwrap_or(0.0)
                     );
-                    return ProcessResult::Promoted(target_id);
+                    return ProcessResult::Updated(target_id);
                 }
-
-                log::debug!(
-                    "Updated active target {} at ({:.6}, {:.6}), SOG={:.1}m/s, COG={:.1}°",
-                    target_id,
-                    target.position.lat(),
-                    target.position.lon(),
-                    target.sog.unwrap_or(0.0),
-                    target.cog.map(|c| c.to_degrees()).unwrap_or(0.0)
-                );
             }
-            return ProcessResult::Updated(target_id);
         }
 
         // 2. Only create new targets from GuardZone and Doppler candidates
@@ -450,13 +572,25 @@ impl TargetTracker {
             let uncertainty = target.get_uncertainty();
             let distance = calculate_distance(&predicted_pos, &candidate.position);
 
+            // Use extended match distance for:
+            // 1. Fast targets (>5 m/s / ~10 knots) - they can maneuver more
+            // 2. Early tracking phases (low update count) - less certain of motion
+            // Based on radar_pi: doubles search radius for fast targets and low-status
+            let is_fast = target.sog.map(|s| s > FAST_TARGET_SPEED_MS).unwrap_or(false);
+            let is_early = target.update_count <= 2;
+            let max_dist = if is_fast || is_early {
+                MAX_MATCH_DISTANCE_FAST_M
+            } else {
+                MAX_MATCH_DISTANCE_M
+            };
+
             // Match threshold is the smaller of:
             // 1. 2x Kalman uncertainty (adapts to target behavior)
             // 2. Maximum match distance (prevents conflating distant targets)
-            let threshold = (uncertainty * 2.0).min(MAX_MATCH_DISTANCE_M);
+            let threshold = (uncertainty * 2.0).min(max_dist);
 
             log::debug!(
-                "Match check: target {} predicted ({:.6}, {:.6}), candidate ({:.6}, {:.6}), distance={:.1}m, threshold={:.1}m, uncertainty={:.1}m",
+                "Match check: target {} predicted ({:.6}, {:.6}), candidate ({:.6}, {:.6}), distance={:.1}m, threshold={:.1}m (max={:.0}m), uncertainty={:.1}m",
                 id,
                 predicted_pos.lat(),
                 predicted_pos.lon(),
@@ -464,6 +598,7 @@ impl TargetTracker {
                 candidate.position.lon(),
                 distance,
                 threshold,
+                max_dist,
                 uncertainty
             );
 
@@ -872,5 +1007,117 @@ mod tests {
         let (deleted, _lost) = tracker.check_timeouts(136_000);
         assert_eq!(deleted.len(), 1);
         assert_eq!(tracker.active_count(), 0);
+    }
+
+    #[test]
+    fn test_circling_target_tracks_continuously() {
+        // Simulates a boat circling at 15 knots in a 250m radius circle
+        // With forced position override, the tracker should maintain track
+        // through continuous turns by blending measured velocities.
+
+        let mut tracker = TargetTracker::new_merged(2048);
+
+        // Circle parameters (matching emulator world.rs)
+        let radius_m = 250.0;
+        let speed_knots = 15.0;
+        let speed_ms = speed_knots * 1852.0 / 3600.0; // ~7.72 m/s
+        let angular_velocity = speed_ms / radius_m; // ~0.031 rad/s
+
+        // Center of circle is 350m north of radar (at 52.0, 4.0)
+        let radar_lat = 52.0;
+        let radar_lon = 4.0;
+        let center_lat = radar_lat + 350.0 / METERS_PER_DEGREE_LATITUDE;
+        let center_lon = radar_lon;
+
+        // Helper to calculate position on circle at given angle
+        // angle=0 is south of center (closest to radar), increasing clockwise
+        let position_at_angle = |angle: f64| -> (f64, f64) {
+            // bearing from center: south + angle
+            let bearing = PI + angle;
+            let lat = center_lat + radius_m * bearing.cos() / METERS_PER_DEGREE_LATITUDE;
+            let lon = center_lon
+                + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
+            (lat, lon)
+        };
+
+        // Revolution time ~3 seconds (typical radar)
+        let revolution_ms = 3000u64;
+
+        // Start tracking: first detection at angle=0 (south of center)
+        let (lat0, lon0) = position_at_angle(0.0);
+        let candidate0 = make_candidate(lat0, lon0, 0);
+        tracker.process_candidate(candidate0);
+
+        // Second detection after one revolution - angle increases by angular_velocity * 3s
+        let angle1 = angular_velocity * 3.0;
+        let (lat1, lon1) = position_at_angle(angle1);
+        let candidate1 = make_candidate(lat1, lon1, revolution_ms);
+        let result1 = tracker.process_candidate(candidate1);
+        assert!(
+            matches!(result1, ProcessResult::Promoted(_)),
+            "Should promote to tracking: {:?}",
+            result1
+        );
+
+        // Continue tracking through multiple full circles (180 seconds = 60 revolutions)
+        // This covers ~5.5 full circles at 32.5s per circle
+        let mut successful_updates = 0;
+        let mut lost_count = 0;
+        let target_id = match result1 {
+            ProcessResult::Promoted(id) => id,
+            _ => panic!("Expected Promoted"),
+        };
+
+        for rev in 2..60 {
+            let time = rev * revolution_ms;
+            let angle = angular_velocity * (time as f64 / 1000.0);
+            let (lat, lon) = position_at_angle(angle);
+
+            let candidate = make_candidate(lat, lon, time);
+            let result = tracker.process_candidate(candidate);
+
+            match result {
+                ProcessResult::Updated(id) if id == target_id => {
+                    successful_updates += 1;
+                }
+                ProcessResult::NewAcquiring(_) => {
+                    lost_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        // With forced position override for fast targets, we should maintain tracking
+        // through the entire test (58 updates after initial 2)
+        let total_circles = (angular_velocity * 60.0 * 3.0) / (2.0 * PI);
+        println!(
+            "Circling target: {} successful updates, {} lost, {:.1} full circles completed",
+            successful_updates, lost_count, total_circles
+        );
+
+        // Should have maintained tracking for at least 90% of updates
+        assert!(
+            successful_updates >= 50,
+            "Expected at least 50 successful updates for circling target, got {}",
+            successful_updates
+        );
+
+        // Should have only one active target (no fragmentation)
+        assert_eq!(
+            tracker.active_count(),
+            1,
+            "Expected exactly 1 target for circling boat, got {}",
+            tracker.active_count()
+        );
+
+        // Verify target has reasonable speed estimate (should be close to 15 knots = 7.72 m/s)
+        let target = tracker.get_target(&target_id).unwrap();
+        let tracked_speed = target.sog.unwrap_or(0.0);
+        assert!(
+            (tracked_speed - speed_ms).abs() < 2.0,
+            "Target speed {:.1} m/s should be close to actual {:.1} m/s",
+            tracked_speed,
+            speed_ms
+        );
     }
 }

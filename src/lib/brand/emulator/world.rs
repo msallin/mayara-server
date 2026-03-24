@@ -20,6 +20,11 @@ const LAND_WIDTH: f64 = 200.0; // meters (north-south extent)
 const LAND_LENGTH: f64 = 1000.0; // meters (east-west extent)
 const LAND_ORIENTATION: f64 = 90.0; // degrees from North (pointing East-West)
 
+// Circling boat: 500m diameter circle, closest point 100m north, 15 knots
+const CIRCLING_RADIUS: f64 = 250.0; // meters (500m diameter / 2)
+const CIRCLING_CENTER_NORTH: f64 = 350.0; // meters (100m closest + 250m radius)
+const CIRCLING_SPEED_KNOTS: f64 = 15.0;
+
 // Conversion constants
 const KNOTS_TO_MS: f64 = 1852.0 / 3600.0; // 1 knot = 1852m/h = 0.5144 m/s
 const DEG_TO_RAD: f64 = PI / 180.0;
@@ -63,6 +68,73 @@ pub struct Buoy {
 impl Buoy {
     fn new(position: GeoPosition, radius: f64) -> Self {
         Buoy { position, radius }
+    }
+}
+
+/// A target moving in a circle
+#[derive(Clone, Debug)]
+pub struct CirclingTarget {
+    /// Center of the circular path
+    pub center: GeoPosition,
+    /// Radius of the circular path in meters
+    pub radius: f64,
+    /// Current angle in radians (0 = South of center, increasing clockwise)
+    pub angle: f64,
+    /// Angular velocity in radians per second
+    pub angular_velocity: f64,
+    /// Current position (computed from center, radius, angle)
+    pub position: GeoPosition,
+    /// Current heading in degrees (tangent to circle)
+    pub heading: f64,
+}
+
+impl CirclingTarget {
+    fn new(center: GeoPosition, radius: f64, speed_knots: f64) -> Self {
+        let speed_ms = speed_knots * KNOTS_TO_MS;
+        // Angular velocity = v / r (radians per second)
+        let angular_velocity = speed_ms / radius;
+
+        // Start at the south point of the circle (closest to own ship)
+        // Angle 0 = south of center, boat moves clockwise (east first)
+        let angle = 0.0;
+
+        // Calculate initial position (south of center)
+        let south_bearing = PI; // 180 degrees
+        let position = center.position_from_bearing(south_bearing, radius);
+
+        // Initial heading: moving east (90 degrees) when at south point, clockwise
+        let heading = 90.0;
+
+        CirclingTarget {
+            center,
+            radius,
+            angle,
+            angular_velocity,
+            position,
+            heading,
+        }
+    }
+
+    fn update(&mut self, elapsed_secs: f64) {
+        // Update angle (clockwise motion)
+        self.angle += self.angular_velocity * elapsed_secs;
+        self.angle %= 2.0 * PI;
+
+        // Calculate bearing from center to boat position
+        // angle=0 → south (bearing=PI), angle increases clockwise
+        // So bearing = PI + angle
+        let bearing = PI + self.angle;
+
+        // Update position
+        self.position = self.center.position_from_bearing(bearing, self.radius);
+
+        // Heading is tangent to circle, 90 degrees ahead of bearing from center
+        // For clockwise motion: heading = bearing + PI/2
+        let heading_rad = bearing + PI / 2.0;
+        self.heading = (heading_rad / DEG_TO_RAD) % 360.0;
+        if self.heading < 0.0 {
+            self.heading += 360.0;
+        }
     }
 }
 
@@ -114,6 +186,8 @@ pub struct EmulatorWorld {
     pub targets: Vec<Target>,
     /// Crossing targets (north-to-south boats)
     pub crossing_targets: Vec<Target>,
+    /// Circling target (boat going in circles north of own ship)
+    pub circling_target: CirclingTarget,
     /// Static buoys
     pub buoys: Vec<Buoy>,
 }
@@ -187,10 +261,18 @@ impl EmulatorWorld {
         let buoy_pos = buoy_base.position_from_bearing(south_bearing, buoy_south_offset);
         let buoys = vec![Buoy::new(buoy_pos, 5.0)]; // 5m radius buoy
 
+        // Create circling target: center is 350m north (100m closest + 250m radius)
+        let north_bearing = 0.0; // North
+        let circling_center =
+            initial_boat_pos.position_from_bearing(north_bearing, CIRCLING_CENTER_NORTH);
+        let circling_target =
+            CirclingTarget::new(circling_center, CIRCLING_RADIUS, CIRCLING_SPEED_KNOTS);
+
         EmulatorWorld {
             land,
             targets,
             crossing_targets,
+            circling_target,
             buoys,
         }
     }
@@ -203,6 +285,7 @@ impl EmulatorWorld {
         for target in &mut self.crossing_targets {
             target.update(elapsed_secs);
         }
+        self.circling_target.update(elapsed_secs);
     }
 
     /// Get the radar return intensity at a given position
@@ -234,6 +317,13 @@ impl EmulatorWorld {
                 let intensity = 15.0 - (target_distance / TARGET_RADIUS) * 5.0;
                 return intensity.max(13.0) as u8;
             }
+        }
+
+        // Check circling target
+        let circling_distance = distance_between(&point, &self.circling_target.position);
+        if circling_distance < TARGET_RADIUS {
+            let intensity = 15.0 - (circling_distance / TARGET_RADIUS) * 5.0;
+            return intensity.max(13.0) as u8;
         }
 
         // Check buoys (smaller radar return)
