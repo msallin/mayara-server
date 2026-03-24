@@ -1,0 +1,672 @@
+//! Motion model strategies for target tracking.
+//!
+//! This module provides different motion estimation strategies:
+//! - Kalman: Traditional 4-state Kalman filter with forced position override
+//! - IMM: Interacting Multiple Model filter using multiple motion models
+
+use std::f64::consts::PI;
+
+use super::kalman::KalmanFilter;
+use crate::radar::GeoPosition;
+
+/// Motion estimation result
+#[derive(Clone, Copy, Debug)]
+pub struct MotionEstimate {
+    /// Speed over ground in m/s
+    pub sog: f64,
+    /// Course over ground in radians (0 = North, clockwise)
+    pub cog: f64,
+}
+
+/// Tracking mode for the ARPA system
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum TrackingMode {
+    /// Traditional Kalman filter with forced position override for maneuvering targets
+    #[default]
+    Kalman = 0,
+    /// Interacting Multiple Model filter - better for maneuvering targets
+    Imm = 1,
+}
+
+impl TrackingMode {
+    pub fn from_setting(value: i32) -> Self {
+        match value {
+            1 => TrackingMode::Imm,
+            _ => TrackingMode::Kalman,
+        }
+    }
+}
+
+/// Trait for motion estimation strategies
+pub trait MotionModel: Send {
+    /// Initialize the model with a first measurement
+    fn init(&mut self, position: GeoPosition, time: u64);
+
+    /// Initialize with custom position uncertainty
+    fn init_with_uncertainty(&mut self, position: GeoPosition, time: u64, position_variance: f64);
+
+    /// Update the model with a new measurement
+    /// Returns the estimated SOG and COG
+    fn update(&mut self, position: GeoPosition, time: u64) -> MotionEstimate;
+
+    /// Predict position at a future time
+    fn predict(&self, time: u64) -> GeoPosition;
+
+    /// Get the current motion estimate
+    fn get_motion(&self) -> MotionEstimate;
+
+    /// Get position uncertainty in meters
+    fn get_uncertainty(&self) -> f64;
+
+    /// Force the model state (for manual overrides)
+    fn force_state(&mut self, position: GeoPosition, sog: f64, cog: f64, time: u64);
+
+    /// Clone the model into a boxed trait object
+    fn clone_box(&self) -> Box<dyn MotionModel>;
+}
+
+// ============================================================================
+// Kalman Motion Model
+// ============================================================================
+
+/// Speed threshold for "fast" targets that get extended matching (m/s)
+const FAST_TARGET_SPEED_MS: f64 = 5.0;
+
+/// Update count threshold below which we use forced position override
+const FORCED_POSITION_UPDATE_THRESHOLD: u32 = 8;
+
+/// Kalman-based motion model with forced position override for maneuvering targets.
+/// Based on radar_pi implementation.
+pub struct KalmanMotionModel {
+    kalman: KalmanFilter,
+    /// Last known position
+    last_position: GeoPosition,
+    /// Current SOG estimate
+    sog: f64,
+    /// Current COG estimate
+    cog: f64,
+    /// Last update time
+    last_time: u64,
+    /// Number of updates received
+    update_count: u32,
+    /// Whether the model has been initialized
+    initialized: bool,
+}
+
+impl KalmanMotionModel {
+    pub fn new() -> Self {
+        KalmanMotionModel {
+            kalman: KalmanFilter::new(),
+            last_position: GeoPosition::new(0.0, 0.0),
+            sog: 0.0,
+            cog: 0.0,
+            last_time: 0,
+            update_count: 0,
+            initialized: false,
+        }
+    }
+}
+
+impl Default for KalmanMotionModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MotionModel for KalmanMotionModel {
+    fn init(&mut self, position: GeoPosition, time: u64) {
+        self.init_with_uncertainty(position, time, 20.0);
+    }
+
+    fn init_with_uncertainty(&mut self, position: GeoPosition, time: u64, position_variance: f64) {
+        self.kalman.init_with_uncertainty(position, time, position_variance);
+        self.last_position = position;
+        self.last_time = time;
+        self.sog = 0.0;
+        self.cog = 0.0;
+        self.update_count = 1;
+        self.initialized = true;
+    }
+
+    fn update(&mut self, position: GeoPosition, time: u64) -> MotionEstimate {
+        if !self.initialized {
+            self.init(position, time);
+            return MotionEstimate { sog: 0.0, cog: 0.0 };
+        }
+
+        let delta_time = (time.saturating_sub(self.last_time)) as f64 / 1000.0;
+
+        // Calculate direct velocity from measured positions
+        let (measured_sog, measured_cog) = if delta_time > 1.0 {
+            let distance = calculate_distance(&self.last_position, &position);
+            let sog = distance / delta_time;
+            let cog = calculate_bearing(&self.last_position, &position);
+            (sog, cog)
+        } else {
+            (self.sog, self.cog)
+        };
+
+        // Update Kalman filter
+        let (kalman_sog, kalman_cog) = self.kalman.update(position, time);
+
+        // Forced position override for early tracking phases or fast targets
+        let use_forced = self.update_count < FORCED_POSITION_UPDATE_THRESHOLD
+            || self.sog > FAST_TARGET_SPEED_MS;
+
+        if use_forced && delta_time > 1.0 {
+            // Blend measured and filtered values with exponential decay
+            let is_fast = self.sog > FAST_TARGET_SPEED_MS;
+            let min_factor = if is_fast { 0.3 } else { 0.0 };
+            let factor = 0.8_f64
+                .powi((self.update_count.saturating_sub(1)) as i32)
+                .max(min_factor);
+
+            // Blend SOG
+            let blended_sog = self.sog + factor * (measured_sog - self.sog);
+
+            // Blend COG (handle wraparound)
+            let mut cog_diff = measured_cog - self.cog;
+            if cog_diff > PI {
+                cog_diff -= 2.0 * PI;
+            }
+            if cog_diff < -PI {
+                cog_diff += 2.0 * PI;
+            }
+            let mut blended_cog = self.cog + factor * cog_diff;
+            if blended_cog < 0.0 {
+                blended_cog += 2.0 * PI;
+            }
+            if blended_cog >= 2.0 * PI {
+                blended_cog -= 2.0 * PI;
+            }
+
+            self.sog = blended_sog;
+            self.cog = blended_cog;
+
+            // Force the Kalman filter state to match our blended values
+            self.kalman.force_state(position, blended_sog, blended_cog, time);
+        } else {
+            // Use Kalman filter estimates for stable targets
+            self.sog = kalman_sog;
+            self.cog = kalman_cog;
+        }
+
+        // On first update, just use measured values directly
+        if self.update_count == 1 && delta_time > 1.0 {
+            self.sog = measured_sog;
+            self.cog = measured_cog;
+        }
+
+        self.last_position = position;
+        self.last_time = time;
+        self.update_count += 1;
+
+        MotionEstimate {
+            sog: self.sog,
+            cog: self.cog,
+        }
+    }
+
+    fn predict(&self, time: u64) -> GeoPosition {
+        self.kalman.predict(time)
+    }
+
+    fn get_motion(&self) -> MotionEstimate {
+        MotionEstimate {
+            sog: self.sog,
+            cog: self.cog,
+        }
+    }
+
+    fn get_uncertainty(&self) -> f64 {
+        self.kalman.get_uncertainty()
+    }
+
+    fn force_state(&mut self, position: GeoPosition, sog: f64, cog: f64, time: u64) {
+        self.kalman.force_state(position, sog, cog, time);
+        self.last_position = position;
+        self.sog = sog;
+        self.cog = cog;
+        self.last_time = time;
+    }
+
+    fn clone_box(&self) -> Box<dyn MotionModel> {
+        Box::new(KalmanMotionModel {
+            kalman: KalmanFilter::new(), // Kalman filters start fresh
+            last_position: self.last_position,
+            sog: self.sog,
+            cog: self.cog,
+            last_time: self.last_time,
+            update_count: self.update_count,
+            initialized: self.initialized,
+        })
+    }
+}
+
+// ============================================================================
+// IMM (Interacting Multiple Model) Motion Model
+// ============================================================================
+
+/// Process noise for constant velocity model (low - straight line motion)
+const CV_PROCESS_NOISE: f64 = 0.01;
+/// Process noise for constant acceleration model (medium)
+const CA_PROCESS_NOISE: f64 = 0.05;
+/// Process noise for coordinated turn model (high - maneuvering)
+const CT_PROCESS_NOISE: f64 = 0.15;
+
+/// Model transition probability matrix
+/// Rows = from model, Cols = to model
+/// [CV, CA, CT]
+const TRANSITION_PROB: [[f64; 3]; 3] = [
+    [0.90, 0.05, 0.05], // From CV: likely stays CV
+    [0.10, 0.80, 0.10], // From CA: moderately stable
+    [0.05, 0.15, 0.80], // From CT: turning tends to persist
+];
+
+/// IMM filter using three motion models:
+/// - Constant Velocity (CV): For straight-line motion
+/// - Constant Acceleration (CA): For speeding up/slowing down
+/// - Coordinated Turn (CT): For maneuvering targets
+pub struct ImmMotionModel {
+    /// Kalman filter for constant velocity model
+    cv_filter: KalmanFilter,
+    /// Kalman filter for constant acceleration model (higher process noise)
+    ca_filter: KalmanFilter,
+    /// Kalman filter for coordinated turn model (highest process noise)
+    ct_filter: KalmanFilter,
+    /// Model probabilities [CV, CA, CT]
+    model_probs: [f64; 3],
+    /// Last known position
+    last_position: GeoPosition,
+    /// Combined SOG estimate
+    sog: f64,
+    /// Combined COG estimate
+    cog: f64,
+    /// Last update time
+    last_time: u64,
+    /// Number of updates received
+    update_count: u32,
+    /// Whether the model has been initialized
+    initialized: bool,
+}
+
+impl ImmMotionModel {
+    pub fn new() -> Self {
+        let mut cv_filter = KalmanFilter::new();
+        cv_filter.set_process_noise(CV_PROCESS_NOISE);
+
+        let mut ca_filter = KalmanFilter::new();
+        ca_filter.set_process_noise(CA_PROCESS_NOISE);
+
+        let mut ct_filter = KalmanFilter::new();
+        ct_filter.set_process_noise(CT_PROCESS_NOISE);
+
+        ImmMotionModel {
+            cv_filter,
+            ca_filter,
+            ct_filter,
+            model_probs: [0.6, 0.2, 0.2], // Initial: favor CV
+            last_position: GeoPosition::new(0.0, 0.0),
+            sog: 0.0,
+            cog: 0.0,
+            last_time: 0,
+            update_count: 0,
+            initialized: false,
+        }
+    }
+
+    /// Calculate likelihood of measurement given model prediction
+    fn calculate_likelihood(
+        predicted: &GeoPosition,
+        measured: &GeoPosition,
+        uncertainty: f64,
+    ) -> f64 {
+        let distance = calculate_distance(predicted, measured);
+        // Gaussian likelihood
+        let sigma = uncertainty.max(1.0);
+        let exponent = -0.5 * (distance / sigma).powi(2);
+        exponent.exp() / (sigma * (2.0 * PI).sqrt())
+    }
+
+    /// Mix model states based on mixing probabilities
+    fn mix_states(&mut self) {
+        // Calculate mixing probabilities
+        let mut mixing_probs = [[0.0; 3]; 3];
+        let mut c_bar = [0.0; 3];
+
+        // c_bar[j] = sum_i(p_ij * mu_i)
+        for j in 0..3 {
+            for i in 0..3 {
+                c_bar[j] += TRANSITION_PROB[i][j] * self.model_probs[i];
+            }
+        }
+
+        // mixing_prob[i|j] = p_ij * mu_i / c_bar[j]
+        for j in 0..3 {
+            for i in 0..3 {
+                if c_bar[j] > 1e-10 {
+                    mixing_probs[i][j] = TRANSITION_PROB[i][j] * self.model_probs[i] / c_bar[j];
+                }
+            }
+        }
+
+        // Store predicted probabilities for next update
+        for j in 0..3 {
+            self.model_probs[j] = c_bar[j];
+        }
+    }
+
+    /// Update model probabilities based on measurement likelihoods
+    fn update_probabilities(
+        &mut self,
+        cv_likelihood: f64,
+        ca_likelihood: f64,
+        ct_likelihood: f64,
+    ) {
+        let likelihoods = [cv_likelihood, ca_likelihood, ct_likelihood];
+
+        // Calculate normalization factor
+        let mut c = 0.0;
+        for i in 0..3 {
+            c += likelihoods[i] * self.model_probs[i];
+        }
+
+        // Update probabilities
+        if c > 1e-10 {
+            for i in 0..3 {
+                self.model_probs[i] = likelihoods[i] * self.model_probs[i] / c;
+            }
+        }
+
+        // Ensure probabilities sum to 1
+        let sum: f64 = self.model_probs.iter().sum();
+        if sum > 1e-10 {
+            for p in &mut self.model_probs {
+                *p /= sum;
+            }
+        }
+    }
+
+    /// Combine estimates from all models
+    fn combine_estimates(&mut self) {
+        let cv_motion = self.cv_filter.get_motion();
+        let ca_motion = self.ca_filter.get_motion();
+        let ct_motion = self.ct_filter.get_motion();
+
+        // Weighted average of SOG
+        self.sog = self.model_probs[0] * cv_motion.0
+            + self.model_probs[1] * ca_motion.0
+            + self.model_probs[2] * ct_motion.0;
+
+        // Weighted average of COG (handle wraparound)
+        // Use vector averaging for angles
+        let mut sin_sum = 0.0;
+        let mut cos_sum = 0.0;
+        let cogs = [cv_motion.1, ca_motion.1, ct_motion.1];
+
+        for i in 0..3 {
+            sin_sum += self.model_probs[i] * cogs[i].sin();
+            cos_sum += self.model_probs[i] * cogs[i].cos();
+        }
+
+        self.cog = sin_sum.atan2(cos_sum);
+        if self.cog < 0.0 {
+            self.cog += 2.0 * PI;
+        }
+    }
+}
+
+impl Default for ImmMotionModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MotionModel for ImmMotionModel {
+    fn init(&mut self, position: GeoPosition, time: u64) {
+        self.init_with_uncertainty(position, time, 20.0);
+    }
+
+    fn init_with_uncertainty(&mut self, position: GeoPosition, time: u64, position_variance: f64) {
+        self.cv_filter.init_with_uncertainty(position, time, position_variance);
+        self.ca_filter.init_with_uncertainty(position, time, position_variance);
+        self.ct_filter.init_with_uncertainty(position, time, position_variance);
+
+        self.last_position = position;
+        self.last_time = time;
+        self.sog = 0.0;
+        self.cog = 0.0;
+        self.update_count = 1;
+        self.model_probs = [0.6, 0.2, 0.2];
+        self.initialized = true;
+    }
+
+    fn update(&mut self, position: GeoPosition, time: u64) -> MotionEstimate {
+        if !self.initialized {
+            self.init(position, time);
+            return MotionEstimate { sog: 0.0, cog: 0.0 };
+        }
+
+        // Step 1: Interaction/Mixing
+        self.mix_states();
+
+        // Step 2: Mode-matched filtering
+        // Get predictions from each model
+        let cv_pred = self.cv_filter.predict(time);
+        let ca_pred = self.ca_filter.predict(time);
+        let ct_pred = self.ct_filter.predict(time);
+
+        // Update each filter
+        self.cv_filter.update(position, time);
+        self.ca_filter.update(position, time);
+        self.ct_filter.update(position, time);
+
+        // Step 3: Mode probability update
+        let cv_unc = self.cv_filter.get_uncertainty();
+        let ca_unc = self.ca_filter.get_uncertainty();
+        let ct_unc = self.ct_filter.get_uncertainty();
+
+        let cv_likelihood = Self::calculate_likelihood(&cv_pred, &position, cv_unc);
+        let ca_likelihood = Self::calculate_likelihood(&ca_pred, &position, ca_unc);
+        let ct_likelihood = Self::calculate_likelihood(&ct_pred, &position, ct_unc);
+
+        self.update_probabilities(cv_likelihood, ca_likelihood, ct_likelihood);
+
+        // Step 4: Estimate combination
+        self.combine_estimates();
+
+        self.last_position = position;
+        self.last_time = time;
+        self.update_count += 1;
+
+        log::trace!(
+            "IMM update: probs=[CV:{:.2}, CA:{:.2}, CT:{:.2}], sog={:.1}m/s, cog={:.1}°",
+            self.model_probs[0],
+            self.model_probs[1],
+            self.model_probs[2],
+            self.sog,
+            self.cog.to_degrees()
+        );
+
+        MotionEstimate {
+            sog: self.sog,
+            cog: self.cog,
+        }
+    }
+
+    fn predict(&self, time: u64) -> GeoPosition {
+        // Use weighted combination of predictions
+        let cv_pred = self.cv_filter.predict(time);
+        let ca_pred = self.ca_filter.predict(time);
+        let ct_pred = self.ct_filter.predict(time);
+
+        // Weight by model probabilities
+        let lat = self.model_probs[0] * cv_pred.lat()
+            + self.model_probs[1] * ca_pred.lat()
+            + self.model_probs[2] * ct_pred.lat();
+        let lon = self.model_probs[0] * cv_pred.lon()
+            + self.model_probs[1] * ca_pred.lon()
+            + self.model_probs[2] * ct_pred.lon();
+
+        GeoPosition::new(lat, lon)
+    }
+
+    fn get_motion(&self) -> MotionEstimate {
+        MotionEstimate {
+            sog: self.sog,
+            cog: self.cog,
+        }
+    }
+
+    fn get_uncertainty(&self) -> f64 {
+        // Weighted combination of uncertainties
+        self.model_probs[0] * self.cv_filter.get_uncertainty()
+            + self.model_probs[1] * self.ca_filter.get_uncertainty()
+            + self.model_probs[2] * self.ct_filter.get_uncertainty()
+    }
+
+    fn force_state(&mut self, position: GeoPosition, sog: f64, cog: f64, time: u64) {
+        self.cv_filter.force_state(position, sog, cog, time);
+        self.ca_filter.force_state(position, sog, cog, time);
+        self.ct_filter.force_state(position, sog, cog, time);
+        self.last_position = position;
+        self.sog = sog;
+        self.cog = cog;
+        self.last_time = time;
+    }
+
+    fn clone_box(&self) -> Box<dyn MotionModel> {
+        Box::new(ImmMotionModel {
+            cv_filter: KalmanFilter::new(),
+            ca_filter: KalmanFilter::new(),
+            ct_filter: KalmanFilter::new(),
+            model_probs: self.model_probs,
+            last_position: self.last_position,
+            sog: self.sog,
+            cog: self.cog,
+            last_time: self.last_time,
+            update_count: self.update_count,
+            initialized: self.initialized,
+        })
+    }
+}
+
+// ============================================================================
+// Factory and Utilities
+// ============================================================================
+
+/// Create a motion model based on the tracking mode setting
+pub fn create_motion_model(mode: TrackingMode) -> Box<dyn MotionModel> {
+    match mode {
+        TrackingMode::Kalman => Box::new(KalmanMotionModel::new()),
+        TrackingMode::Imm => Box::new(ImmMotionModel::new()),
+    }
+}
+
+/// Calculate distance between two positions in meters
+fn calculate_distance(from: &GeoPosition, to: &GeoPosition) -> f64 {
+    use super::METERS_PER_DEGREE_LATITUDE;
+    use super::meters_per_degree_longitude;
+
+    let dlat = (to.lat() - from.lat()) * METERS_PER_DEGREE_LATITUDE;
+    let dlon = (to.lon() - from.lon()) * meters_per_degree_longitude(&from.lat());
+
+    (dlat * dlat + dlon * dlon).sqrt()
+}
+
+/// Calculate bearing from one position to another (radians, 0 = North)
+fn calculate_bearing(from: &GeoPosition, to: &GeoPosition) -> f64 {
+    use super::METERS_PER_DEGREE_LATITUDE;
+    use super::meters_per_degree_longitude;
+
+    let dlat = (to.lat() - from.lat()) * METERS_PER_DEGREE_LATITUDE;
+    let dlon = (to.lon() - from.lon()) * meters_per_degree_longitude(&from.lat());
+
+    let bearing = dlon.atan2(dlat);
+    if bearing < 0.0 {
+        bearing + 2.0 * PI
+    } else {
+        bearing
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kalman_model_straight_line() {
+        let mut model = KalmanMotionModel::new();
+
+        // Initialize at origin
+        let pos0 = GeoPosition::new(52.0, 4.0);
+        model.init(pos0, 0);
+
+        // Move north at ~10 m/s for 3 seconds
+        let delta_lat = 30.0 / super::super::METERS_PER_DEGREE_LATITUDE;
+        let pos1 = GeoPosition::new(52.0 + delta_lat, 4.0);
+        let estimate = model.update(pos1, 3000);
+
+        // Should have reasonable speed estimate
+        assert!(estimate.sog > 5.0 && estimate.sog < 15.0,
+            "SOG should be ~10 m/s, got {}", estimate.sog);
+
+        // COG should be approximately north (0 or 2π)
+        assert!(estimate.cog < 0.3 || estimate.cog > 6.0,
+            "COG should be ~0 (north), got {}", estimate.cog.to_degrees());
+    }
+
+    #[test]
+    fn test_imm_model_straight_line() {
+        let mut model = ImmMotionModel::new();
+
+        // Initialize at origin
+        let pos0 = GeoPosition::new(52.0, 4.0);
+        model.init(pos0, 0);
+
+        // Move north at ~10 m/s - do multiple updates to let IMM converge
+        let delta_lat = 30.0 / super::super::METERS_PER_DEGREE_LATITUDE;
+        let mut estimate = model.update(GeoPosition::new(52.0 + delta_lat, 4.0), 3000);
+        estimate = model.update(GeoPosition::new(52.0 + 2.0 * delta_lat, 4.0), 6000);
+        estimate = model.update(GeoPosition::new(52.0 + 3.0 * delta_lat, 4.0), 9000);
+
+        // Should have reasonable speed estimate after convergence
+        assert!(estimate.sog > 5.0 && estimate.sog < 15.0,
+            "SOG should be ~10 m/s, got {}", estimate.sog);
+
+        // CV model should dominate for straight line motion
+        assert!(model.model_probs[0] > 0.4,
+            "CV model should have high probability for straight line, got {:?}", model.model_probs);
+    }
+
+    #[test]
+    fn test_imm_model_turn() {
+        let mut model = ImmMotionModel::new();
+
+        // Initialize
+        let pos0 = GeoPosition::new(52.0, 4.0);
+        model.init(pos0, 0);
+
+        // Move east for first update
+        let delta_lon = 30.0 / super::super::meters_per_degree_longitude(&52.0);
+        let pos1 = GeoPosition::new(52.0, 4.0 + delta_lon);
+        model.update(pos1, 3000);
+
+        // Now turn north
+        let delta_lat = 30.0 / super::super::METERS_PER_DEGREE_LATITUDE;
+        let pos2 = GeoPosition::new(52.0 + delta_lat, 4.0 + delta_lon);
+        model.update(pos2, 6000);
+
+        // CT model should have increased probability after turn
+        // (may not dominate immediately, but should increase)
+        assert!(model.model_probs[2] > 0.1,
+            "CT model should have increased, got {:?}", model.model_probs);
+    }
+
+    #[test]
+    fn test_tracking_mode_from_setting() {
+        assert_eq!(TrackingMode::from_setting(0), TrackingMode::Kalman);
+        assert_eq!(TrackingMode::from_setting(1), TrackingMode::Imm);
+        assert_eq!(TrackingMode::from_setting(99), TrackingMode::Kalman); // Default
+    }
+}

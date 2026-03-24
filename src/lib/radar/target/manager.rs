@@ -8,6 +8,7 @@ use std::f64::consts::PI;
 use tokio::sync::{broadcast, mpsc};
 
 use super::blob::CompletedBlob;
+use super::motion::TrackingMode;
 use super::tracker::{CandidateSource, ProcessResult, TargetCandidate, TargetTracker};
 use super::{ArpaTargetApi, TargetDangerApi, TargetMotionApi, TargetPositionApi};
 use crate::radar::GeoPosition;
@@ -35,12 +36,12 @@ pub struct SpokeContext {
     pub spoke_len: usize,
     /// Head-relative angle in spokes
     pub angle: u16,
-    /// Maximum target speed in m/s (from ArpaDetectMode: 0=25kn, 1=40kn, 2=50kn)
+    /// Maximum target speed in m/s (from ArpaDetectMaxSpeed: 0=25kn, 1=40kn, 2=50kn)
     pub max_target_speed_ms: f64,
 }
 
 impl SpokeContext {
-    /// Get max target speed based on ArpaDetectMode setting
+    /// Get max target speed based on ArpaDetectMaxSpeed setting
     pub fn max_speed_from_mode(mode: i32) -> f64 {
         match mode {
             0 => 25.0 * KN_TO_MS, // Normal
@@ -152,6 +153,18 @@ impl TrackerManager {
             log::info!("Assigned radar {} index {}", radar_key, index);
             index
         }
+    }
+
+    /// Update the tracking mode for all trackers
+    /// New targets will use this mode; existing targets are not affected
+    pub fn set_tracking_mode(&mut self, mode: TrackingMode) {
+        if let Some(ref mut tracker) = self.shared_tracker {
+            tracker.set_tracking_mode(mode);
+        }
+        for tracker in self.per_radar_trackers.values_mut() {
+            tracker.set_tracking_mode(mode);
+        }
+        log::info!("Set tracking mode to {:?}", mode);
     }
 
     /// Process a blob message

@@ -1151,9 +1151,9 @@ impl CommonRadar {
                 // Send completed blobs to tracker
                 if !completed_blobs.is_empty() {
                     if let Some(ref blob_tx) = self.blob_tx {
-                        // Get max target speed from ArpaDetectMode control
-                        let arpa_mode = self.info.controls.arpa_detect_mode();
-                        let max_target_speed_ms = SpokeContext::max_speed_from_mode(arpa_mode);
+                        // Get max target speed from ArpaDetectMaxSpeed control
+                        let max_speed_mode = self.info.controls.arpa_detect_max_speed();
+                        let max_target_speed_ms = SpokeContext::max_speed_from_mode(max_speed_mode);
 
                         for blob in &completed_blobs {
                             let ctx = SpokeContext {

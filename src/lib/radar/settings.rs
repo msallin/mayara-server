@@ -88,6 +88,7 @@ pub enum ControlId {
     // Client Only, not here: Symbology,
     ShowAis,
     DopplerAutoTrack,
+    ArpaDetectMaxSpeed,
     ArpaDetectMode,
     ClearTargets,
     GuardZone1,
@@ -187,6 +188,7 @@ impl ControlId {
             | ControlId::DopplerMode => Category::Base,
             ControlId::ShowAis
             | ControlId::DopplerAutoTrack
+            | ControlId::ArpaDetectMaxSpeed
             | ControlId::ArpaDetectMode
             | ControlId::ClearTargets
             | ControlId::GuardZone1
@@ -235,73 +237,74 @@ impl ControlId {
 
     pub fn get_description(&self) -> &'static str {
         match self {
-            ControlId::AccentLight => "Strength of the accent light",
-            ControlId::AntennaHeight => "Height of the antenna above waterline",
-            ControlId::BearingAlignment => "Alignment of the antenna relative to the vessel's bow",
-            ControlId::ShowAis => "Show AIS vessels on the radar display",
-            ControlId::ClearTargets => "Clear all ARPA targets",
-            ControlId::ClearTrails => "Clear target trails",
-            ControlId::ColorGain => "Adjust the color curve relative to gain",
-            ControlId::DisplayTiming => "Display timing",
-            ControlId::Doppler => {
-                "Targets coming towards or going away from own ship shown in different colors"
-            }
-            ControlId::DopplerMode => "For what type of targets Doppler is used",
-            ControlId::DopplerAutoTrack => {
-                "Convert all Doppler targets to ARPA targets automatically"
-            }
-            ControlId::ArpaDetectMode => {
-                "ARPA detect mode: Normal (25kn max), Medium (40kn), Fast (50kn, maneuvering)"
-            }
-            ControlId::DopplerSpeedThreshold => "Threshold speed above which Doppler is applied",
-            ControlId::DopplerTrailsOnly => "Convert only Doppler targets to target trails",
-            ControlId::FirmwareVersion => "Version of the radar firmware",
-            ControlId::Ftc => "FTC",
-            ControlId::Gain => "How sensitive the radar is to returning echoes",
-            ControlId::GuardZone1 => "First guard zone for target detection",
-            ControlId::GuardZone2 => "Second guard zone for target detection",
-            ControlId::InterferenceRejection => "Reduces interference from other radars",
-            ControlId::LocalInterferenceRejection => {
-                "How much local interference rejection is applied"
-            }
-            ControlId::BirdMode => "Level of optimization for bird targets",
-            ControlId::MagnetronCurrent => "The current supplied to the magnetron",
-            ControlId::MainBangSuppression => "Main bang suppression",
-            ControlId::Mode => "Choice of radar mode tuning to certain conditions, or custom",
-            ControlId::ModelName => "Manufacturer model name of the radar",
-            ControlId::NoTransmitSector1 => "First no-transmit sector",
-            ControlId::NoTransmitSector2 => "Second no-transmit sector",
-            ControlId::NoTransmitSector3 => "Third no-transmit sector",
-            ControlId::NoTransmitSector4 => "Fourth no-transmit sector",
             ControlId::Power => "Radar operational state",
             ControlId::WarmupTime => {
                 "How long the radar still needs to warm up before transmitting"
             }
             ControlId::Range => "Maximum distance the radar is looking at",
+            ControlId::Mode => "Choice of radar mode tuning to certain conditions, or custom",
+            ControlId::Gain => "How sensitive the radar is to returning echoes",
+            ControlId::ColorGain => "Adjust the color curve relative to gain",
             ControlId::Sea => "Sea clutter suppression",
             ControlId::SeaState => "Sea state for sea clutter suppression",
             ControlId::Rain => "Rain clutter suppression",
+            ControlId::Doppler => {
+                "Targets coming towards or going away from own ship shown in different colors"
+            }
+            ControlId::DopplerMode => "For what type of targets Doppler is used",
+            ControlId::ShowAis => "Show AIS vessels on the radar display",
+            ControlId::DopplerAutoTrack => {
+                "Convert all Doppler targets to ARPA targets automatically"
+            }
+            ControlId::ArpaDetectMaxSpeed => {
+                "Maximum target speed: Normal (25kn), Medium (40kn), Fast (50kn)"
+            }
+            ControlId::ArpaDetectMode => "Target tracking algorithm: Kalman or IMM",
+            ControlId::ClearTargets => "Clear all ARPA targets",
+            ControlId::GuardZone1 => "First guard zone for target detection",
+            ControlId::GuardZone2 => "Second guard zone for target detection",
             ControlId::TargetTrails => "Whether target trails are shown",
             ControlId::TrailsMotion => "How target trails behave",
+            ControlId::DopplerTrailsOnly => "Convert only Doppler targets to target trails",
+            ControlId::ClearTrails => "Clear target trails",
+            ControlId::DopplerSpeedThreshold => "Threshold speed above which Doppler is applied",
             ControlId::NoiseRejection => "Filters out noise",
             ControlId::TargetBoost => "Level of how much small targets are boosted",
             ControlId::TargetExpansion => "Increases target length for small targets",
+            ControlId::InterferenceRejection => "Reduces interference from other radars",
             ControlId::TargetSeparation => "Makes separation between targets more prominent",
+            ControlId::LocalInterferenceRejection => {
+                "How much local interference rejection is applied"
+            }
+            ControlId::BirdMode => "Level of optimization for bird targets",
             ControlId::ScanSpeed => "Desired rotation speed of the radar antenna",
             ControlId::SideLobeSuppression => "Level of side lobe suppression",
             ControlId::Tune => "Method to finely tune the radar receiver",
+            ControlId::Ftc => "FTC",
+            ControlId::RangeUnits => "Which unit system to use for range values",
+            ControlId::MainBangSuppression => "Main bang suppression",
             ControlId::SeaClutterCurve => "Sea clutter curve",
+            ControlId::DisplayTiming => "Display timing",
+            ControlId::NoTransmitSector1 => "First no-transmit sector",
+            ControlId::NoTransmitSector2 => "Second no-transmit sector",
+            ControlId::NoTransmitSector3 => "Third no-transmit sector",
+            ControlId::NoTransmitSector4 => "Fourth no-transmit sector",
+            ControlId::AccentLight => "Strength of the accent light",
+            ControlId::AntennaHeight => "Height of the antenna above waterline",
+            ControlId::BearingAlignment => "Alignment of the antenna relative to the vessel's bow",
             ControlId::RotationSpeed => "How quickly the radar antenna rotates",
+            ControlId::MagnetronCurrent => "The current supplied to the magnetron",
             ControlId::SignalStrength => "Signal strength of the radar",
             ControlId::OperatingTime => "How long the radar has been operating over its lifetime",
             ControlId::TransmitTime => "How long the radar has been transmitting over its lifetime",
+            ControlId::ModelName => "Manufacturer model name of the radar",
+            ControlId::FirmwareVersion => "Version of the radar firmware",
             ControlId::SerialNumber => "Manufacturer serial number of the radar",
             ControlId::Spokes => "How many spokes the radar transmitted last rotation",
             ControlId::SpokeLength => {
                 "How long the spokes are that the radar transmitted last rotation"
             }
             ControlId::SpokeProcessing => "How to process spoke data for display",
-            ControlId::RangeUnits => "Which unit system to use for range values",
             ControlId::UserName => "User defined name for the radar",
         }
     }
@@ -323,6 +326,7 @@ impl ControlId {
             ControlId::Doppler => "Doppler",
             ControlId::DopplerMode => "Doppler mode",
             ControlId::DopplerAutoTrack => "Doppler Auto Track",
+            ControlId::ArpaDetectMaxSpeed => "ARPA Max Speed",
             ControlId::ArpaDetectMode => "ARPA Detect Mode",
             ControlId::DopplerSpeedThreshold => "Doppler speed threshold",
             ControlId::DopplerTrailsOnly => "Doppler trails only",
@@ -403,6 +407,7 @@ impl ControlId {
             ControlId::Doppler => ControlDestination::Command,
             ControlId::DopplerMode => ControlDestination::Command,
             ControlId::DopplerAutoTrack => ControlDestination::Target,
+            ControlId::ArpaDetectMaxSpeed => ControlDestination::Target,
             ControlId::ArpaDetectMode => ControlDestination::Target,
             ControlId::DopplerSpeedThreshold => ControlDestination::Command,
             ControlId::TargetTrails => ControlDestination::Trail,
@@ -559,7 +564,8 @@ impl Controls {
 
             new_button(ControlId::ClearTrails).build(&mut controls);
 
-            new_list(ControlId::ArpaDetectMode, &["Normal", "Medium", "Fast"]).build(&mut controls);
+            new_list(ControlId::ArpaDetectMaxSpeed, &["Normal", "Medium", "Fast"]).build(&mut controls);
+            new_list(ControlId::ArpaDetectMode, &["Kalman", "IMM"]).build(&mut controls);
 
             new_button(ControlId::ClearTargets).build(&mut controls);
         }
@@ -1351,7 +1357,15 @@ impl SharedControls {
             .unwrap_or(0)
     }
 
-    /// Returns the current ARPA detect mode: 0 = Normal (25kn), 1 = Medium (40kn), 2 = Fast (50kn)
+    /// Returns the current ARPA max speed setting: 0 = Normal (25kn), 1 = Medium (40kn), 2 = Fast (50kn)
+    pub fn arpa_detect_max_speed(&self) -> i32 {
+        self.get(&ControlId::ArpaDetectMaxSpeed)
+            .and_then(|c| c.value)
+            .map(|v| v as i32)
+            .unwrap_or(0)
+    }
+
+    /// Returns the current ARPA detect mode: 0 = Kalman, 1 = IMM
     pub fn arpa_detect_mode(&self) -> i32 {
         self.get(&ControlId::ArpaDetectMode)
             .and_then(|c| c.value)

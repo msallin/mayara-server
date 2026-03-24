@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use super::kalman::KalmanFilter;
+use super::motion::{ImmMotionModel, KalmanMotionModel, MotionModel, TrackingMode};
 use super::{METERS_PER_DEGREE_LATITUDE, meters_per_degree_longitude};
 use crate::radar::GeoPosition;
 
@@ -47,10 +47,6 @@ const MAX_MATCH_DISTANCE_FAST_M: f64 = 300.0;
 /// Speed threshold for "fast" targets that get extended matching (m/s)
 /// 10 knots = ~5.14 m/s
 const FAST_TARGET_SPEED_MS: f64 = 5.0;
-
-/// Update count threshold below which we use forced position override
-/// Radar_pi uses status < 8, we use update_count < 8 (roughly equivalent)
-const FORCED_POSITION_UPDATE_THRESHOLD: u32 = 8;
 
 /// Maximum allowed turn angle (degrees) for high-speed targets
 /// Targets appearing to turn more than this at speed are rejected as false matches
@@ -102,7 +98,7 @@ pub struct TargetCandidate {
     pub size_meters: f64,
     /// Source radar key
     pub radar_key: String,
-    /// Maximum target speed in m/s (from ArpaDetectMode)
+    /// Maximum target speed in m/s (from ArpaDetectMaxSpeed)
     pub max_target_speed_ms: f64,
     /// How this candidate was detected
     pub source: CandidateSource,
@@ -122,8 +118,8 @@ pub struct ActiveTarget {
     pub sog: Option<f64>,
     /// Course over ground (radians, 0 = North), None until first update
     pub cog: Option<f64>,
-    /// Kalman filter for motion estimation
-    kalman: KalmanFilter,
+    /// Motion model for estimation (Kalman or IMM)
+    motion_model: Box<dyn MotionModel>,
     /// Last update timestamp
     pub last_update: u64,
     /// Number of updates received
@@ -135,15 +131,23 @@ pub struct ActiveTarget {
 }
 
 impl ActiveTarget {
-    fn new(id: String, candidate: &TargetCandidate) -> Self {
-        Self::new_with_uncertainty(id, candidate, 20.0)
+    fn new(id: String, candidate: &TargetCandidate, tracking_mode: TrackingMode) -> Self {
+        Self::new_with_uncertainty(id, candidate, 20.0, tracking_mode)
     }
 
     /// Create a new target with custom position uncertainty (for MARPA)
     /// MARPA targets need larger uncertainty since user click position is approximate
-    fn new_with_uncertainty(id: String, candidate: &TargetCandidate, position_variance: f64) -> Self {
-        let mut kalman = KalmanFilter::new();
-        kalman.init_with_uncertainty(candidate.position, candidate.time, position_variance);
+    fn new_with_uncertainty(
+        id: String,
+        candidate: &TargetCandidate,
+        position_variance: f64,
+        tracking_mode: TrackingMode,
+    ) -> Self {
+        let mut motion_model: Box<dyn MotionModel> = match tracking_mode {
+            TrackingMode::Kalman => Box::new(KalmanMotionModel::new()),
+            TrackingMode::Imm => Box::new(ImmMotionModel::new()),
+        };
+        motion_model.init_with_uncertainty(candidate.position, candidate.time, position_variance);
 
         // GuardZone(0) indicates manual/MARPA acquisition
         let is_manual = matches!(candidate.source, CandidateSource::GuardZone(0));
@@ -155,7 +159,7 @@ impl ActiveTarget {
             size_meters: candidate.size_meters,
             sog: None, // No speed until first update
             cog: None, // No course until first update
-            kalman,
+            motion_model,
             last_update: candidate.time,
             update_count: 1,
             status: TargetStatus::Acquiring,
@@ -168,7 +172,7 @@ impl ActiveTarget {
     fn update(&mut self, candidate: &TargetCandidate) -> bool {
         let delta_time = (candidate.time.saturating_sub(self.last_update)) as f64 / 1000.0;
 
-        // Calculate direct velocity from measured positions
+        // Calculate direct velocity from measured positions for turn rejection check
         let (measured_sog, measured_cog) = if delta_time > 1.0 {
             let distance = calculate_distance(&self.position, &candidate.position);
             let sog = distance / delta_time;
@@ -205,77 +209,14 @@ impl ActiveTarget {
             }
         }
 
-        // Update Kalman filter (always, for state tracking)
-        let (kalman_sog, kalman_cog) = self.kalman.update(candidate.position, candidate.time);
+        // Update motion model and get estimated motion
+        let estimate = self.motion_model.update(candidate.position, candidate.time);
 
-        // Forced position override for early tracking phases or fast targets
-        // Based on radar_pi: bypass Kalman for status 2-7 OR fast targets (>10 knots)
-        // This allows rapid adaptation to course changes that Kalman can't track
-        let use_forced = self.update_count < FORCED_POSITION_UPDATE_THRESHOLD
-            || self.sog.map(|s| s > FAST_TARGET_SPEED_MS).unwrap_or(false);
+        self.sog = Some(estimate.sog);
+        self.cog = Some(estimate.cog);
 
-        if use_forced && delta_time > 1.0 {
-            if let (Some(m_sog), Some(m_cog)) = (measured_sog, measured_cog) {
-                // Blend measured and filtered values with exponential decay
-                // factor = 0.8^(update_count - 1), decreasing influence as target stabilizes
-                // For fast maneuvering targets, maintain minimum factor of 0.3 to stay responsive
-                let is_fast = self.sog.map(|s| s > FAST_TARGET_SPEED_MS).unwrap_or(false);
-                let min_factor = if is_fast { 0.3 } else { 0.0 };
-                let factor =
-                    0.8_f64.powi((self.update_count.saturating_sub(1)) as i32).max(min_factor);
-
-                let current_sog = self.sog.unwrap_or(0.0);
-                let current_cog = self.cog.unwrap_or(m_cog);
-
-                // Blend SOG
-                let blended_sog = current_sog + factor * (m_sog - current_sog);
-
-                // Blend COG (handle wraparound)
-                let mut cog_diff = m_cog - current_cog;
-                if cog_diff > PI {
-                    cog_diff -= 2.0 * PI;
-                }
-                if cog_diff < -PI {
-                    cog_diff += 2.0 * PI;
-                }
-                let mut blended_cog = current_cog + factor * cog_diff;
-                if blended_cog < 0.0 {
-                    blended_cog += 2.0 * PI;
-                }
-                if blended_cog >= 2.0 * PI {
-                    blended_cog -= 2.0 * PI;
-                }
-
-                self.sog = Some(blended_sog);
-                self.cog = Some(blended_cog);
-
-                // Force the Kalman filter state to match our blended values
-                // This ensures predict() returns positions consistent with our motion estimate
-                self.kalman
-                    .force_state(candidate.position, blended_sog, blended_cog, candidate.time);
-
-                log::trace!(
-                    "Target {}: forced override factor={:.2}, sog={:.1}->{:.1}, cog={:.1}°->{:.1}°",
-                    self.id,
-                    factor,
-                    current_sog,
-                    blended_sog,
-                    current_cog.to_degrees(),
-                    blended_cog.to_degrees()
-                );
-            }
-        } else if self.update_count >= 1 {
-            // Use Kalman filter estimates for stable targets
-            self.sog = Some(kalman_sog);
-            self.cog = Some(kalman_cog);
-        }
-
-        // On first update, just use measured values directly
+        // On first update, clear previous position
         if self.update_count == 1 {
-            if let (Some(m_sog), Some(m_cog)) = (measured_sog, measured_cog) {
-                self.sog = Some(m_sog);
-                self.cog = Some(m_cog);
-            }
             self.prev_position = None;
         }
 
@@ -294,13 +235,13 @@ impl ActiveTarget {
         true
     }
 
-    /// Predict position at given time using Kalman filter
+    /// Predict position at given time using motion model
     pub fn predict_position(&self, time: u64) -> GeoPosition {
-        self.kalman.predict(time)
+        self.motion_model.predict(time)
     }
 
     fn get_uncertainty(&self) -> f64 {
-        self.kalman.get_uncertainty()
+        self.motion_model.get_uncertainty()
     }
 
     /// Check if target is considered stationary (very low speed, enough updates)
@@ -349,11 +290,18 @@ pub struct TargetTracker {
     revolution_count: u64,
     /// Statistics for current revolution
     stats: TrackerStats,
+    /// Tracking mode (Kalman or IMM)
+    tracking_mode: TrackingMode,
 }
 
 impl TargetTracker {
     /// Create a new tracker for merged mode
     pub fn new_merged(spokes_per_revolution: u16) -> Self {
+        Self::new_merged_with_mode(spokes_per_revolution, TrackingMode::Kalman)
+    }
+
+    /// Create a new tracker for merged mode with specific tracking mode
+    pub fn new_merged_with_mode(spokes_per_revolution: u16, tracking_mode: TrackingMode) -> Self {
         TargetTracker {
             active_targets: HashMap::new(),
             next_id: 1,
@@ -363,11 +311,21 @@ impl TargetTracker {
             last_angle: 0,
             revolution_count: 0,
             stats: TrackerStats::default(),
+            tracking_mode,
         }
     }
 
     /// Create a new tracker for per-radar mode
     pub fn new_per_radar(radar_index: usize, spokes_per_revolution: u16) -> Self {
+        Self::new_per_radar_with_mode(radar_index, spokes_per_revolution, TrackingMode::Kalman)
+    }
+
+    /// Create a new tracker for per-radar mode with specific tracking mode
+    pub fn new_per_radar_with_mode(
+        radar_index: usize,
+        spokes_per_revolution: u16,
+        tracking_mode: TrackingMode,
+    ) -> Self {
         TargetTracker {
             active_targets: HashMap::new(),
             next_id: 1,
@@ -377,7 +335,13 @@ impl TargetTracker {
             last_angle: 0,
             revolution_count: 0,
             stats: TrackerStats::default(),
+            tracking_mode,
         }
+    }
+
+    /// Set the tracking mode
+    pub fn set_tracking_mode(&mut self, mode: TrackingMode) {
+        self.tracking_mode = mode;
     }
 
     /// Generate next target ID
@@ -616,14 +580,15 @@ impl TargetTracker {
     /// Create a new active target in Acquiring status
     fn create_acquiring_target(&mut self, candidate: &TargetCandidate) -> String {
         let id = self.next_target_id();
-        let target = ActiveTarget::new(id.clone(), candidate);
+        let target = ActiveTarget::new(id.clone(), candidate, self.tracking_mode);
 
         log::info!(
-            "Created acquiring target {} at ({:.6}, {:.6}), size={:.1}m",
+            "Created acquiring target {} at ({:.6}, {:.6}), size={:.1}m, mode={:?}",
             id,
             candidate.position.lat(),
             candidate.position.lon(),
-            candidate.size_meters
+            candidate.size_meters,
+            self.tracking_mode
         );
 
         self.active_targets.insert(id.clone(), target);
@@ -636,14 +601,15 @@ impl TargetTracker {
         let id = self.next_target_id();
         // MARPA targets need larger initial uncertainty since user clicks are approximate
         // Position variance of 1250 gives ~100m uncertainty (2 * sqrt(1250 + 1250))
-        let target = ActiveTarget::new_with_uncertainty(id.clone(), candidate, 1250.0);
+        let target = ActiveTarget::new_with_uncertainty(id.clone(), candidate, 1250.0, self.tracking_mode);
 
         log::info!(
-            "MARPA: Created active target {} at ({:.6}, {:.6}), size={:.1}m",
+            "MARPA: Created active target {} at ({:.6}, {:.6}), size={:.1}m, mode={:?}",
             id,
             candidate.position.lat(),
             candidate.position.lon(),
-            candidate.size_meters
+            candidate.size_meters,
+            self.tracking_mode
         );
 
         self.active_targets.insert(id.clone(), target);

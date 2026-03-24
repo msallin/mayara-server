@@ -7,10 +7,12 @@
 mod blob;
 mod kalman;
 mod manager;
+mod motion;
 mod tracker;
 
 pub use blob::{BlobDetector, CompletedBlob, MAX_TARGET_SIZE_M, MIN_TARGET_SIZE_M};
 pub use manager::{BlobMessage, MarpaRequest, SpokeContext, TrackerManager};
+pub use motion::{MotionModel, TrackingMode, create_motion_model};
 pub use tracker::{ActiveTarget, CandidateSource, ProcessResult, TargetCandidate, TargetStatus, TargetTracker};
 
 use serde::Serialize;
