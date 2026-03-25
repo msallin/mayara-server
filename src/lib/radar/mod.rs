@@ -33,7 +33,7 @@ use crate::radar::settings::{
     ControlDestination, ControlError, ControlId, ControlUpdate, ControlValue, SharedControls,
 };
 use crate::radar::spoke::{GenericSpoke, to_protobuf_spoke};
-use crate::radar::target::{BlobDetector, BlobMessage, SpokeContext, TrackerCommand, TrackingMode};
+use crate::radar::target::{BlobDetector, BlobMessage, SpokeContext, TrackerCommand};
 use crate::radar::trail::TrailBuffer;
 use crate::stream::SignalKDelta;
 use crate::{Brand, Cli, TargetMode};
@@ -1015,13 +1015,6 @@ impl CommonRadar {
             detector
         });
 
-        // Send initial tracking mode from persisted settings to TrackerManager
-        let tracking_mode = TrackingMode::from_setting(info.controls.arpa_tracking_strategy());
-        if let Some(tx) = radars.get_tracker_command_tx() {
-            log::info!("{}: Initializing TrackerManager with tracking mode {:?}", key, tracking_mode);
-            let _ = tx.try_send(TrackerCommand::SetTrackingMode(tracking_mode));
-        }
-
         CommonRadar {
             key,
             info,
@@ -1091,30 +1084,6 @@ impl CommonRadar {
 
                 // Handle ARPA/target tracking controls directly - they just need to be stored and persisted
                 match cv.id {
-                    ControlId::ArpaTrackingStrategy => {
-                        let value = cv.as_value()?;
-                        // Extract mode before consuming value
-                        let mode = if value == 0 { TrackingMode::Kalman } else { TrackingMode::Imm };
-                        let result = self
-                            .info
-                            .controls
-                            .set_value(&cv.id, value)
-                            .map(|_| ())
-                            .map_err(|e| RadarError::ControlError(e));
-                        if result.is_ok() {
-                            self.update(); // Persist the change
-                            // Notify the TrackerManager of the mode change
-                            if let Some(tx) = self.radars.get_tracker_command_tx() {
-                                log::info!("Sending SetTrackingMode({:?}) to TrackerManager", mode);
-                                if let Err(e) = tx.try_send(TrackerCommand::SetTrackingMode(mode)) {
-                                    log::error!("Failed to send SetTrackingMode: {}", e);
-                                }
-                            } else {
-                                log::warn!("No tracker_command_tx available for SetTrackingMode");
-                            }
-                        }
-                        return result;
-                    }
                     ControlId::ArpaDetectMaxSpeed => {
                         let value = cv.as_value()?;
                         let result = self

@@ -6,20 +6,17 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use super::motion::{ImmMotionModel, KalmanMotionModel, MotionModel, TrackingMode};
+use super::motion::{ImmMotionModel, MotionModel};
 use super::{METERS_PER_DEGREE_LATITUDE, meters_per_degree_longitude};
 use crate::radar::GeoPosition;
 
-/// Time in milliseconds before an acquiring target is marked as lost
-const ACQUIRING_LOST_TIMEOUT_MS: u64 = 10_000;
+/// Number of revolutions without update before a target is marked as lost
+const LOST_REVOLUTION_COUNT: u64 = 3;
 
-/// Time in milliseconds before a tracking target is marked as lost
-const TRACKING_LOST_TIMEOUT_MS: u64 = 20_000;
-
-/// Time in milliseconds before a stationary target is marked as lost
+/// Number of revolutions without update before a stationary target is marked as lost
 /// Stationary targets (buoys, anchored vessels) get extended timeout because
 /// they may temporarily merge with passing targets and need more time to reappear
-const STATIONARY_LOST_TIMEOUT_MS: u64 = 60_000;
+const STATIONARY_LOST_REVOLUTION_COUNT: u64 = 10;
 
 /// Time in milliseconds after lost before a target is deleted
 const DELETE_TIMEOUT_MS: u64 = 30_000;
@@ -35,18 +32,14 @@ const STATIONARY_SPEED_THRESHOLD: f64 = 0.5;
 /// Prevents false positives from slow-starting tracks
 const MIN_UPDATES_FOR_STATIONARY: u32 = 5;
 
-/// Maximum distance (meters) for matching a blob to an active target
-/// This prevents two distant targets from being conflated even if
-/// the Kalman uncertainty grows large due to missed updates
-const MAX_MATCH_DISTANCE_M: f64 = 150.0;
+/// Minimum match distance (meters) for matching a blob to an active target
+/// Even slow targets need some search radius for position uncertainty
+const MIN_MATCH_DISTANCE_M: f64 = 50.0;
 
-/// Extended match distance for fast targets (>10 knots / ~5 m/s)
-/// Fast maneuvering targets need wider search radius
-const MAX_MATCH_DISTANCE_FAST_M: f64 = 300.0;
-
-/// Speed threshold for "fast" targets that get extended matching (m/s)
-/// 10 knots = ~5.14 m/s
-const FAST_TARGET_SPEED_MS: f64 = 5.0;
+/// Multiplier for max speed to calculate match distance
+/// If a target can move at max_speed for delta_time, it could be anywhere
+/// within max_speed * delta_time. We use 1.5x to account for prediction error.
+const MATCH_DISTANCE_SPEED_MULTIPLIER: f64 = 1.5;
 
 /// Maximum allowed turn angle (degrees) for high-speed targets
 /// Targets appearing to turn more than this at speed are rejected as false matches
@@ -54,6 +47,11 @@ const MAX_TURN_ANGLE_DEG: f64 = 130.0;
 
 /// Speed threshold (m/s) above which turn rejection is applied
 const TURN_REJECTION_SPEED_MS: f64 = 5.0;
+
+/// Multiplier for per-radar target IDs.
+/// In per-radar mode, radar N gets IDs in range [N * RADAR_ID_MULTIPLIER, (N+1) * RADAR_ID_MULTIPLIER - 1].
+/// In merged mode, IDs range from 1 to RADAR_ID_MULTIPLIER - 1.
+const RADAR_ID_MULTIPLIER: u64 = 100_000_000;
 
 /// Status of a tracked target
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -98,6 +96,8 @@ pub struct TargetCandidate {
     pub size_meters: f64,
     /// Source radar key
     pub radar_key: String,
+    /// Radar position (for bearing/distance calculation)
+    pub radar_position: Option<GeoPosition>,
     /// Maximum target speed in m/s (from ArpaDetectMaxSpeed)
     pub max_target_speed_ms: f64,
     /// How this candidate was detected
@@ -106,8 +106,8 @@ pub struct TargetCandidate {
 
 /// A confirmed target being actively tracked
 pub struct ActiveTarget {
-    /// Unique target ID (format: "T000001" or "T1000001")
-    pub id: String,
+    /// Unique target ID
+    pub id: u64,
     /// Current position
     pub position: GeoPosition,
     /// Previous position (for initial COG calculation)
@@ -122,6 +122,8 @@ pub struct ActiveTarget {
     motion_model: Box<dyn MotionModel>,
     /// Last update timestamp
     pub last_update: u64,
+    /// Revolution count when target was last updated
+    last_update_revolution: u64,
     /// Number of updates received
     pub update_count: u32,
     /// Current status (Tracking or Lost)
@@ -130,25 +132,21 @@ pub struct ActiveTarget {
     pub is_manual: bool,
     /// Which guard zone acquired this target (1 or 2), or None for manual/doppler
     pub source_zone: Option<u8>,
+    /// Key of radar that last updated this target (for Signal K broadcast path)
+    pub last_radar_key: String,
+    /// Position of radar that last updated this target (for bearing/distance calculation)
+    pub last_radar_position: Option<GeoPosition>,
 }
 
 impl ActiveTarget {
-    fn new(id: String, candidate: &TargetCandidate, tracking_mode: TrackingMode) -> Self {
-        Self::new_with_uncertainty(id, candidate, 20.0, tracking_mode)
+    fn new(id: u64, candidate: &TargetCandidate) -> Self {
+        Self::new_with_uncertainty(id, candidate, 20.0)
     }
 
     /// Create a new target with custom position uncertainty (for MARPA)
     /// MARPA targets need larger uncertainty since user click position is approximate
-    fn new_with_uncertainty(
-        id: String,
-        candidate: &TargetCandidate,
-        position_variance: f64,
-        tracking_mode: TrackingMode,
-    ) -> Self {
-        let mut motion_model: Box<dyn MotionModel> = match tracking_mode {
-            TrackingMode::Kalman => Box::new(KalmanMotionModel::new()),
-            TrackingMode::Imm => Box::new(ImmMotionModel::new()),
-        };
+    fn new_with_uncertainty(id: u64, candidate: &TargetCandidate, position_variance: f64) -> Self {
+        let mut motion_model: Box<dyn MotionModel> = Box::new(ImmMotionModel::new());
         motion_model.init_with_uncertainty(candidate.position, candidate.time, position_variance);
 
         // GuardZone(0) indicates manual/MARPA acquisition
@@ -169,10 +167,13 @@ impl ActiveTarget {
             cog: None, // No course until first update
             motion_model,
             last_update: candidate.time,
+            last_update_revolution: 0, // Will be set by tracker on first update
             update_count: 1,
             status: TargetStatus::Acquiring,
             is_manual,
             source_zone,
+            last_radar_key: candidate.radar_key.clone(),
+            last_radar_position: candidate.radar_position,
         }
     }
 
@@ -233,6 +234,8 @@ impl ActiveTarget {
         self.size_meters = candidate.size_meters;
         self.last_update = candidate.time;
         self.update_count += 1;
+        self.last_radar_key = candidate.radar_key.clone();
+        self.last_radar_position = candidate.radar_position;
 
         // Set to Tracking once we have COG, otherwise stay Acquiring
         if self.cog.is_some() {
@@ -258,17 +261,22 @@ impl ActiveTarget {
         self.update_count >= MIN_UPDATES_FOR_STATIONARY
             && self.sog.map(|s| s < STATIONARY_SPEED_THRESHOLD).unwrap_or(false)
     }
+
+    /// Update the revolution count when target was last seen
+    fn set_last_update_revolution(&mut self, revolution: u64) {
+        self.last_update_revolution = revolution;
+    }
 }
 
 /// Result of processing a target candidate
 #[derive(Debug)]
 pub enum ProcessResult {
     /// Target was updated (target_id)
-    Updated(String),
+    Updated(u64),
     /// New target was promoted from acquiring to tracking (target_id)
-    Promoted(String),
+    Promoted(u64),
     /// New target was created in acquiring status (target_id)
-    NewAcquiring(String),
+    NewAcquiring(u64),
     /// No action taken (e.g., candidate outside guard zone didn't match existing target)
     Ignored,
 }
@@ -284,13 +292,13 @@ struct TrackerStats {
 /// Target tracker state
 pub struct TargetTracker {
     /// Active targets (including those in Acquiring status)
-    active_targets: HashMap<String, ActiveTarget>,
+    active_targets: HashMap<u64, ActiveTarget>,
     /// Next target ID number
-    next_id: u32,
-    /// ID prefix ("T" for merged, "T1" for radar 1, etc.)
-    id_prefix: String,
-    /// Maximum ID number before wrap
-    max_id: u32,
+    next_id: u64,
+    /// ID base for this tracker (0 for merged, 1000000 for radar 1, 2000000 for radar 2, etc.)
+    id_base: u64,
+    /// Maximum ID offset before wrap (RADAR_ID_MULTIPLIER - 1)
+    max_id_offset: u64,
     /// Spokes per revolution (for revolution detection)
     spokes_per_revolution: u16,
     /// Last spoke angle seen
@@ -299,71 +307,44 @@ pub struct TargetTracker {
     revolution_count: u64,
     /// Statistics for current revolution
     stats: TrackerStats,
-    /// Tracking mode (Kalman or IMM)
-    tracking_mode: TrackingMode,
 }
 
 impl TargetTracker {
     /// Create a new tracker for merged mode
     pub fn new_merged(spokes_per_revolution: u16) -> Self {
-        Self::new_merged_with_mode(spokes_per_revolution, TrackingMode::Kalman)
-    }
-
-    /// Create a new tracker for merged mode with specific tracking mode
-    pub fn new_merged_with_mode(spokes_per_revolution: u16, tracking_mode: TrackingMode) -> Self {
         TargetTracker {
             active_targets: HashMap::new(),
             next_id: 1,
-            id_prefix: "T".to_string(),
-            max_id: 999999,
+            id_base: 0,
+            max_id_offset: RADAR_ID_MULTIPLIER - 1,
             spokes_per_revolution,
             last_angle: 0,
             revolution_count: 0,
             stats: TrackerStats::default(),
-            tracking_mode,
         }
     }
 
     /// Create a new tracker for per-radar mode
     pub fn new_per_radar(radar_index: usize, spokes_per_revolution: u16) -> Self {
-        Self::new_per_radar_with_mode(radar_index, spokes_per_revolution, TrackingMode::Kalman)
-    }
-
-    /// Create a new tracker for per-radar mode with specific tracking mode
-    pub fn new_per_radar_with_mode(
-        radar_index: usize,
-        spokes_per_revolution: u16,
-        tracking_mode: TrackingMode,
-    ) -> Self {
         TargetTracker {
             active_targets: HashMap::new(),
             next_id: 1,
-            id_prefix: format!("T{}", radar_index),
-            max_id: 99999,
+            id_base: (radar_index as u64) * RADAR_ID_MULTIPLIER,
+            max_id_offset: RADAR_ID_MULTIPLIER - 1,
             spokes_per_revolution,
             last_angle: 0,
             revolution_count: 0,
             stats: TrackerStats::default(),
-            tracking_mode,
         }
     }
 
-    /// Set the tracking mode
-    pub fn set_tracking_mode(&mut self, mode: TrackingMode) {
-        self.tracking_mode = mode;
-    }
-
     /// Generate next target ID
-    fn next_target_id(&mut self) -> String {
-        let id = if self.id_prefix == "T" {
-            format!("{}{:06}", self.id_prefix, self.next_id)
-        } else {
-            format!("{}{:05}", self.id_prefix, self.next_id)
-        };
+    fn next_target_id(&mut self) -> u64 {
+        let id = self.id_base + self.next_id;
 
         self.next_id += 1;
-        if self.next_id > self.max_id {
-            self.next_id = 0;
+        if self.next_id > self.max_id_offset {
+            self.next_id = 1;
         }
 
         id
@@ -408,21 +389,23 @@ impl TargetTracker {
 
     /// Check for timed out targets.
     /// Returns (deleted_ids, newly_lost_ids) - both as target IDs.
-    /// Marks targets as Lost if not seen for timeout period:
-    /// - Acquiring targets: 10 seconds
-    /// - Tracking targets: 20 seconds
-    /// - Stationary targets: 60 seconds (extended to handle temporary merging)
-    /// Removes targets after delete timeout (30s normal, 120s stationary).
-    pub fn check_timeouts(&mut self, current_time: u64) -> (Vec<String>, Vec<String>) {
+    /// Marks targets as Lost if not seen for N revolutions:
+    /// - Normal targets: 3 revolutions
+    /// - Stationary targets: 10 revolutions (extended to handle temporary merging)
+    /// Removes targets after delete timeout (30s normal, 120s stationary) - time-based.
+    pub fn check_timeouts(&mut self, current_time: u64) -> (Vec<u64>, Vec<u64>) {
         let mut deleted_ids = Vec::new();
         let mut lost_ids = Vec::new();
+        let current_revolution = self.revolution_count;
 
         // Check each active target
         for (id, target) in &mut self.active_targets {
             let elapsed = current_time.saturating_sub(target.last_update);
+            let revolutions_since_update =
+                current_revolution.saturating_sub(target.last_update_revolution);
             let is_stationary = target.is_stationary();
 
-            // Use extended delete timeout for stationary targets
+            // Deletion remains time-based
             let delete_timeout = if is_stationary {
                 STATIONARY_DELETE_TIMEOUT_MS
             } else {
@@ -430,8 +413,8 @@ impl TargetTracker {
             };
 
             if elapsed >= delete_timeout {
-                // Mark for deletion
-                deleted_ids.push(id.clone());
+                // Mark for deletion (time-based)
+                deleted_ids.push(*id);
                 log::info!(
                     "Target {} deleted after {}s without update{}",
                     id,
@@ -439,27 +422,21 @@ impl TargetTracker {
                     if is_stationary { " (stationary)" } else { "" }
                 );
             } else if target.status != TargetStatus::Lost {
-                // Use different timeout based on current status and motion
-                let lost_timeout = if is_stationary {
-                    // Stationary targets get extended timeout since they may
-                    // temporarily merge with passing targets
-                    STATIONARY_LOST_TIMEOUT_MS
+                // Lost detection is revolution-based
+                let lost_revolutions = if is_stationary {
+                    STATIONARY_LOST_REVOLUTION_COUNT
                 } else {
-                    match target.status {
-                        TargetStatus::Acquiring => ACQUIRING_LOST_TIMEOUT_MS,
-                        TargetStatus::Tracking => TRACKING_LOST_TIMEOUT_MS,
-                        TargetStatus::Lost => unreachable!(),
-                    }
+                    LOST_REVOLUTION_COUNT
                 };
 
-                if elapsed >= lost_timeout {
+                if revolutions_since_update >= lost_revolutions {
                     // Mark as lost (only add to lost_ids if status is changing)
                     target.status = TargetStatus::Lost;
-                    lost_ids.push(id.clone());
+                    lost_ids.push(*id);
                     log::info!(
-                        "Target {} marked as lost after {}s without update{}",
+                        "Target {} marked as lost after {} revolutions without update{}",
                         id,
-                        elapsed / 1000,
+                        revolutions_since_update,
                         if is_stationary { " (stationary)" } else { "" }
                     );
                 }
@@ -493,6 +470,8 @@ impl TargetTracker {
                     // Fall through to create new target if from guard zone
                 } else {
                     self.stats.active_matches += 1;
+                    // Update revolution count for lost detection
+                    target.set_last_update_revolution(self.revolution_count);
 
                     // If target transitioned from Acquiring to Tracking, report as Promoted
                     if was_acquiring && target.status == TargetStatus::Tracking {
@@ -537,30 +516,41 @@ impl TargetTracker {
 
     /// Try to match candidate against active targets
     /// Returns the ID of the closest matching target within threshold
-    fn match_active_target(&self, candidate: &TargetCandidate) -> Option<String> {
-        let mut best_match: Option<(&str, f64)> = None;
+    fn match_active_target(&self, candidate: &TargetCandidate) -> Option<u64> {
+        let mut best_match: Option<(u64, f64)> = None;
 
         for (id, target) in &self.active_targets {
             let predicted_pos = target.predict_position(candidate.time);
             let uncertainty = target.get_uncertainty();
             let distance = calculate_distance(&predicted_pos, &candidate.position);
 
-            // Use extended match distance for:
-            // 1. Fast targets (>5 m/s / ~10 knots) - they can maneuver more
-            // 2. Early tracking phases (low update count) - less certain of motion
-            // Based on radar_pi: doubles search radius for fast targets and low-status
-            let is_fast = target.sog.map(|s| s > FAST_TARGET_SPEED_MS).unwrap_or(false);
-            let is_early = target.update_count <= 2;
-            let max_dist = if is_fast || is_early {
-                MAX_MATCH_DISTANCE_FAST_M
-            } else {
-                MAX_MATCH_DISTANCE_M
-            };
+            // Calculate time since last update
+            let delta_time_s =
+                (candidate.time.saturating_sub(target.last_update)) as f64 / 1000.0;
 
-            // Match threshold is the smaller of:
-            // 1. 2x Kalman uncertainty (adapts to target behavior)
-            // 2. Maximum match distance (prevents conflating distant targets)
-            let threshold = (uncertainty * 2.0).min(max_dist);
+            // Physics-based max distance: how far could the target have moved?
+            // Use max_target_speed_ms from candidate (user-configured setting)
+            // Multiply by 1.5 to account for prediction error when target maneuvers
+            let speed_based_dist =
+                candidate.max_target_speed_ms * delta_time_s * MATCH_DISTANCE_SPEED_MULTIPLIER;
+
+            // Physics-based max distance: how far could a target at max_target_speed
+            // have moved in delta_time? The 1.5 multiplier accounts for:
+            // - Prediction error when target is maneuvering
+            // - Measurement noise in position estimates
+            let max_dist = speed_based_dist.max(MIN_MATCH_DISTANCE_M);
+
+            // Match threshold: physics-based max_dist determines how far a target
+            // could have moved at max_target_speed. This provides the primary constraint
+            // for matching - if a target is beyond max_dist, it's moving faster than
+            // the configured ArpaDetectMaxSpeed and shouldn't be matched.
+            //
+            // Note: Kalman uncertainty is NOT used to restrict matching because:
+            // 1. It can be artificially low in early tracking
+            // 2. Even converged, uncertainty reflects model fit, not physical limits
+            // Using min(uncertainty, max_dist) would incorrectly reject valid matches
+            // when the IMM model hasn't perfectly learned the target's motion.
+            let threshold = max_dist;
 
             log::debug!(
                 "Match check: target {} predicted ({:.6}, {:.6}), candidate ({:.6}, {:.6}), distance={:.1}m, threshold={:.1}m (max={:.0}m), uncertainty={:.1}m",
@@ -578,50 +568,50 @@ impl TargetTracker {
             if distance < threshold {
                 // Track only the closest match
                 if best_match.map_or(true, |(_, best_dist)| distance < best_dist) {
-                    best_match = Some((id.as_str(), distance));
+                    best_match = Some((*id, distance));
                 }
             }
         }
 
-        best_match.map(|(id, _)| id.to_string())
+        best_match.map(|(id, _)| id)
     }
 
     /// Create a new active target in Acquiring status
-    fn create_acquiring_target(&mut self, candidate: &TargetCandidate) -> String {
+    fn create_acquiring_target(&mut self, candidate: &TargetCandidate) -> u64 {
         let id = self.next_target_id();
-        let target = ActiveTarget::new(id.clone(), candidate, self.tracking_mode);
+        let mut target = ActiveTarget::new(id, candidate);
+        target.set_last_update_revolution(self.revolution_count);
 
         log::info!(
-            "Created acquiring target {} at ({:.6}, {:.6}), size={:.1}m, strategy={:?}",
+            "Created acquiring target {} at ({:.6}, {:.6}), size={:.1}m",
             id,
             candidate.position.lat(),
             candidate.position.lon(),
             candidate.size_meters,
-            self.tracking_mode
         );
 
-        self.active_targets.insert(id.clone(), target);
+        self.active_targets.insert(id, target);
         id
     }
 
     /// Directly add a target as active (for MARPA - manual acquisition)
     /// Returns the new target ID
-    pub fn add_active_target(&mut self, candidate: &TargetCandidate) -> String {
+    pub fn add_active_target(&mut self, candidate: &TargetCandidate) -> u64 {
         let id = self.next_target_id();
         // MARPA targets need larger initial uncertainty since user clicks are approximate
         // Position variance of 1250 gives ~100m uncertainty (2 * sqrt(1250 + 1250))
-        let target = ActiveTarget::new_with_uncertainty(id.clone(), candidate, 1250.0, self.tracking_mode);
+        let mut target = ActiveTarget::new_with_uncertainty(id, candidate, 1250.0);
+        target.set_last_update_revolution(self.revolution_count);
 
         log::info!(
-            "MARPA: Created active target {} at ({:.6}, {:.6}), size={:.1}m, strategy={:?}",
+            "MARPA: Created active target {} at ({:.6}, {:.6}), size={:.1}m",
             id,
             candidate.position.lat(),
             candidate.position.lon(),
             candidate.size_meters,
-            self.tracking_mode
         );
 
-        self.active_targets.insert(id.clone(), target);
+        self.active_targets.insert(id, target);
         id
     }
 
@@ -631,8 +621,8 @@ impl TargetTracker {
     }
 
     /// Get a specific active target by ID
-    pub fn get_target(&self, id: &str) -> Option<&ActiveTarget> {
-        self.active_targets.get(id)
+    pub fn get_target(&self, id: u64) -> Option<&ActiveTarget> {
+        self.active_targets.get(&id)
     }
 
     /// Get number of active targets (including those in Acquiring status)
@@ -683,6 +673,7 @@ mod tests {
             position: GeoPosition::new(lat, lon),
             size_meters: 30.0,
             radar_key: "test".to_string(),
+            radar_position: Some(GeoPosition::new(52.0, 4.0)),
             max_target_speed_ms: TEST_MAX_SPEED_MS,
             source,
         }
@@ -691,24 +682,27 @@ mod tests {
     #[test]
     fn test_target_id_generation_merged() {
         let mut tracker = TargetTracker::new_merged(2048);
-        assert_eq!(tracker.next_target_id(), "T000001");
-        assert_eq!(tracker.next_target_id(), "T000002");
+        // Merged mode: id_base=0, so IDs are 1, 2, ...
+        assert_eq!(tracker.next_target_id(), 1);
+        assert_eq!(tracker.next_target_id(), 2);
     }
 
     #[test]
     fn test_target_id_generation_per_radar() {
         let mut tracker = TargetTracker::new_per_radar(1, 2048);
-        assert_eq!(tracker.next_target_id(), "T100001");
-        assert_eq!(tracker.next_target_id(), "T100002");
+        // Per-radar mode: radar index 1 has id_base=RADAR_ID_MULTIPLIER
+        assert_eq!(tracker.next_target_id(), RADAR_ID_MULTIPLIER + 1);
+        assert_eq!(tracker.next_target_id(), RADAR_ID_MULTIPLIER + 2);
     }
 
     #[test]
     fn test_target_id_wrap() {
         let mut tracker = TargetTracker::new_merged(2048);
-        tracker.next_id = 999999;
-        assert_eq!(tracker.next_target_id(), "T999999");
-        assert_eq!(tracker.next_target_id(), "T000000");
-        assert_eq!(tracker.next_target_id(), "T000001");
+        tracker.next_id = RADAR_ID_MULTIPLIER - 1;
+        // Merged mode: max_id_offset=RADAR_ID_MULTIPLIER-1, wraps to 1
+        assert_eq!(tracker.next_target_id(), RADAR_ID_MULTIPLIER - 1);
+        assert_eq!(tracker.next_target_id(), 1); // Wraps to 1, not 0
+        assert_eq!(tracker.next_target_id(), 2);
     }
 
     #[test]
@@ -808,7 +802,13 @@ mod tests {
         tracker.process_candidate(candidate);
         assert_eq!(tracker.active_count(), 1);
 
-        // Check at 10 seconds - acquiring targets should become lost
+        // Simulate 3 revolutions passing without updates (LOST_REVOLUTION_COUNT = 3)
+        for i in 0..3 {
+            tracker.check_revolution(2000, 2000 + i * 3000);
+            tracker.check_revolution(100, 3000 + i * 3000);
+        }
+
+        // Check - acquiring targets should become lost after 3 revolutions
         let (deleted, lost) = tracker.check_timeouts(11_000);
         assert!(deleted.is_empty());
         assert_eq!(lost.len(), 1);
@@ -884,22 +884,28 @@ mod tests {
 
         assert_eq!(tracker.active_count(), 1);
 
-        // Check at 22 seconds (19s after last_update=3000) - should still be Tracking
-        let (deleted, lost) = tracker.check_timeouts(22_000);
+        // Simulate 2 revolutions - should still be Tracking (need 3 to become lost)
+        for i in 0..2 {
+            tracker.check_revolution(2000, 4000 + i * 3000);
+            tracker.check_revolution(100, 5000 + i * 3000);
+        }
+        let (deleted, lost) = tracker.check_timeouts(10_000);
         assert!(deleted.is_empty());
         assert!(lost.is_empty());
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Tracking);
 
-        // Check at 24 seconds (21s after last_update=3000) - should be Lost
-        let (deleted, lost) = tracker.check_timeouts(24_000);
+        // One more revolution (total 3) - should become Lost
+        tracker.check_revolution(2000, 10_000);
+        tracker.check_revolution(100, 11_000);
+        let (deleted, lost) = tracker.check_timeouts(12_000);
         assert!(deleted.is_empty());
         assert_eq!(lost.len(), 1);
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Lost);
 
         // Check again - should not re-report as lost
-        let (deleted, lost) = tracker.check_timeouts(28_000);
+        let (deleted, lost) = tracker.check_timeouts(15_000);
         assert!(deleted.is_empty());
         assert!(lost.is_empty());
     }
@@ -935,18 +941,22 @@ mod tests {
         let candidate2 = make_candidate(52.0001, 4.0, 3000);
         tracker.process_candidate(candidate2);
 
-        // Get the target's predicted position at 29000ms for reference
+        // Get the target's predicted position at 15000ms for reference
         let target = tracker.get_active_targets().next().unwrap();
-        let predicted = target.predict_position(29_000);
+        let predicted = target.predict_position(15_000);
 
-        // Mark as lost (28s = 25s after last_update at 3000)
-        let (_, lost) = tracker.check_timeouts(28_000);
+        // Simulate 3 revolutions to mark as lost
+        for i in 0..3 {
+            tracker.check_revolution(2000, 4000 + i * 3000);
+            tracker.check_revolution(100, 5000 + i * 3000);
+        }
+        let (_, lost) = tracker.check_timeouts(14_000);
         assert_eq!(lost.len(), 1);
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Lost);
 
         // Target is seen again at the predicted position - should recover
-        let candidate3 = make_candidate(predicted.lat(), predicted.lon(), 29_000);
+        let candidate3 = make_candidate(predicted.lat(), predicted.lon(), 15_000);
         tracker.process_candidate(candidate3);
 
         let target = tracker.get_active_targets().next().unwrap();
@@ -971,23 +981,30 @@ mod tests {
         assert!(target.sog.unwrap() < 0.5, "SOG should be near zero: {:?}", target.sog);
         assert!(target.update_count >= 5);
 
-        // Last update was at 15000ms
-        // At 35000ms (20s after last update) - normal target would be lost
-        // But stationary target has 60s timeout, so should still be tracking
+        // Simulate 5 revolutions - normal target would be lost after 3
+        // But stationary target has 10 revolution timeout, so should still be tracking
+        for i in 0..5 {
+            tracker.check_revolution(2000, 16_000 + i * 3000);
+            tracker.check_revolution(100, 17_000 + i * 3000);
+        }
         let (deleted, lost) = tracker.check_timeouts(35_000);
         assert!(deleted.is_empty());
         assert!(lost.is_empty());
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Tracking);
 
-        // At 76000ms (61s after last update at 15000) - should be lost
-        let (deleted, lost) = tracker.check_timeouts(76_000);
+        // Simulate 5 more revolutions (total 10) - should be lost
+        for i in 0..5 {
+            tracker.check_revolution(2000, 32_000 + i * 3000);
+            tracker.check_revolution(100, 33_000 + i * 3000);
+        }
+        let (deleted, lost) = tracker.check_timeouts(50_000);
         assert!(deleted.is_empty());
         assert_eq!(lost.len(), 1);
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Lost);
 
-        // At 136000ms (121s after last update) - should be deleted
+        // At 136000ms (121s after last update) - should be deleted (time-based)
         let (deleted, _lost) = tracker.check_timeouts(136_000);
         assert_eq!(deleted.len(), 1);
         assert_eq!(tracker.active_count(), 0);
@@ -1106,7 +1123,7 @@ mod tests {
         );
 
         // Verify target has reasonable speed estimate (should be close to 15 knots = 7.72 m/s)
-        let target = tracker.get_target(&target_id).unwrap();
+        let target = tracker.get_target(target_id).unwrap();
         let tracked_speed = target.sog.unwrap_or(0.0);
         assert!(
             (tracked_speed - speed_ms).abs() < 2.0,
@@ -1122,7 +1139,7 @@ mod tests {
         // for 2 full revolutions of the circle (not radar revolutions).
         // IMM should handle the constant turning better due to multiple motion models
 
-        let mut tracker = TargetTracker::new_merged_with_mode(2048, TrackingMode::Imm);
+        let mut tracker = TargetTracker::new_merged(2048);
 
         // Circle parameters (matching emulator world.rs)
         let radius_m = 250.0;
@@ -1222,7 +1239,7 @@ mod tests {
         );
 
         // Verify target has reasonable speed estimate
-        let target = tracker.get_target(&target_id).unwrap();
+        let target = tracker.get_target(target_id).unwrap();
         let tracked_speed = target.sog.unwrap_or(0.0);
         assert!(
             (tracked_speed - speed_ms).abs() < 3.0, // IMM may have slightly different estimates
@@ -1382,7 +1399,7 @@ mod tests {
         // Use add_active_target for MARPA (bypasses acquiring phase)
         let target_id = tracker.add_active_target(&candidate0);
 
-        let target = tracker.get_target(&target_id).unwrap();
+        let target = tracker.get_target(target_id).unwrap();
         assert!(target.is_manual, "MARPA target should be marked as manual");
         assert_eq!(
             target.status,
@@ -1456,7 +1473,211 @@ mod tests {
         );
 
         // Verify it's still marked as manual
-        let target = tracker.get_target(&target_id).unwrap();
+        let target = tracker.get_target(target_id).unwrap();
         assert!(target.is_manual, "Target should still be marked as manual");
+    }
+
+    /// Helper to make a candidate with specific max_target_speed_ms
+    fn make_candidate_with_speed(
+        lat: f64,
+        lon: f64,
+        time: u64,
+        max_speed_ms: f64,
+    ) -> TargetCandidate {
+        TargetCandidate {
+            time,
+            position: GeoPosition::new(lat, lon),
+            size_meters: 30.0,
+            radar_key: "test".to_string(),
+            radar_position: Some(GeoPosition::new(52.0, 4.0)),
+            max_target_speed_ms: max_speed_ms,
+            source: CandidateSource::GuardZone(1),
+        }
+    }
+
+    #[test]
+    fn test_fast_target_missed_with_normal_speed() {
+        // Test that 40-knot targets are eventually lost when using normal speed setting (25 knots)
+        // but successfully tracked when using medium (40 knots) or fast (50 knots) settings.
+        //
+        // The emulator has fast targets moving east at 40 knots (FAST_TARGET_SPEED_KNOTS).
+        // At 3-second radar revolution:
+        // - 40 kn target moves: 40 * 0.5144 * 3 = ~62m per revolution
+        // - Normal (25 kn) max_dist (established): 25 * 0.5144 * 3 * 1.5 = ~58m (misses 62m)
+        // - Medium (40 kn) max_dist: 40 * 0.5144 * 3 * 1.5 = ~93m (catches 62m)
+        // - Fast (50 kn) max_dist: 50 * 0.5144 * 3 * 1.5 = ~116m (catches 62m)
+        //
+        // During early tracking (update_count <= 2), physics-based matching is used with 2x
+        // multiplier, so all speed settings can initially acquire the target. After the target
+        // reaches established tracking (update_count > 2), the normal speed max_dist becomes
+        // limiting and the target is lost.
+
+        const KN_TO_MS: f64 = 0.5144;
+        const NORMAL_SPEED_MS: f64 = 25.0 * KN_TO_MS; // ~12.9 m/s
+        const MEDIUM_SPEED_MS: f64 = 40.0 * KN_TO_MS; // ~20.6 m/s
+        const FAST_SPEED_MS: f64 = 50.0 * KN_TO_MS; // ~25.7 m/s
+        const TARGET_SPEED_MS: f64 = 40.0 * KN_TO_MS; // Fast boat speed
+
+        let revolution_ms = 3000u64;
+        let num_revolutions = 15; // Need more revolutions to see misses after established tracking
+
+        // Starting position (300m north of radar)
+        let radar_lat = 52.0;
+        let start_lat = radar_lat + 300.0 / METERS_PER_DEGREE_LATITUDE;
+        let start_lon = 4.0;
+
+        // Distance traveled per revolution (eastward)
+        let distance_per_rev = TARGET_SPEED_MS * (revolution_ms as f64 / 1000.0);
+        let lon_per_rev = distance_per_rev / meters_per_degree_longitude(&start_lat);
+
+        // Test 1: Normal speed setting - should eventually MISS fast targets
+        // After initial acquisition (revs 0-2), the target becomes established and then
+        // the normal speed max_dist (58m) can't catch the 62m movements.
+        {
+            let mut tracker = TargetTracker::new_merged(2048);
+
+            let mut new_target_count = 0;
+            let mut miss_after_established = 0;
+
+            for rev in 0..num_revolutions {
+                let time = rev * revolution_ms;
+                let lon = start_lon + lon_per_rev * rev as f64;
+
+                let candidate =
+                    make_candidate_with_speed(start_lat, lon, time, NORMAL_SPEED_MS);
+                let result = tracker.process_candidate(candidate);
+
+                if matches!(result, ProcessResult::NewAcquiring(_)) {
+                    new_target_count += 1;
+                    // After revolution 3, the first target should be established
+                    // Any new targets after that indicate misses
+                    if rev >= 3 {
+                        miss_after_established += 1;
+                    }
+                }
+            }
+
+            // With normal speed setting (25 kn), fast 40-knot targets should be missed
+            // after they become established (update_count > 2). We expect misses to start
+            // around revolution 3-4.
+            assert!(
+                miss_after_established >= 3,
+                "Normal speed: Expected at least 3 misses after established tracking, got {} (total new targets: {}, active: {})",
+                miss_after_established,
+                new_target_count,
+                tracker.active_count()
+            );
+            println!(
+                "Normal speed: {} new targets, {} misses after established, {} active total",
+                new_target_count,
+                miss_after_established,
+                tracker.active_count()
+            );
+        }
+
+        // Test 2: Medium speed setting - should TRACK fast targets continuously
+        // Medium speed (40 kn) matches target speed (40 kn), so max_dist = 93m catches 62m moves
+        {
+            let mut tracker = TargetTracker::new_merged(2048);
+
+            let mut update_count = 0;
+            let mut promoted_id: Option<u64> = None;
+
+            for rev in 0..num_revolutions {
+                let time = rev * revolution_ms;
+                let lon = start_lon + lon_per_rev * rev as f64;
+
+                let candidate =
+                    make_candidate_with_speed(start_lat, lon, time, MEDIUM_SPEED_MS);
+                let result = tracker.process_candidate(candidate);
+
+                match result {
+                    ProcessResult::Promoted(id) => {
+                        promoted_id = Some(id);
+                    }
+                    ProcessResult::Updated(id) if promoted_id == Some(id) => {
+                        update_count += 1;
+                    }
+                    _ => {}
+                }
+            }
+
+            // With medium speed setting (40 kn), 40-knot targets should be tracked.
+            assert!(
+                promoted_id.is_some(),
+                "Medium speed: Expected target to be promoted to tracking"
+            );
+
+            // After promotion at rev 1, we should have updates for revs 2-14 (13 updates)
+            let expected_updates = num_revolutions - 2;
+            assert!(
+                update_count >= expected_updates - 1,
+                "Medium speed: Expected at least {} updates after promotion, got {}",
+                expected_updates - 1,
+                update_count
+            );
+            assert_eq!(
+                tracker.active_count(),
+                1,
+                "Medium speed: Should have exactly 1 target, got {}",
+                tracker.active_count()
+            );
+            println!(
+                "Medium speed: {} updates after promotion, {} active total",
+                update_count,
+                tracker.active_count()
+            );
+        }
+
+        // Test 3: Fast speed setting - should definitely TRACK fast targets continuously
+        // Fast speed (50 kn) exceeds target speed (40 kn), so max_dist = 116m easily catches 62m moves
+        {
+            let mut tracker = TargetTracker::new_merged(2048);
+
+            let mut update_count = 0;
+            let mut promoted_id: Option<u64> = None;
+
+            for rev in 0..num_revolutions {
+                let time = rev * revolution_ms;
+                let lon = start_lon + lon_per_rev * rev as f64;
+
+                let candidate =
+                    make_candidate_with_speed(start_lat, lon, time, FAST_SPEED_MS);
+                let result = tracker.process_candidate(candidate);
+
+                match result {
+                    ProcessResult::Promoted(id) => {
+                        promoted_id = Some(id);
+                    }
+                    ProcessResult::Updated(id) if promoted_id == Some(id) => {
+                        update_count += 1;
+                    }
+                    _ => {}
+                }
+            }
+
+            // With fast speed setting (50 kn), 40-knot targets should definitely be tracked
+            assert!(
+                promoted_id.is_some(),
+                "Fast speed: Expected target to be promoted to tracking"
+            );
+
+            let expected_updates = num_revolutions - 2;
+            assert_eq!(
+                update_count, expected_updates,
+                "Fast speed: Expected all {} updates after promotion, got {}",
+                expected_updates, update_count
+            );
+            assert_eq!(
+                tracker.active_count(),
+                1,
+                "Fast speed: Should have exactly 1 target"
+            );
+            println!(
+                "Fast speed: {} updates after promotion, {} active total",
+                update_count,
+                tracker.active_count()
+            );
+        }
     }
 }

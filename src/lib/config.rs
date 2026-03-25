@@ -53,8 +53,6 @@ pub struct Radar {
     // ARPA/Target tracking settings
     #[serde(default)]
     pub arpa_max_speed: i32, // 0 = Normal (25kn), 1 = Medium (40kn), 2 = Fast (50kn)
-    #[serde(default)]
-    pub arpa_tracking_strategy: i32, // 0 = Kalman, 1 = IMM
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -222,12 +220,6 @@ impl Persistence {
             modified = true;
         }
 
-        let arpa_tracking_strategy = radar_info.controls.arpa_tracking_strategy();
-        if radar.arpa_tracking_strategy != arpa_tracking_strategy {
-            radar.arpa_tracking_strategy = arpa_tracking_strategy;
-            modified = true;
-        }
-
         if modified {
             self.save();
         }
@@ -254,7 +246,6 @@ impl Persistence {
                 info.controls.set_guard_zone(&ControlId::GuardZone2, zone);
             }
             info.controls.set_arpa_max_speed(p.arpa_max_speed);
-            info.controls.set_arpa_tracking_strategy(p.arpa_tracking_strategy);
         }
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! This module provides the API types for representing tracked targets
 //! that are sent to the GUI via Signal K, as well as blob detection for
-//! identifying potential targets, and target tracking with Kalman filtering.
+//! identifying potential targets, and target tracking with IMM filtering.
 
 mod blob;
 mod kalman;
@@ -12,7 +12,7 @@ mod tracker;
 
 pub use blob::{BlobDetector, CompletedBlob, MAX_TARGET_SIZE_M, MIN_TARGET_SIZE_M};
 pub use manager::{BlobMessage, MarpaRequest, SpokeContext, TrackerCommand, TrackerManager};
-pub use motion::{MotionModel, TrackingMode, create_motion_model};
+pub use motion::{ImmMotionModel, MotionModel};
 pub use tracker::{ActiveTarget, CandidateSource, ProcessResult, TargetCandidate, TargetStatus, TargetTracker};
 
 use serde::Serialize;
@@ -45,7 +45,7 @@ pub fn meters_per_degree_longitude(lat: &f64) -> f64 {
 #[serde(rename_all = "camelCase")]
 pub struct ArpaTargetApi {
     /// Target ID (unique within radar)
-    pub id: usize,
+    pub id: u64,
     /// Current status: "tracking", "acquiring", or "lost"
     pub status: String,
     /// Target position relative to radar

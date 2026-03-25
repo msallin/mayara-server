@@ -111,6 +111,20 @@ pub fn create_emulator_radar(args: &Cli, radars: &SharedRadars, subsys: &Subsyst
             log::info!("Emulator: Set default guard zone 1 for ARPA testing");
         }
 
+        // Set guard zone 2 to catch fast eastbound targets (40 knots, 300m north)
+        // Covers northwest quadrant: 270° to 360° (west to north) to catch them as they appear
+        if info.controls.guard_zone(&ControlId::GuardZone2).is_none() {
+            let guard_zone = GuardZone {
+                start_angle: 270.0 * PI / 180.0,
+                end_angle: 360.0 * PI / 180.0,
+                start_distance: 200.0,
+                end_distance: 500.0,
+                enabled: true,
+            };
+            info.controls.set_guard_zone(&ControlId::GuardZone2, &guard_zone);
+            log::info!("Emulator: Set default guard zone 2 for fast target testing");
+        }
+
         radars.update(&mut info);
 
         // Start the report receiver (spoke generator)

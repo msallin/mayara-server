@@ -8,7 +8,6 @@ use std::f64::consts::PI;
 use tokio::sync::{broadcast, mpsc};
 
 use super::blob::CompletedBlob;
-use super::motion::TrackingMode;
 use super::tracker::{CandidateSource, ProcessResult, TargetCandidate, TargetTracker};
 use super::{ArpaTargetApi, TargetDangerApi, TargetMotionApi, TargetPositionApi};
 use crate::radar::GeoPosition;
@@ -78,8 +77,6 @@ pub struct MarpaRequest {
 pub enum TrackerCommand {
     /// MARPA request from user click
     Marpa(MarpaRequest),
-    /// Change tracking mode (Kalman or IMM)
-    SetTrackingMode(TrackingMode),
 }
 
 /// Manages target trackers for all radars
@@ -94,8 +91,6 @@ pub struct TrackerManager {
     radar_indices: HashMap<String, usize>,
     /// Next radar index
     next_radar_index: usize,
-    /// Current tracking mode (applied to new trackers)
-    tracking_mode: TrackingMode,
     /// Broadcast sender for GUI updates
     sk_client_tx: broadcast::Sender<SignalKDelta>,
     /// Command receiver for MARPA requests and control changes
@@ -120,7 +115,6 @@ impl TrackerManager {
             merge_mode,
             radar_indices: HashMap::new(),
             next_radar_index: 1,
-            tracking_mode: TrackingMode::Kalman, // Default, will be set from persisted settings
             sk_client_tx,
             command_rx,
         };
@@ -140,13 +134,13 @@ impl TrackerManager {
                 return tracker;
             }
             // Should not happen, but create if missing
-            self.shared_tracker = Some(TargetTracker::new_merged_with_mode(spokes_per_revolution, self.tracking_mode));
+            self.shared_tracker = Some(TargetTracker::new_merged(spokes_per_revolution));
             self.shared_tracker.as_mut().unwrap()
         } else {
             // Per-radar mode
             if !self.per_radar_trackers.contains_key(radar_key) {
                 let index = self.get_radar_index(radar_key);
-                let tracker = TargetTracker::new_per_radar_with_mode(index, spokes_per_revolution, self.tracking_mode);
+                let tracker = TargetTracker::new_per_radar(index, spokes_per_revolution);
                 self.per_radar_trackers
                     .insert(radar_key.to_string(), tracker);
             }
@@ -165,19 +159,6 @@ impl TrackerManager {
             log::info!("Assigned radar {} index {}", radar_key, index);
             index
         }
-    }
-
-    /// Update the tracking mode for all trackers
-    /// New targets will use this mode; existing targets are not affected
-    pub fn set_tracking_mode(&mut self, mode: TrackingMode) {
-        self.tracking_mode = mode;
-        if let Some(ref mut tracker) = self.shared_tracker {
-            tracker.set_tracking_mode(mode);
-        }
-        for tracker in self.per_radar_trackers.values_mut() {
-            tracker.set_tracking_mode(mode);
-        }
-        log::info!("Set tracking strategy to {:?}", mode);
     }
 
     /// Process a blob message
@@ -210,6 +191,7 @@ impl TrackerManager {
             position,
             size_meters: msg.blob.size_meters,
             radar_key: msg.radar_key.clone(),
+            radar_position,
             max_target_speed_ms: ctx.max_target_speed_ms,
             source,
         };
@@ -234,22 +216,14 @@ impl TrackerManager {
 
         // Broadcast target updates to GUI
         match result {
-            ProcessResult::Updated(ref target_id)
-            | ProcessResult::Promoted(ref target_id)
-            | ProcessResult::NewAcquiring(ref target_id) => {
+            ProcessResult::Updated(target_id)
+            | ProcessResult::Promoted(target_id)
+            | ProcessResult::NewAcquiring(target_id) => {
                 if let Some(target) = tracker.get_target(target_id) {
                     let target_api = active_target_to_api(target, radar_position.as_ref());
 
-                    // Parse numeric ID from string (e.g., "T000001" -> 1)
-                    let numeric_id: usize = target_id
-                        .chars()
-                        .filter(|c| c.is_ascii_digit())
-                        .collect::<String>()
-                        .parse()
-                        .unwrap_or(0);
-
                     let mut delta = SignalKDelta::new();
-                    delta.add_target_update(&msg.radar_key, numeric_id, Some(target_api));
+                    delta.add_target_update(&msg.radar_key, target_id, Some(target_api));
 
                     if let Err(e) = self.sk_client_tx.send(delta) {
                         log::trace!("Failed to broadcast target update: {}", e);
@@ -285,7 +259,7 @@ impl TrackerManager {
 
     /// Process a MARPA request (manual target acquisition from user click)
     /// MARPA targets are immediately added as active (no acquisition phase needed)
-    pub fn process_marpa(&mut self, request: MarpaRequest) -> String {
+    pub fn process_marpa(&mut self, request: MarpaRequest) -> u64 {
         log::info!(
             "MARPA acquisition at ({:.6}, {:.6}) for radar {}",
             request.position.lat(),
@@ -300,6 +274,7 @@ impl TrackerManager {
             position: request.position,
             size_meters: request.size_meters,
             radar_key: request.radar_key.clone(),
+            radar_position: request.radar_position,
             max_target_speed_ms: SpokeContext::max_speed_from_mode(2), // Fast mode for MARPA
             source: CandidateSource::GuardZone(0),                     // 0 = manual/MARPA
         };
@@ -311,18 +286,11 @@ impl TrackerManager {
         let target_id = tracker.add_active_target(&candidate);
 
         // Broadcast the new target
-        if let Some(target) = tracker.get_target(&target_id) {
+        if let Some(target) = tracker.get_target(target_id) {
             let target_api = active_target_to_api(target, request.radar_position.as_ref());
 
-            let numeric_id: usize = target_id
-                .chars()
-                .filter(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .unwrap_or(0);
-
             let mut delta = SignalKDelta::new();
-            delta.add_target_update(&request.radar_key, numeric_id, Some(target_api));
+            delta.add_target_update(&request.radar_key, target_id, Some(target_api));
 
             if let Err(e) = self.sk_client_tx.send(delta) {
                 log::trace!("Failed to broadcast MARPA target update: {}", e);
@@ -365,9 +333,6 @@ impl TrackerManager {
                         TrackerCommand::Marpa(request) => {
                             self.process_marpa(request);
                         }
-                        TrackerCommand::SetTrackingMode(mode) => {
-                            self.set_tracking_mode(mode);
-                        }
                     }
                 }
                 _ = tokio::time::sleep(Duration::from_millis(1000)) => {
@@ -390,8 +355,9 @@ impl TrackerManager {
             .unwrap_or(0);
 
         // Collect updates to broadcast (to avoid borrow issues)
-        let mut lost_updates: Vec<(String, ArpaTargetApi)> = Vec::new();
-        let mut deletions: Vec<(String, String)> = Vec::new(); // (target_id, radar_key)
+        // Format: (target_id, radar_key, api)
+        let mut lost_updates: Vec<(u64, String, ArpaTargetApi)> = Vec::new();
+        let mut deletions: Vec<(u64, String)> = Vec::new(); // (target_id, radar_key)
 
         if self.merge_mode {
             if let Some(ref mut tracker) = self.shared_tracker {
@@ -399,15 +365,21 @@ impl TrackerManager {
 
                 // Collect lost status updates
                 for id in &lost_ids {
-                    if let Some(target) = tracker.get_target(id) {
-                        let api = active_target_to_api(target, None);
-                        lost_updates.push((id.clone(), api));
+                    if let Some(target) = tracker.get_target(*id) {
+                        let radar_key = target.last_radar_key.clone();
+                        let api = active_target_to_api(target, target.last_radar_position.as_ref());
+                        lost_updates.push((*id, radar_key, api));
                     }
                 }
 
-                // Collect deletions
-                for id in deleted_ids {
-                    deletions.push((id, String::new()));
+                // Collect deletions - use last_radar_key for path
+                for id in &deleted_ids {
+                    if let Some(target) = tracker.get_target(*id) {
+                        deletions.push((*id, target.last_radar_key.clone()));
+                    } else {
+                        // Target already removed, use empty key (shouldn't happen)
+                        deletions.push((*id, String::new()));
+                    }
                 }
             }
         } else {
@@ -418,9 +390,9 @@ impl TrackerManager {
 
                     // Collect lost status updates
                     for id in &lost_ids {
-                        if let Some(target) = tracker.get_target(id) {
-                            let api = active_target_to_api(target, None);
-                            lost_updates.push((id.clone(), api));
+                        if let Some(target) = tracker.get_target(*id) {
+                            let api = active_target_to_api(target, target.last_radar_position.as_ref());
+                            lost_updates.push((*id, radar_key.clone(), api));
                         }
                     }
 
@@ -433,26 +405,19 @@ impl TrackerManager {
         }
 
         // Now broadcast outside the tracker borrow
-        for (target_id, api) in lost_updates {
-            self.broadcast_lost_update(&target_id, api);
+        for (target_id, radar_key, api) in lost_updates {
+            self.broadcast_lost_update(target_id, &radar_key, api);
         }
 
         for (target_id, radar_key) in deletions {
-            self.broadcast_deletion(&target_id, &radar_key);
+            self.broadcast_deletion(target_id, &radar_key);
         }
     }
 
     /// Broadcast a lost status update to SignalK
-    fn broadcast_lost_update(&self, target_id: &str, target_api: ArpaTargetApi) {
-        let numeric_id: usize = target_id
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .unwrap_or(0);
-
+    fn broadcast_lost_update(&self, target_id: u64, radar_key: &str, target_api: ArpaTargetApi) {
         let mut delta = SignalKDelta::new();
-        delta.add_target_update("", numeric_id, Some(target_api));
+        delta.add_target_update(radar_key, target_id, Some(target_api));
 
         if let Err(e) = self.sk_client_tx.send(delta) {
             log::trace!("Failed to broadcast lost status update: {}", e);
@@ -460,17 +425,9 @@ impl TrackerManager {
     }
 
     /// Broadcast a deletion (null target) to SignalK
-    fn broadcast_deletion(&self, target_id: &str, radar_key: &str) {
-        // Parse numeric ID from string (e.g., "T000001" -> 1)
-        let numeric_id: usize = target_id
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .unwrap_or(0);
-
+    fn broadcast_deletion(&self, target_id: u64, radar_key: &str) {
         let mut delta = SignalKDelta::new();
-        delta.add_target_update(radar_key, numeric_id, None);
+        delta.add_target_update(radar_key, target_id, None);
 
         if let Err(e) = self.sk_client_tx.send(delta) {
             log::trace!("Failed to broadcast target deletion: {}", e);
@@ -533,15 +490,6 @@ fn active_target_to_api(
         (0.0, 0)
     };
 
-    // Parse numeric ID from string (e.g., "T000001" -> 1)
-    let id: usize = target
-        .id
-        .chars()
-        .filter(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse()
-        .unwrap_or(0);
-
     // Use the target's actual status
     let status_str = target.status.as_str();
 
@@ -549,7 +497,7 @@ fn active_target_to_api(
     let danger = calculate_danger(target, radar_position);
 
     ArpaTargetApi {
-        id,
+        id: target.id,
         status: status_str.to_string(),
         position: TargetPositionApi {
             bearing,
@@ -804,11 +752,13 @@ mod tests {
         let max_speed = SpokeContext::max_speed_from_mode(0);
 
         // Create an active target directly
+        let radar_pos = GeoPosition::new(52.0, 4.0);
         let candidate = TargetCandidate {
             time: 1000,
             position: GeoPosition::new(52.001, 4.001),
             size_meters: 30.0,
             radar_key: "test".to_string(),
+            radar_position: Some(radar_pos),
             max_target_speed_ms: max_speed,
             source: CandidateSource::GuardZone(1),
         };
@@ -822,6 +772,7 @@ mod tests {
             position: GeoPosition::new(52.0011, 4.001),
             size_meters: 30.0,
             radar_key: "test".to_string(),
+            radar_position: Some(radar_pos),
             max_target_speed_ms: max_speed,
             source: CandidateSource::GuardZone(1),
         };
@@ -829,7 +780,6 @@ mod tests {
 
         // Get the target
         let target = tracker.get_active_targets().next().unwrap();
-        let radar_pos = GeoPosition::new(52.0, 4.0);
 
         let api = active_target_to_api(target, Some(&radar_pos));
 

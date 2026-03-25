@@ -91,7 +91,7 @@ impl SignalKDelta {
     pub fn add_target_update(
         &mut self,
         radar_id: &str,
-        target_id: usize,
+        target_id: u64,
         target: Option<ArpaTargetApi>,
     ) {
         let path = format!("radars.{}.targets.{}", radar_id, target_id);

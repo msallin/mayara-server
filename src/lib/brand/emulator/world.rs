@@ -25,6 +25,12 @@ const CIRCLING_RADIUS: f64 = 250.0; // meters (500m diameter / 2)
 const CIRCLING_CENTER_NORTH: f64 = 350.0; // meters (100m closest + 250m radius)
 const CIRCLING_SPEED_KNOTS: f64 = 15.0;
 
+// Fast eastbound targets: moving east at 40 knots, 300m north of boat
+const FAST_TARGET_SPEED_KNOTS: f64 = 40.0;
+const FAST_TARGET_DISTANCE_NORTH: f64 = 300.0; // meters
+const FAST_TARGET_SPACING: f64 = 400.0; // meters between targets
+const NUM_FAST_TARGETS: usize = 10;
+
 // Conversion constants
 const KNOTS_TO_MS: f64 = 1852.0 / 3600.0; // 1 knot = 1852m/h = 0.5144 m/s
 const DEG_TO_RAD: f64 = PI / 180.0;
@@ -186,6 +192,8 @@ pub struct EmulatorWorld {
     pub targets: Vec<Target>,
     /// Crossing targets (north-to-south boats)
     pub crossing_targets: Vec<Target>,
+    /// Fast eastbound targets (40 knots, 300m north)
+    pub fast_targets: Vec<Target>,
     /// Circling target (boat going in circles north of own ship)
     pub circling_target: CirclingTarget,
     /// Static buoys
@@ -267,10 +275,25 @@ impl EmulatorWorld {
         let circling_target =
             CirclingTarget::new(circling_center, CIRCLING_RADIUS, CIRCLING_SPEED_KNOTS);
 
+        // Create fast eastbound targets: 300m north of boat, moving east at 40 knots
+        // They start west of the boat and will appear from the northwest
+        let mut fast_targets = Vec::with_capacity(NUM_FAST_TARGETS);
+        let fast_base_pos =
+            initial_boat_pos.position_from_bearing(north_bearing, FAST_TARGET_DISTANCE_NORTH);
+
+        for i in 0..NUM_FAST_TARGETS {
+            // Offset West by i * FAST_TARGET_SPACING
+            let offset = i as f64 * FAST_TARGET_SPACING;
+            let target_pos = fast_base_pos.position_from_bearing(west_bearing, offset);
+            // Moving East at 40 knots
+            fast_targets.push(Target::new(target_pos, 90.0, FAST_TARGET_SPEED_KNOTS));
+        }
+
         EmulatorWorld {
             land,
             targets,
             crossing_targets,
+            fast_targets,
             circling_target,
             buoys,
         }
@@ -282,6 +305,9 @@ impl EmulatorWorld {
             target.update(elapsed_secs);
         }
         for target in &mut self.crossing_targets {
+            target.update(elapsed_secs);
+        }
+        for target in &mut self.fast_targets {
             target.update(elapsed_secs);
         }
         self.circling_target.update(elapsed_secs);
@@ -311,6 +337,15 @@ impl EmulatorWorld {
 
         // Check crossing targets
         for target in &self.crossing_targets {
+            let target_distance = distance_between(&point, &target.position);
+            if target_distance < TARGET_RADIUS {
+                let intensity = 15.0 - (target_distance / TARGET_RADIUS) * 5.0;
+                return intensity.max(13.0) as u8;
+            }
+        }
+
+        // Check fast eastbound targets
+        for target in &self.fast_targets {
             let target_distance = distance_between(&point, &target.position);
             if target_distance < TARGET_RADIUS {
                 let intensity = 15.0 - (target_distance / TARGET_RADIUS) * 5.0;

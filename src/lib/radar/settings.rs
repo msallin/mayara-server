@@ -91,10 +91,9 @@ pub enum ControlId {
     // Target tracking
     GuardZone1,
     GuardZone2,
-    ClearTargets,
     DopplerAutoTrack,
     ArpaDetectMaxSpeed,
-    ArpaTrackingStrategy,
+    ClearTargets,
 
     // Trails
     TargetTrails,
@@ -193,7 +192,6 @@ impl ControlId {
             ControlId::ShowAis
             | ControlId::DopplerAutoTrack
             | ControlId::ArpaDetectMaxSpeed
-            | ControlId::ArpaTrackingStrategy
             | ControlId::ClearTargets
             | ControlId::GuardZone1
             | ControlId::GuardZone2 => Category::Targets,
@@ -263,7 +261,6 @@ impl ControlId {
             ControlId::ArpaDetectMaxSpeed => {
                 "Maximum target speed: Normal (25kn), Medium (40kn), Fast (50kn)"
             }
-            ControlId::ArpaTrackingStrategy => "Target tracking algorithm: Kalman or IMM",
             ControlId::ClearTargets => "Clear all ARPA targets",
             ControlId::GuardZone1 => "First guard zone for target detection",
             ControlId::GuardZone2 => "Second guard zone for target detection",
@@ -331,7 +328,6 @@ impl ControlId {
             ControlId::DopplerMode => "Doppler mode",
             ControlId::DopplerAutoTrack => "Doppler Auto Track",
             ControlId::ArpaDetectMaxSpeed => "ARPA Max Speed",
-            ControlId::ArpaTrackingStrategy => "ARPA Tracking",
             ControlId::DopplerSpeedThreshold => "Doppler speed threshold",
             ControlId::DopplerTrailsOnly => "Doppler trails only",
             ControlId::FirmwareVersion => "Firmware version",
@@ -412,7 +408,6 @@ impl ControlId {
             ControlId::DopplerMode => ControlDestination::Command,
             ControlId::DopplerAutoTrack => ControlDestination::Target,
             ControlId::ArpaDetectMaxSpeed => ControlDestination::Target,
-            ControlId::ArpaTrackingStrategy => ControlDestination::Target,
             ControlId::DopplerSpeedThreshold => ControlDestination::Command,
             ControlId::TargetTrails => ControlDestination::Trail,
             ControlId::TrailsMotion => ControlDestination::Trail,
@@ -574,7 +569,6 @@ impl Controls {
 
             new_list(ControlId::ArpaDetectMaxSpeed, &["Normal", "Medium", "Fast"])
                 .build(&mut controls);
-            new_list(ControlId::ArpaTrackingStrategy, &["Kalman", "IMM"]).build(&mut controls);
 
             new_button(ControlId::ClearTargets).build(&mut controls);
         }
@@ -1373,24 +1367,9 @@ impl SharedControls {
             .unwrap_or(0)
     }
 
-    /// Returns the current ARPA tracking strategy: 0 = Kalman, 1 = IMM
-    pub fn arpa_tracking_strategy(&self) -> i32 {
-        self.get(&ControlId::ArpaTrackingStrategy)
-            .and_then(|c| c.value)
-            .map(|v| v as i32)
-            .unwrap_or(0)
-    }
-
     pub fn set_arpa_max_speed(&self, value: i32) {
         let mut locked = self.controls.write().unwrap();
         if let Some(control) = locked.controls.get_mut(&ControlId::ArpaDetectMaxSpeed) {
-            let _ = control.set(value as f64, None, None, None);
-        }
-    }
-
-    pub fn set_arpa_tracking_strategy(&self, value: i32) {
-        let mut locked = self.controls.write().unwrap();
-        if let Some(control) = locked.controls.get_mut(&ControlId::ArpaTrackingStrategy) {
             let _ = control.set(value as f64, None, None, None);
         }
     }
