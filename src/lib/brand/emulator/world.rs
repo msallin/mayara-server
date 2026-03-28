@@ -167,7 +167,8 @@ impl LandArea {
         }
     }
 
-    /// Check if a point is inside the land area
+    /// Check if a point is inside the land area (original geodesic method, unused)
+    #[allow(dead_code)]
     fn contains(&self, point: &GeoPosition) -> bool {
         // Calculate distance and bearing from center to point
         let (distance, bearing) = distance_and_bearing(&self.center, point);
@@ -182,6 +183,25 @@ impl LandArea {
         // Check if within the oblong bounds
         local_x.abs() <= self.half_width && local_y.abs() <= self.half_length
     }
+
+}
+
+/// Cached local coordinates for efficient per-spoke lookups
+pub struct LocalCache {
+    /// Meters per degree longitude at boat latitude
+    meters_per_degree_lon: f64,
+    /// Land center in local coords
+    land_center: (f64, f64),
+    /// Target positions in local coords
+    targets: Vec<(f64, f64)>,
+    /// Crossing target positions in local coords
+    crossing_targets: Vec<(f64, f64)>,
+    /// Fast target positions in local coords
+    fast_targets: Vec<(f64, f64)>,
+    /// Circling target position in local coords
+    circling_target: (f64, f64),
+    /// Buoy positions in local coords (with radius squared)
+    buoys: Vec<(f64, f64, f64)>,
 }
 
 /// The simulated world
@@ -198,6 +218,8 @@ pub struct EmulatorWorld {
     pub circling_target: CirclingTarget,
     /// Static buoys
     pub buoys: Vec<Buoy>,
+    /// Cached local coordinates (updated once per batch)
+    cache: Option<LocalCache>,
 }
 
 impl EmulatorWorld {
@@ -296,6 +318,7 @@ impl EmulatorWorld {
             fast_targets,
             circling_target,
             buoys,
+            cache: None,
         }
     }
 
@@ -311,69 +334,134 @@ impl EmulatorWorld {
             target.update(elapsed_secs);
         }
         self.circling_target.update(elapsed_secs);
+        // Invalidate cache when positions change
+        self.cache = None;
+    }
+
+    /// Update the local coordinate cache for the current boat position
+    /// Call once per spoke batch before generating spokes
+    pub fn update_cache(&mut self, boat_pos: &GeoPosition) {
+        const METERS_PER_DEGREE_LAT: f64 = 111_320.0;
+
+        let lat_rad = boat_pos.lat().to_radians();
+        let meters_per_degree_lon = METERS_PER_DEGREE_LAT * lat_rad.cos();
+
+        let to_local = |pos: &GeoPosition| -> (f64, f64) {
+            let delta_lat = pos.lat() - boat_pos.lat();
+            let delta_lon = pos.lon() - boat_pos.lon();
+            (
+                delta_lon * meters_per_degree_lon,
+                delta_lat * METERS_PER_DEGREE_LAT,
+            )
+        };
+
+        self.cache = Some(LocalCache {
+            meters_per_degree_lon,
+            land_center: to_local(&self.land.center),
+            targets: self.targets.iter().map(|t| to_local(&t.position)).collect(),
+            crossing_targets: self.crossing_targets.iter().map(|t| to_local(&t.position)).collect(),
+            fast_targets: self.fast_targets.iter().map(|t| to_local(&t.position)).collect(),
+            circling_target: to_local(&self.circling_target.position),
+            buoys: self.buoys.iter().map(|b| {
+                let (x, y) = to_local(&b.position);
+                (x, y, b.radius * b.radius)
+            }).collect(),
+        });
     }
 
     /// Get the radar return intensity at a given position
+    /// Uses cached local coordinates for efficiency
+    /// sin_b, cos_b are precomputed sin/cos of bearing
     /// Returns 0-15 intensity value (0 = no return, 15 = strongest)
-    pub fn get_intensity(&self, boat_pos: &GeoPosition, bearing_rad: f64, distance: f64) -> u8 {
-        // Calculate the world position at this bearing/distance from boat
-        let point = boat_pos.position_from_bearing(bearing_rad, distance);
+    #[inline]
+    pub fn get_intensity_fast(&self, sin_b: f64, cos_b: f64, distance: f64) -> u8 {
+        let cache = match &self.cache {
+            Some(c) => c,
+            None => return 0,
+        };
 
-        // Check land
-        if self.land.contains(&point) {
-            return 14; // Strong return for land
+        // Calculate point in local Cartesian coords (x=east, y=north)
+        let point_x = distance * sin_b;
+        let point_y = distance * cos_b;
+
+        // Check land using cached local coords
+        {
+            let dx = point_x - cache.land_center.0;
+            let dy = point_y - cache.land_center.1;
+            let cos_o = self.land.orientation_rad.cos();
+            let sin_o = self.land.orientation_rad.sin();
+            let local_x = dx * cos_o - dy * sin_o;
+            let local_y = dx * sin_o + dy * cos_o;
+            if local_x.abs() <= self.land.half_width && local_y.abs() <= self.land.half_length {
+                return 14;
+            }
         }
 
         // Check targets - they appear as point targets with some spread
-        const TARGET_RADIUS: f64 = 30.0; // meters - radar target size
-        for target in &self.targets {
-            let target_distance = distance_between(&point, &target.position);
-            if target_distance < TARGET_RADIUS {
-                // Intensity decreases with distance from target center
-                let intensity = 15.0 - (target_distance / TARGET_RADIUS) * 5.0;
+        const TARGET_RADIUS: f64 = 30.0;
+        const TARGET_RADIUS_SQ: f64 = TARGET_RADIUS * TARGET_RADIUS;
+
+        for &(tx, ty) in &cache.targets {
+            let dx = point_x - tx;
+            let dy = point_y - ty;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq < TARGET_RADIUS_SQ {
+                let intensity = 15.0 - (dist_sq.sqrt() / TARGET_RADIUS) * 5.0;
                 return intensity.max(13.0) as u8;
             }
         }
 
-        // Check crossing targets
-        for target in &self.crossing_targets {
-            let target_distance = distance_between(&point, &target.position);
-            if target_distance < TARGET_RADIUS {
-                let intensity = 15.0 - (target_distance / TARGET_RADIUS) * 5.0;
+        for &(tx, ty) in &cache.crossing_targets {
+            let dx = point_x - tx;
+            let dy = point_y - ty;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq < TARGET_RADIUS_SQ {
+                let intensity = 15.0 - (dist_sq.sqrt() / TARGET_RADIUS) * 5.0;
                 return intensity.max(13.0) as u8;
             }
         }
 
-        // Check fast eastbound targets
-        for target in &self.fast_targets {
-            let target_distance = distance_between(&point, &target.position);
-            if target_distance < TARGET_RADIUS {
-                let intensity = 15.0 - (target_distance / TARGET_RADIUS) * 5.0;
+        for &(tx, ty) in &cache.fast_targets {
+            let dx = point_x - tx;
+            let dy = point_y - ty;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq < TARGET_RADIUS_SQ {
+                let intensity = 15.0 - (dist_sq.sqrt() / TARGET_RADIUS) * 5.0;
                 return intensity.max(13.0) as u8;
             }
         }
 
-        // Check circling target
-        let circling_distance = distance_between(&point, &self.circling_target.position);
-        if circling_distance < TARGET_RADIUS {
-            let intensity = 15.0 - (circling_distance / TARGET_RADIUS) * 5.0;
-            return intensity.max(13.0) as u8;
+        {
+            let dx = point_x - cache.circling_target.0;
+            let dy = point_y - cache.circling_target.1;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq < TARGET_RADIUS_SQ {
+                let intensity = 15.0 - (dist_sq.sqrt() / TARGET_RADIUS) * 5.0;
+                return intensity.max(13.0) as u8;
+            }
         }
 
-        // Check buoys (smaller radar return)
-        for buoy in &self.buoys {
-            let buoy_distance = distance_between(&point, &buoy.position);
-            if buoy_distance < buoy.radius {
-                // Buoys give a moderate return
+        for &(bx, by, radius_sq) in &cache.buoys {
+            let dx = point_x - bx;
+            let dy = point_y - by;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq < radius_sq {
                 return 10;
             }
         }
 
-        0 // No return
+        0
+    }
+
+    /// Get the radar return intensity at a given position (legacy method)
+    #[allow(dead_code)]
+    pub fn get_intensity(&self, _boat_pos: &GeoPosition, bearing_rad: f64, distance: f64) -> u8 {
+        self.get_intensity_fast(bearing_rad.sin(), bearing_rad.cos(), distance)
     }
 }
 
 /// Calculate distance in meters between two positions
+#[allow(dead_code)]
 fn distance_between(from: &GeoPosition, to: &GeoPosition) -> f64 {
     const EARTH_RADIUS: f64 = 6_371_000.0; // meters
 

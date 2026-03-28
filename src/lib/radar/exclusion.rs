@@ -84,28 +84,76 @@ impl ExclusionMask {
         }
 
         // Build the mask for all rectangular zones
-        // For a rect, we check each (spoke, pixel) to see if the point falls inside
+        // For each spoke, compute the pixel range that intersects the rectangle
         let meters_per_pixel = range_meters as f64 / pixels as f64;
+
         for rect in rects {
             for spoke in 0..spokes {
                 // Angle for this spoke (0 = north, increasing clockwise)
                 let angle = (spoke as f64 / spokes as f64) * 2.0 * PI;
-                let sin_a = angle.sin();
-                let cos_a = angle.cos();
+                let sin_a = angle.sin(); // x component (east)
+                let cos_a = angle.cos(); // y component (north)
 
-                for pixel in 0..pixels {
-                    let distance = (pixel as f64 + 0.5) * meters_per_pixel;
-                    // x = east (positive), y = north (positive)
-                    let x = distance * sin_a;
-                    let y = distance * cos_a;
+                // Find where the ray intersects the rectangle boundaries
+                // Ray: x = d * sin_a, y = d * cos_a
+                // Rectangle: -west <= x <= east, -south <= y <= north
 
-                    // Check if point is inside rectangle
-                    // north/south/east/west are all positive offsets from radar
-                    if y <= rect.north && y >= -rect.south && x <= rect.east && x >= -rect.west {
-                        let byte_idx = pixel / 8;
-                        let bit = pixel % 8;
-                        mask[spoke as usize][byte_idx] |= 1 << bit;
+                // Compute distances to each boundary (if ray hits it)
+                let mut d_min = 0.0_f64;
+                let mut d_max = f64::INFINITY;
+
+                // X boundaries (east/west)
+                if sin_a.abs() > 1e-10 {
+                    let d_east = rect.east / sin_a;
+                    let d_west = -rect.west / sin_a;
+                    let (d_enter, d_exit) = if sin_a > 0.0 {
+                        (d_west, d_east)
+                    } else {
+                        (d_east, d_west)
+                    };
+                    d_min = d_min.max(d_enter);
+                    d_max = d_max.min(d_exit);
+                } else {
+                    // Ray is vertical (north/south) - check if within east/west bounds
+                    // At d=0, x=0 which is within [-west, east] if west >= 0 and east >= 0
+                    if rect.west < 0.0 || rect.east < 0.0 {
+                        continue; // No intersection
                     }
+                }
+
+                // Y boundaries (north/south)
+                if cos_a.abs() > 1e-10 {
+                    let d_north = rect.north / cos_a;
+                    let d_south = -rect.south / cos_a;
+                    let (d_enter, d_exit) = if cos_a > 0.0 {
+                        (d_south, d_north)
+                    } else {
+                        (d_north, d_south)
+                    };
+                    d_min = d_min.max(d_enter);
+                    d_max = d_max.min(d_exit);
+                } else {
+                    // Ray is horizontal (east/west) - check if within north/south bounds
+                    if rect.north < 0.0 || rect.south < 0.0 {
+                        continue; // No intersection
+                    }
+                }
+
+                // Check if there's a valid intersection
+                if d_max <= d_min || d_max <= 0.0 {
+                    continue;
+                }
+                d_min = d_min.max(0.0);
+
+                // Convert distances to pixel indices
+                let start_pixel = (d_min / meters_per_pixel) as usize;
+                let end_pixel = ((d_max / meters_per_pixel) as usize).min(pixels.saturating_sub(1));
+
+                // Set bits for all pixels in range
+                for pixel in start_pixel..=end_pixel {
+                    let byte_idx = pixel / 8;
+                    let bit = pixel % 8;
+                    mask[spoke as usize][byte_idx] |= 1 << bit;
                 }
             }
         }

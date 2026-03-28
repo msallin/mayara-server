@@ -215,6 +215,9 @@ impl EmulatorReportReceiver {
     fn generate_spoke_batch(&mut self) {
         self.common.new_spoke_message();
 
+        // Update the world's local coordinate cache once per batch
+        self.world.update_cache(&self.boat_position);
+
         for _ in 0..SPOKES_PER_BATCH {
             let spoke_data = self.generate_spoke(self.current_spoke);
 
@@ -250,6 +253,10 @@ impl EmulatorReportReceiver {
         let spoke_angle_deg = (spoke_angle as f64 / EMULATOR_SPOKES as f64) * 360.0;
         let world_bearing_rad = (self.boat_heading + spoke_angle_deg) * DEG_TO_RAD;
 
+        // Precompute sin/cos for this spoke (used for all pixels)
+        let sin_b = world_bearing_rad.sin();
+        let cos_b = world_bearing_rad.cos();
+
         // Spokes are 1.5x the range setting
         let spoke_range = self.current_range as f64 * 1.5;
         let meters_per_pixel = spoke_range / EMULATOR_SPOKE_LEN as f64;
@@ -259,9 +266,7 @@ impl EmulatorReportReceiver {
 
         for pixel in 0..EMULATOR_SPOKE_LEN {
             let distance = pixel as f64 * meters_per_pixel;
-            let intensity =
-                self.world
-                    .get_intensity(&self.boat_position, world_bearing_rad, distance);
+            let intensity = self.world.get_intensity_fast(sin_b, cos_b, distance);
             data.push(intensity & 0x0f);
         }
 
