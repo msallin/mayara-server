@@ -12,10 +12,11 @@
 #   make run      - Build and run server
 #   make run-dev  - Build and run dev server (live GUI reload)
 #   make mpi      - Build for linux and deploy and run on merrimac-pi
+#   make docker   - Build the Docker image
 #   make demo     - Rebuild the docker demo image
 #   make clean    - Clean build artifacts
 
-.PHONY: all release debug dev docs run run-dev clean test demo
+.PHONY: all release debug dev docs run run-dev clean test docker demo
 
 # Default: build release with embedded docs
 all: release
@@ -86,6 +87,10 @@ run-dev: dev
 # Run tests
 test:
 	cargo test 
+
+# Docker image
+docker:
+	docker buildx build -t ghcr.io/marineyachtradar/mayara-server:latest .
 
 # Docker demo
 demo:

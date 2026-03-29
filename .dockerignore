@@ -1,0 +1,16 @@
+target/
+demo/
+.git/
+.github/
+.claude/
+docs/
+research/
+test/
+tests/
+*.md
+.DS_Store
+.gitignore
+.env*
+Dockerfile*
+docker-compose.yml
+Makefile

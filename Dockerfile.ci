@@ -1,0 +1,13 @@
+FROM alpine:3.21
+LABEL org.opencontainers.image.source="https://github.com/MarineYachtRadar/mayara-server"
+LABEL org.opencontainers.image.title="mayara-server"
+LABEL org.opencontainers.image.description="Marine radar server with REST API and WebSocket support"
+LABEL org.opencontainers.image.license="Apache-2.0"
+ARG TARGETARCH
+RUN apk add --no-cache tini \
+    && adduser -D -h /home/mayara mayara
+COPY build/linux/${TARGETARCH}/mayara-server /usr/local/bin/mayara-server
+USER mayara
+EXPOSE 6502
+ENTRYPOINT ["tini", "--"]
+CMD ["mayara-server"]

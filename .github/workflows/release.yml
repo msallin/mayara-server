@@ -18,14 +18,10 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: ${{ matrix.target }}
-        override: true
+      uses: dtolnay/rust-toolchain@stable
 
     - name: Install Cross
       run: cargo install cross
@@ -40,7 +36,7 @@ jobs:
         mv mayara-server-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ../../../
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: mayara-server-${{ matrix.target }}
         path: mayara-server-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
@@ -50,7 +46,7 @@ jobs:
     runs-on: windows-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Build
       run: cargo build --release
@@ -59,7 +55,7 @@ jobs:
       run: Compress-Archive -Path target/release/mayara-server.exe -DestinationPath mayara-server-${{ github.ref_name }}-x86_64-pc-windows.zip
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: mayara-server-windows
         path: mayara-server-${{ github.ref_name }}-x86_64-pc-windows.zip
@@ -73,7 +69,7 @@ jobs:
 
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         path: artifacts
 
@@ -88,3 +84,11 @@ jobs:
           artifacts/mayara-server-x86_64-unknown-linux-musl/*.tar.gz
           artifacts/mayara-server-aarch64-unknown-linux-musl/*.tar.gz
           artifacts/mayara-server-windows/*.zip
+
+  docker:
+    name: Publish Docker Image
+    needs: release
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write

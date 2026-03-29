@@ -1,0 +1,48 @@
+services:
+  # Emulator mode: works out of the box, no radar hardware needed
+  mayara-server:
+    build: .
+    image: ghcr.io/marineyachtradar/mayara-server:latest
+    command: ["mayara-server", "--emulator"]
+    ports:
+      - "6502:6502"
+    tmpfs:
+      - /home/mayara/.config/mayara
+      - /tmp
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  # Example: real radar with persistent config
+  # mayara-radar:
+  #   image: ghcr.io/marineyachtradar/mayara-server:latest
+  #   network_mode: host
+  #   command: ["mayara-server", "--brand", "navico", "--interface", "eth0"]
+  #   user: "1000:1000"
+  #   volumes:
+  #     - /srv/mayaraserver-data:/home/mayara/.config/mayara:rw
+  #   tmpfs:
+  #     - /tmp
+  #   read_only: true
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   cap_drop:
+  #     - ALL
+  #   restart: unless-stopped
+
+  # Example: shore-based radar with fixed position
+  # mayara-stationary:
+  #   image: ghcr.io/marineyachtradar/mayara-server:latest
+  #   network_mode: host
+  #   command: ["mayara-server", "--stationary", "--static-position", "52.3676", "4.9041", "45.0"]
+  #   tmpfs:
+  #     - /tmp
+  #   read_only: true
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   cap_drop:
+  #     - ALL
+  #   restart: unless-stopped

@@ -13,6 +13,37 @@ Changing the radar settings is possible, a [JSON Schema](https://json-schema.org
 
 See [USAGE.md](USAGE.md) for command line options and examples.
 
+## Docker
+
+Pre-built images for `amd64` and `arm64` are available on GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/marineyachtradar/mayara-server:latest
+```
+
+Run with the built-in emulator:
+
+```bash
+docker run -p 6502:6502 ghcr.io/marineyachtradar/mayara-server:latest mayara-server --emulator
+```
+
+Run with a real radar (Linux, requires host networking for multicast):
+
+```bash
+docker run --net=host ghcr.io/marineyachtradar/mayara-server:latest \
+    mayara-server --brand navico --interface eth0
+```
+
+Or use Docker Compose (starts the emulator by default):
+
+```bash
+docker compose up
+```
+
+See `docker-compose.yml` for example configurations including real radar and shore-based setups.
+
+> **Note:** Real radar discovery relies on multicast/broadcast traffic. On Linux, use `--net=host` (or `network_mode: host` in Compose) to give the container direct network access. The emulator works fine with regular bridge networking.
+
 ## Building from Source
 
 See [BUILDING.md](BUILDING.md) for instructions on installing Rust and building on Windows, Linux, and macOS.

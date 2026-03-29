@@ -20,13 +20,9 @@ jobs:
     steps:
 
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: ${{ matrix.target }}
-        override: true
+      uses: dtolnay/rust-toolchain@stable
 
     - name: Install Cross
       run: cargo install cross
@@ -35,7 +31,7 @@ jobs:
       run: cross build --release --target ${{ matrix.target }}
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: mayara-server for ${{ matrix.target }}
         path: target/${{ matrix.target }}/release/mayara-server*
@@ -43,13 +39,13 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - name: Build
       run: cargo build --release
     - name: Run tests
       run: cargo test --release --verbose
     - name: Upload artifacts
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: Mayara Windows x86_64
         path: target/release/mayara-server.exe
