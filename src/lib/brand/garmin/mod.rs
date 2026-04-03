@@ -289,6 +289,7 @@ impl GarminLocator {
                 radar_send,
                 |id, tx| settings::new(id, tx, &self.args, detected_type),
                 false, // No Doppler support
+                false,
             );
 
             radar_info

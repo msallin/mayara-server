@@ -312,6 +312,7 @@ impl RaymarineLocator {
                         radar_send.into(),
                         |id, tx| settings::new(id, tx, &self.args, info.model),
                         doppler,
+                        false,
                     );
 
                     return Ok(Some(location_info));

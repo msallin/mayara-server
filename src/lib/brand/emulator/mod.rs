@@ -92,7 +92,8 @@ pub fn create_emulator_radar(args: &Cli, radars: &SharedRadars, subsys: &Subsyst
         fake_addr, // report_addr (unused)
         fake_addr, // send_command_addr (unused)
         |id, tx| settings::new(id, tx, args),
-        true, // doppler (like HALO)
+        true,  // doppler (like HALO)
+        false, // sparse_spokes
     );
 
     if let Some(mut info) = radars.add(info) {

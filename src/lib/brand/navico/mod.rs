@@ -319,6 +319,7 @@ impl NavicoLocator {
                             radar_send.into(),
                             |id, tx| settings::new(id, tx, &self.args, None),
                             true,
+                            false,
                         );
                         self.found(location_info, radars, subsys);
 
@@ -341,6 +342,7 @@ impl NavicoLocator {
                             radar_send.into(),
                             |id, tx| settings::new(id, tx, &self.args, None),
                             true,
+                            false,
                         );
                         self.found(location_info, radars, subsys);
                     }
@@ -386,6 +388,7 @@ impl NavicoLocator {
                             radar_send.into(),
                             |id, tx| settings::new(id, tx, &self.args, None),
                             false,
+                            false,
                         );
                         self.found(location_info, radars, subsys);
                     }
@@ -426,6 +429,7 @@ impl NavicoLocator {
                             radar_report.into(),
                             radar_send.into(),
                             |id, tx| settings::new(id, tx, &self.args, Some(BR24_MODEL_NAME)),
+                            false,
                             false,
                         );
                         self.found(location_info, radars, subsys);

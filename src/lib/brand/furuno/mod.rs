@@ -408,6 +408,7 @@ impl FurunoLocator {
                     send_command_addr,
                     |id, tx| settings::new(id, tx, &self.args),
                     true,
+                    true,
                 );
 
                 radar_info.controls.set_model_name(model.to_string());

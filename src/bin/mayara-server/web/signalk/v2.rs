@@ -316,18 +316,27 @@ async fn get_interfaces(
     "maxSpokeLength": 1024,
     "pixelValues": 16,
     "legend": {
-        "dopplerApproaching": 18,
-        "dopplerReceding": 19,
-        "historyStart": 20,
+        "dopplerApproaching": 5,
+        "dopplerReceding": 6,
+        "historyStart": 7,
         "lowReturn": 1,
-        "mediumReturn": 8,
-        "strongReturn": 13,
-        "targetBorder": 17,
-        "pixelColors": 16
+        "mediumReturn": 2,
+        "strongReturn": 3,
+        "pixelColors": 4,
+        "pixels": [
+            { "color": "#00000000", "type": "normal"},
+            { "color": "#0000ffff", "type": "normal"},
+            { "color": "#00ff00ff", "type": "normal"},
+            { "color": "#ff0000ff", "type": "normal"},
+            { "color": "#ff00ffff", "type": "dopplerApproaching" },
+            { "color": "#00ff00ff", "type": "dopplerReceding" },
+            { "color": "#ffffffff", "type": "history" },
+        ]
     },
     "hasDoppler": true,
     "hasDualRange": true,
     "hasDualRadar": false,
+    "hasSparseSpokes": false,
     "noTransmitSectors": 2,
     "stationary": false,
     "controls": {}
@@ -362,6 +371,9 @@ struct Capabilities {
     /// Whether this is part of a dual-radar system
     #[schema(example = false)]
     has_dual_radar: bool,
+    /// Whether this radar produces fewer spokes than spokes_per_revolution indicates
+    #[schema(example = false)]
+    has_sparse_spokes: bool,
     /// Number of configurable no-transmit sectors
     #[schema(example = 2)]
     no_transmit_sectors: u8,
@@ -390,6 +402,7 @@ impl Capabilities {
             has_doppler: info.doppler,
             has_dual_range: info.dual_range,
             has_dual_radar: info.dual.is_some(),
+            has_sparse_spokes: info.sparse_spokes,
             no_transmit_sectors: controls
                 .iter()
                 .filter(|(ctype, _)| {
@@ -661,7 +674,11 @@ async fn acquire_target(
     State(state): State<Web>,
     extract::Json(request): extract::Json<AcquireTargetRequest>,
 ) -> Response {
-    log::info!("MARPA acquire_target request for radar {}: {:?}", radar_id, request);
+    log::info!(
+        "MARPA acquire_target request for radar {}: {:?}",
+        radar_id,
+        request
+    );
 
     // Verify radar exists
     let radar = match state.radars.get_by_key(&radar_id) {
@@ -682,7 +699,12 @@ async fn acquire_target(
     };
 
     // Compute target position from either lat/lon or bearing/distance
-    let position = match (request.latitude, request.longitude, request.bearing, request.distance) {
+    let position = match (
+        request.latitude,
+        request.longitude,
+        request.bearing,
+        request.distance,
+    ) {
         (Some(lat), Some(lon), _, _) => {
             // Direct lat/lon provided
             GeoPosition::new(lat, lon)
@@ -769,10 +791,7 @@ struct TargetsResponse {
     ),
     tag = "Targets"
 )]
-async fn get_targets(
-    Path(radar_id): Path<String>,
-    State(state): State<Web>,
-) -> Response {
+async fn get_targets(Path(radar_id): Path<String>, State(state): State<Web>) -> Response {
     log::debug!("Get targets for radar {}", radar_id);
 
     // Verify radar exists

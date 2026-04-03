@@ -294,6 +294,7 @@ pub struct RadarInfo {
     pub(crate) range_detection: Option<RangeDetection>, // if Some, then ranges are flexible, detected and persisted
     pub doppler: bool,                                  // Does it support Doppler?
     pub dual_range: bool,                               // Is it dual range capable?
+    pub sparse_spokes: bool,                            // Does it produce fewer spokes than spokes_per_revolution?
     pub stationary: bool,                               // Is radar stationary (shore-based)?
     rotation_timestamp: Instant,
 
@@ -318,6 +319,7 @@ impl RadarInfo {
         send_command_addr: SocketAddrV4,
         controls_fn: F,
         doppler: bool,
+        sparse_spokes: bool,
     ) -> Self
     where
         F: FnOnce(String, tokio::sync::broadcast::Sender<SignalKDelta>) -> SharedControls,
@@ -369,6 +371,7 @@ impl RadarInfo {
             controls,
             doppler,
             dual_range: false,
+            sparse_spokes,
             stationary: args.stationary,
             rotation_timestamp: Instant::now() - Duration::from_secs(2),
         };
