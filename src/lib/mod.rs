@@ -241,11 +241,13 @@ struct RadarInterfaceApi {
     listeners: Option<HashMap<Brand, String>>,
 }
 
-/// Network interface identifier (e.g., "en0", "eth0")
-#[derive(Clone, Eq, PartialEq, Hash, ToSchema)]
-#[schema(as = String, example = "en0")]
+/// Network interface identifier (e.g., "eth0 (192.168.1.100)")
+///
+/// Serialized as a string: "name (ip)" when IP is present, or just "name" when not.
+#[derive(Clone, Eq, PartialEq, Hash)]
 struct InterfaceId {
     name: String,
+    ip: Option<Ipv4Addr>,
 }
 
 /// API response containing network interface information for radar detection
@@ -253,8 +255,8 @@ struct InterfaceId {
 #[schema(example = json!({
     "brands": ["Navico", "Furuno"],
     "interfaces": {
-        "en0": {
-            "status": "up",
+        "en0 (192.168.1.100)": {
+            "status": "Ok",
             "ip": "192.168.1.100",
             "netmask": "255.255.255.0",
             "listeners": {
@@ -263,7 +265,7 @@ struct InterfaceId {
             }
         },
         "en1": {
-            "status": "Wireless ignored"
+            "status": "WirelessIgnored"
         }
     }
 }))]
@@ -293,9 +295,10 @@ impl RadarInterfaceApi {
 }
 
 impl InterfaceId {
-    fn new(name: &str) -> Self {
+    fn new(name: &str, ip: Option<Ipv4Addr>) -> Self {
         Self {
             name: name.to_owned(),
+            ip,
         }
     }
 }
@@ -305,7 +308,10 @@ impl Serialize for InterfaceId {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.name.as_str())
+        match &self.ip {
+            Some(ip) => serializer.serialize_str(&format!("{} ({})", self.name, ip)),
+            None => serializer.serialize_str(self.name.as_str()),
+        }
     }
 }
 
