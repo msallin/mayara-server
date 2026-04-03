@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use serde::{Deserialize, Deserializer, Serialize, de::Visitor, ser::Serializer};
@@ -1677,6 +1678,9 @@ pub struct ControlValue {
     pub y2: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<f64>,
+    /// Timestamp when the control value was last changed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_changed: Option<DateTime<Utc>>,
 }
 
 impl ControlValue {
@@ -1698,6 +1702,7 @@ impl ControlValue {
             x2: None,
             y2: None,
             width: None,
+            last_changed: None,
         }
     }
 
@@ -1719,6 +1724,7 @@ impl ControlValue {
             x2: b.x2,
             y2: b.y2,
             width: b.width,
+            last_changed: b.last_changed,
         }
     }
 
@@ -1740,6 +1746,7 @@ impl ControlValue {
             x2: control.x2,
             y2: control.y2,
             width: control.width,
+            last_changed: control.last_changed,
         }
     }
 
@@ -1882,6 +1889,10 @@ pub struct RadarControlValue {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = 50.0)]
     pub width: Option<f64>,
+    /// Timestamp when the control value was last changed (ISO 8601 format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2025-01-15T10:30:00Z")]
+    pub last_changed: Option<DateTime<Utc>>,
 }
 
 impl RadarControlValue {
@@ -1905,6 +1916,7 @@ impl RadarControlValue {
             x2: control.x2,
             y2: control.y2,
             width: control.width,
+            last_changed: control.last_changed,
         }
     }
 
@@ -1944,6 +1956,7 @@ impl From<RadarControlValue> for ControlValue {
             x2: rcv.x2,
             y2: rcv.y2,
             width: rcv.width,
+            last_changed: rcv.last_changed,
         }
     }
 }
@@ -2025,6 +2038,10 @@ pub struct BareControlValue {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = 50.0)]
     pub width: Option<f64>,
+    /// Timestamp when the control value was last changed (ISO 8601 format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "2025-01-15T10:30:00Z")]
+    pub last_changed: Option<DateTime<Utc>>,
 }
 
 impl BareControlValue {
@@ -2045,6 +2062,7 @@ impl BareControlValue {
             x2: None,
             y2: None,
             width: None,
+            last_changed: None,
         }
     }
 }
@@ -2066,6 +2084,7 @@ impl From<RadarControlValue> for BareControlValue {
             x2: rcv.x2,
             y2: rcv.y2,
             width: rcv.width,
+            last_changed: rcv.last_changed,
         }
     }
 }
@@ -2088,6 +2107,7 @@ impl From<ControlValue> for BareControlValue {
             x2: cv.x2,
             y2: cv.y2,
             width: cv.width,
+            last_changed: cv.last_changed,
         }
     }
 }
@@ -2492,6 +2512,9 @@ pub struct Control {
     pub y2: Option<f64>,
     #[serde(skip)]
     pub width: Option<f64>,
+    /// Timestamp when the control value was last changed
+    #[serde(skip)]
+    pub last_changed: Option<DateTime<Utc>>,
 }
 
 impl Control {
@@ -2514,6 +2537,7 @@ impl Control {
             x2: None,
             y2: None,
             width: None,
+            last_changed: None,
         }
     }
 
@@ -2765,6 +2789,7 @@ impl Control {
             self.auto = auto;
             self.enabled = enabled;
             self.needs_refresh = false;
+            self.last_changed = Some(Utc::now());
 
             Ok(Some(()))
         } else if self.needs_refresh || self.item.is_send_always {
@@ -2867,6 +2892,7 @@ impl Control {
             self.end_value = Some(end);
             self.enabled = enabled;
             self.needs_refresh = false;
+            self.last_changed = Some(Utc::now());
 
             Ok(Some(()))
         } else if self.needs_refresh || self.item.is_send_always {
@@ -2918,6 +2944,7 @@ impl Control {
             self.end_distance = Some(end_distance);
             self.enabled = enabled;
             self.needs_refresh = false;
+            self.last_changed = Some(Utc::now());
 
             Ok(Some(()))
         } else if self.needs_refresh || self.item.is_send_always {
@@ -2958,6 +2985,7 @@ impl Control {
             self.width = Some(width);
             self.enabled = enabled;
             self.needs_refresh = false;
+            self.last_changed = Some(Utc::now());
 
             Ok(Some(()))
         } else if self.needs_refresh || self.item.is_send_always {
@@ -2973,6 +3001,7 @@ impl Control {
         if &self.description != &value {
             self.description = value;
             self.needs_refresh = false;
+            self.last_changed = Some(Utc::now());
             log::trace!("Set {} to {:?}", self.item.control_id, self.description);
             Some(())
         } else if self.needs_refresh {
