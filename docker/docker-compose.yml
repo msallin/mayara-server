@@ -8,6 +8,7 @@ services:
       - "6502:6502"
     tmpfs:
       - /home/mayara/.config/mayara
+      - /home/mayara/.local/share/mayara
       - /tmp
     read_only: true
     security_opt:
@@ -16,16 +17,16 @@ services:
       - ALL
     restart: unless-stopped
 
-  # Example: real radar with persistent config
+  # Example: real radar with persistent config and recordings
   # mayara-radar:
   #   image: ghcr.io/marineyachtradar/mayara-server:latest
   #   network_mode: host
   #   command: ["mayara-server", "--brand", "navico", "--interface", "eth0"]
   #   user: "1000:1000"
   #   volumes:
-  #     - /srv/mayaraserver-data:/home/mayara/.config/mayara:rw
+  #     - /srv/mayaraserver-data/config:/home/mayara/.config/mayara:rw
+  #     - /srv/mayaraserver-data/recordings:/home/mayara/.local/share/mayara/recordings:rw
   #   tmpfs:
-  #     - /home/mayara/.config/mayara
   #     - /tmp
   #   read_only: true
   #   security_opt:
@@ -44,6 +45,7 @@ services:
   #     - ./certs:/certs:ro
   #   tmpfs:
   #     - /home/mayara/.config/mayara
+  #     - /home/mayara/.local/share/mayara
   #     - /tmp
   #   read_only: true
   #   security_opt:
@@ -59,6 +61,7 @@ services:
   #   command: ["mayara-server", "--stationary", "--static-position", "52.3676", "4.9041", "45.0"]
   #   tmpfs:
   #     - /home/mayara/.config/mayara
+  #     - /home/mayara/.local/share/mayara
   #     - /tmp
   #   read_only: true
   #   security_opt:
