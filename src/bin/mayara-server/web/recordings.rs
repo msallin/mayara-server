@@ -15,8 +15,8 @@ use tokio::sync::RwLock;
 use mayara::recording::{
     ActivePlayback, ActiveRecording, PlaybackSettings, PlaybackStatus, RecordingManager,
     RecordingStatus,
-    recorder::{build_initial_state, start_recording},
     player::{load_recording, unregister_playback_radar},
+    recorder::{build_initial_state, start_recording},
 };
 
 use super::Web;
@@ -198,12 +198,18 @@ async fn start_recording_handler(
 ) -> impl IntoResponse {
     if let Some(ref f) = req.filename {
         if let Err(e) = validate_filename(f) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e})),
+            );
         }
     }
     if let Some(ref sub) = req.subdirectory {
         if let Err(e) = validate_filename(sub) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e})),
+            );
         }
     }
 
@@ -345,10 +351,7 @@ async fn pause_handler(State(state): State<Web>) -> impl IntoResponse {
     match active.as_ref() {
         Some(playback) => {
             playback.pause();
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"state": "paused"})),
-            )
+            (StatusCode::OK, Json(serde_json::json!({"state": "paused"})))
         }
         None => (
             StatusCode::NOT_FOUND,
@@ -376,10 +379,7 @@ async fn stop_playback_handler(State(state): State<Web>) -> impl IntoResponse {
     }
 }
 
-async fn seek_handler(
-    State(state): State<Web>,
-    Json(req): Json<SeekRequest>,
-) -> impl IntoResponse {
+async fn seek_handler(State(state): State<Web>, Json(req): Json<SeekRequest>) -> impl IntoResponse {
     let active = state.recording_state.active_playback.read().await;
 
     match active.as_ref() {
@@ -429,9 +429,7 @@ async fn get_playback_status(State(state): State<Web>) -> impl IntoResponse {
 
 // --- File management handlers ---
 
-async fn list_recordings_handler(
-    Query(query): Query<ListQuery>,
-) -> impl IntoResponse {
+async fn list_recordings_handler(Query(query): Query<ListQuery>) -> impl IntoResponse {
     let manager = RecordingManager::new();
     let recordings = manager.list_recordings(query.subdirectory.as_deref());
     let total_size: u64 = recordings.iter().map(|r| r.size).sum();
@@ -448,7 +446,10 @@ async fn get_recording_handler(
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
     if let Err(e) = validate_filename(&filename) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        );
     }
     let manager = RecordingManager::new();
     match manager.get_recording(&filename, query.subdirectory.as_deref()) {
@@ -465,7 +466,10 @@ async fn delete_recording_handler(
     Query(query): Query<ListQuery>,
 ) -> impl IntoResponse {
     if let Err(e) = validate_filename(&filename) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        );
     }
     let manager = RecordingManager::new();
     match manager.delete_recording(&filename, query.subdirectory.as_deref()) {
@@ -483,17 +487,19 @@ async fn rename_recording_handler(
     Json(req): Json<RenameRequest>,
 ) -> impl IntoResponse {
     if let Err(e) = validate_filename(&filename) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        );
     }
     if let Err(e) = validate_filename(&req.new_name) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        );
     }
     let manager = RecordingManager::new();
-    match manager.rename_recording(
-        &filename,
-        &req.new_name,
-        query.subdirectory.as_deref(),
-    ) {
+    match manager.rename_recording(&filename, &req.new_name, query.subdirectory.as_deref()) {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -512,11 +518,12 @@ struct CreateDirectoryRequest {
     name: String,
 }
 
-async fn create_directory_handler(
-    Json(req): Json<CreateDirectoryRequest>,
-) -> impl IntoResponse {
+async fn create_directory_handler(Json(req): Json<CreateDirectoryRequest>) -> impl IntoResponse {
     if let Err(e) = validate_filename(&req.name) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        );
     }
     let manager = RecordingManager::new();
     match manager.create_directory(&req.name) {
@@ -530,7 +537,10 @@ async fn create_directory_handler(
 
 async fn delete_directory_handler(Path(name): Path<String>) -> impl IntoResponse {
     if let Err(e) = validate_filename(&name) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        );
     }
     let manager = RecordingManager::new();
     match manager.delete_directory(&name) {
@@ -547,11 +557,19 @@ async fn download_recording_handler(
     Query(query): Query<ListQuery>,
 ) -> axum::response::Response {
     if let Err(e) = validate_filename(&filename) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response();
     }
     if let Some(ref sub) = query.subdirectory {
         if let Err(e) = validate_filename(sub) {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response();
         }
     }
     let manager = RecordingManager::new();
@@ -578,9 +596,12 @@ async fn download_recording_handler(
             );
             headers.insert(
                 axum::http::header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", sanitize_for_header(&filename))
-                    .parse()
-                    .unwrap(),
+                format!(
+                    "attachment; filename=\"{}\"",
+                    sanitize_for_header(&filename)
+                )
+                .parse()
+                .unwrap(),
             );
             (StatusCode::OK, headers, body).into_response()
         }

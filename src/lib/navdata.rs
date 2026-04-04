@@ -200,7 +200,8 @@ const NMEA0183_SERVICE_NAME: &'static str = "_nmea-0183._tcp.local.";
 const SUBSCRIBE_SELF: &'static str = "{\"context\":\"vessels.self\",\"subscribe\":[{\"path\":\"navigation.headingTrue\"},{\"path\":\"navigation.position\"},{\"path\":\"navigation.speedOverGround\"},{\"path\":\"navigation.courseOverGroundTrue\"}]}\r\n";
 
 /// Additional subscription for all vessels (sent after own-ship context is known)
-const SUBSCRIBE_ALL: &'static str = "{\"context\":\"vessels.*\",\"subscribe\":[{\"path\":\"*\"}]}\r\n";
+const SUBSCRIBE_ALL: &'static str =
+    "{\"context\":\"vessels.*\",\"subscribe\":[{\"path\":\"*\"}]}\r\n";
 
 enum ConnectionType {
     Mdns,

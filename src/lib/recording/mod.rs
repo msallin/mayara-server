@@ -33,6 +33,6 @@ pub mod player;
 pub mod recorder;
 
 pub use file_format::{MrrFooter, MrrHeader, MrrReader, MrrWriter};
-pub use manager::{recordings_dir, RecordingInfo, RecordingManager};
+pub use manager::{RecordingInfo, RecordingManager, recordings_dir};
 pub use player::{ActivePlayback, PlaybackSettings, PlaybackState, PlaybackStatus};
 pub use recorder::{ActiveRecording, RecordingState, RecordingStatus};

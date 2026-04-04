@@ -115,7 +115,8 @@ pub fn create_emulator_radar(args: &Cli, radars: &SharedRadars, subsys: &Subsyst
                 end_distance: 700.0,
                 enabled: true,
             };
-            info.controls.set_guard_zone(&ControlId::GuardZone1, &guard_zone);
+            info.controls
+                .set_guard_zone(&ControlId::GuardZone1, &guard_zone);
             log::info!("Emulator: Set default guard zone 1 for ARPA testing");
         }
 
@@ -129,7 +130,8 @@ pub fn create_emulator_radar(args: &Cli, radars: &SharedRadars, subsys: &Subsyst
                 end_distance: 500.0,
                 enabled: true,
             };
-            info.controls.set_guard_zone(&ControlId::GuardZone2, &guard_zone);
+            info.controls
+                .set_guard_zone(&ControlId::GuardZone2, &guard_zone);
             log::info!("Emulator: Set default guard zone 2 for fast target testing");
         }
 

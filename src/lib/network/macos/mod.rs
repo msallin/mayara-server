@@ -1,7 +1,7 @@
 use std::ptr;
 
 use core_foundation::runloop::{
-    kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopAddSource, CFRunLoopStop,
+    CFRunLoop, CFRunLoopAddSource, CFRunLoopStop, kCFRunLoopDefaultMode,
 };
 use system_configuration::core_foundation::array::CFArray;
 use system_configuration::core_foundation::base::TCFType;

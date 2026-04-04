@@ -262,7 +262,10 @@ impl ActiveTarget {
     /// Check if target is considered stationary (very low speed, enough updates)
     fn is_stationary(&self) -> bool {
         self.update_count >= MIN_UPDATES_FOR_STATIONARY
-            && self.sog.map(|s| s < STATIONARY_SPEED_THRESHOLD).unwrap_or(false)
+            && self
+                .sog
+                .map(|s| s < STATIONARY_SPEED_THRESHOLD)
+                .unwrap_or(false)
     }
 
     /// Update the revolution count when target was last seen
@@ -356,9 +359,7 @@ impl TargetTracker {
     /// Check for revolution boundary and perform cleanup
     pub fn check_revolution(&mut self, angle: u16, time: u64) {
         // Detect revolution boundary (angle wraps from high to low)
-        if angle < self.last_angle
-            && (self.last_angle - angle) > (self.spokes_per_revolution / 2)
-        {
+        if angle < self.last_angle && (self.last_angle - angle) > (self.spokes_per_revolution / 2) {
             self.on_revolution_complete(time);
         }
         self.last_angle = angle;
@@ -369,10 +370,14 @@ impl TargetTracker {
         self.revolution_count += 1;
 
         // Count targets by status
-        let acquiring_count = self.active_targets.values()
+        let acquiring_count = self
+            .active_targets
+            .values()
             .filter(|t| t.status == TargetStatus::Acquiring)
             .count();
-        let tracking_count = self.active_targets.values()
+        let tracking_count = self
+            .active_targets
+            .values()
             .filter(|t| t.status == TargetStatus::Tracking)
             .count();
 
@@ -528,8 +533,7 @@ impl TargetTracker {
             let distance = calculate_distance(&predicted_pos, &candidate.position);
 
             // Calculate time since last update
-            let delta_time_s =
-                (candidate.time.saturating_sub(target.last_update)) as f64 / 1000.0;
+            let delta_time_s = (candidate.time.saturating_sub(target.last_update)) as f64 / 1000.0;
 
             // Physics-based max distance: how far could the target have moved?
             // Use max_target_speed_ms from candidate (user-configured setting)
@@ -881,9 +885,17 @@ mod tests {
         // Get the active target and check SOG
         let target = tracker.get_active_targets().next().unwrap();
         assert!(target.sog.is_some(), "SOG should be set");
-        assert!(target.sog.unwrap() > 0.0, "SOG should be positive: {:?}", target.sog);
+        assert!(
+            target.sog.unwrap() > 0.0,
+            "SOG should be positive: {:?}",
+            target.sog
+        );
         assert!(target.cog.is_some(), "COG should be set");
-        assert!(target.update_count >= 3, "Update count: {}", target.update_count);
+        assert!(
+            target.update_count >= 3,
+            "Update count: {}",
+            target.update_count
+        );
     }
 
     #[test]
@@ -993,7 +1005,11 @@ mod tests {
         assert_eq!(tracker.active_count(), 1);
         let target = tracker.get_active_targets().next().unwrap();
         assert_eq!(target.status, TargetStatus::Tracking);
-        assert!(target.sog.unwrap() < 0.5, "SOG should be near zero: {:?}", target.sog);
+        assert!(
+            target.sog.unwrap() < 0.5,
+            "SOG should be near zero: {:?}",
+            target.sog
+        );
         assert!(target.update_count >= 5);
 
         // Simulate 5 revolutions - normal target would be lost after 3
@@ -1056,8 +1072,8 @@ mod tests {
             // bearing from center: south + angle
             let bearing = PI + angle;
             let lat = center_lat + radius_m * bearing.cos() / METERS_PER_DEGREE_LATITUDE;
-            let lon = center_lon
-                + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
+            let lon =
+                center_lon + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
             (lat, lon)
         };
 
@@ -1176,8 +1192,8 @@ mod tests {
         let position_at_angle = |angle: f64| -> (f64, f64) {
             let bearing = PI + angle;
             let lat = center_lat + radius_m * bearing.cos() / METERS_PER_DEGREE_LATITUDE;
-            let lon = center_lon
-                + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
+            let lon =
+                center_lon + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
             (lat, lon)
         };
 
@@ -1289,8 +1305,8 @@ mod tests {
         let position_at_angle = |angle: f64| -> (f64, f64) {
             let bearing = PI + angle;
             let lat = center_lat + radius_m * bearing.cos() / METERS_PER_DEGREE_LATITUDE;
-            let lon = center_lon
-                + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
+            let lon =
+                center_lon + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
             (lat, lon)
         };
 
@@ -1329,8 +1345,7 @@ mod tests {
             let (lat, lon) = position_at_angle(angle);
 
             // After initial acquisition, target is outside guard zone
-            let candidate =
-                make_candidate_with_source(lat, lon, time, CandidateSource::Anywhere);
+            let candidate = make_candidate_with_source(lat, lon, time, CandidateSource::Anywhere);
             let result = tracker.process_candidate(candidate);
 
             match result {
@@ -1399,8 +1414,8 @@ mod tests {
         let position_at_angle = |angle: f64| -> (f64, f64) {
             let bearing = PI + angle;
             let lat = center_lat + radius_m * bearing.cos() / METERS_PER_DEGREE_LATITUDE;
-            let lon = center_lon
-                + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
+            let lon =
+                center_lon + radius_m * bearing.sin() / meters_per_degree_longitude(&center_lat);
             (lat, lon)
         };
 
@@ -1429,7 +1444,10 @@ mod tests {
             make_candidate_with_source(lat1, lon1, revolution_ms, CandidateSource::Anywhere);
         let result1 = tracker.process_candidate(candidate1);
         assert!(
-            matches!(result1, ProcessResult::Promoted(_) | ProcessResult::Updated(_)),
+            matches!(
+                result1,
+                ProcessResult::Promoted(_) | ProcessResult::Updated(_)
+            ),
             "Should update/promote MARPA target: {:?}",
             result1
         );
@@ -1443,8 +1461,7 @@ mod tests {
             let angle = angular_velocity * (time as f64 / 1000.0);
             let (lat, lon) = position_at_angle(angle);
 
-            let candidate =
-                make_candidate_with_source(lat, lon, time, CandidateSource::Anywhere);
+            let candidate = make_candidate_with_source(lat, lon, time, CandidateSource::Anywhere);
             let result = tracker.process_candidate(candidate);
 
             match result {
@@ -1558,8 +1575,7 @@ mod tests {
                 let time = rev * revolution_ms;
                 let lon = start_lon + lon_per_rev * rev as f64;
 
-                let candidate =
-                    make_candidate_with_speed(start_lat, lon, time, NORMAL_SPEED_MS);
+                let candidate = make_candidate_with_speed(start_lat, lon, time, NORMAL_SPEED_MS);
                 let result = tracker.process_candidate(candidate);
 
                 if matches!(result, ProcessResult::NewAcquiring(_)) {
@@ -1602,8 +1618,7 @@ mod tests {
                 let time = rev * revolution_ms;
                 let lon = start_lon + lon_per_rev * rev as f64;
 
-                let candidate =
-                    make_candidate_with_speed(start_lat, lon, time, MEDIUM_SPEED_MS);
+                let candidate = make_candidate_with_speed(start_lat, lon, time, MEDIUM_SPEED_MS);
                 let result = tracker.process_candidate(candidate);
 
                 match result {
@@ -1656,8 +1671,7 @@ mod tests {
                 let time = rev * revolution_ms;
                 let lon = start_lon + lon_per_rev * rev as f64;
 
-                let candidate =
-                    make_candidate_with_speed(start_lat, lon, time, FAST_SPEED_MS);
+                let candidate = make_candidate_with_speed(start_lat, lon, time, FAST_SPEED_MS);
                 let result = tracker.process_candidate(candidate);
 
                 match result {

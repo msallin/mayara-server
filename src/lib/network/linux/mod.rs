@@ -13,11 +13,7 @@ const fn nl_mgrp(group: u32) -> u32 {
     if group > 31 {
         panic!("use netlink_sys::Socket::add_membership() for this group");
     }
-    if group == 0 {
-        0
-    } else {
-        1 << (group - 1)
-    }
+    if group == 0 { 0 } else { 1 << (group - 1) }
 }
 
 pub async fn spawn_wait_for_ip_addr_change(
@@ -82,7 +78,7 @@ async fn wait_for_ip_addr_change(
 }
 
 pub fn is_wireless_interface(interface_name: &str) -> bool {
-    use libc::{c_void, ifreq, ioctl, strncpy, Ioctl, AF_INET};
+    use libc::{AF_INET, Ioctl, c_void, ifreq, ioctl, strncpy};
     use std::ffi::CString;
 
     const SIOCGIWNAME: Ioctl = 0x8B01; // Wireless Extensions request to get interface name

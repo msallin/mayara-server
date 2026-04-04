@@ -294,8 +294,8 @@ pub struct RadarInfo {
     pub(crate) range_detection: Option<RangeDetection>, // if Some, then ranges are flexible, detected and persisted
     pub doppler: bool,                                  // Does it support Doppler?
     pub dual_range: bool,                               // Is it dual range capable?
-    pub sparse_spokes: bool,                            // Does it produce fewer spokes than spokes_per_revolution?
-    pub stationary: bool,                               // Is radar stationary (shore-based)?
+    pub sparse_spokes: bool, // Does it produce fewer spokes than spokes_per_revolution?
+    pub stationary: bool,    // Is radar stationary (shore-based)?
     rotation_timestamp: Instant,
 
     // Channels
@@ -946,8 +946,8 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
 
 #[cfg(test)]
 mod tests {
-    use super::default_legend;
     use super::RadarError;
+    use super::default_legend;
     use axum::response::IntoResponse;
 
     #[test]
@@ -1017,10 +1017,8 @@ impl CommonRadar {
                 info.legend.medium_return,
                 info.spokes_per_revolution
             );
-            let mut detector = BlobDetector::new(
-                info.spokes_per_revolution,
-                info.legend.medium_return,
-            );
+            let mut detector =
+                BlobDetector::new(info.spokes_per_revolution, info.legend.medium_return);
             // Initialize guard zones from current control values
             detector.set_guard_zone_1(info.controls.guard_zone(&ControlId::GuardZone1));
             detector.set_guard_zone_2(info.controls.guard_zone(&ControlId::GuardZone2));
@@ -1031,14 +1029,10 @@ impl CommonRadar {
 
         // Initialize exclusion zones from control values (stationary only)
         let exclusion_zones = [
-            info.controls
-                .exclusion_zone(&ControlId::ExclusionZone1),
-            info.controls
-                .exclusion_zone(&ControlId::ExclusionZone2),
-            info.controls
-                .exclusion_zone(&ControlId::ExclusionZone3),
-            info.controls
-                .exclusion_zone(&ControlId::ExclusionZone4),
+            info.controls.exclusion_zone(&ControlId::ExclusionZone1),
+            info.controls.exclusion_zone(&ControlId::ExclusionZone2),
+            info.controls.exclusion_zone(&ControlId::ExclusionZone3),
+            info.controls.exclusion_zone(&ControlId::ExclusionZone4),
         ];
 
         // Initialize rectangular exclusion zones from control values (stationary only)
@@ -1128,43 +1122,59 @@ impl CommonRadar {
                 // Update exclusion zones when those controls change
                 match cv.id {
                     ControlId::ExclusionZone1 => {
-                        self.exclusion_zones[0] =
-                            self.info.controls.exclusion_zone(&ControlId::ExclusionZone1);
+                        self.exclusion_zones[0] = self
+                            .info
+                            .controls
+                            .exclusion_zone(&ControlId::ExclusionZone1);
                         self.current_exclusion_range = 0; // Force mask rebuild
                     }
                     ControlId::ExclusionZone2 => {
-                        self.exclusion_zones[1] =
-                            self.info.controls.exclusion_zone(&ControlId::ExclusionZone2);
+                        self.exclusion_zones[1] = self
+                            .info
+                            .controls
+                            .exclusion_zone(&ControlId::ExclusionZone2);
                         self.current_exclusion_range = 0;
                     }
                     ControlId::ExclusionZone3 => {
-                        self.exclusion_zones[2] =
-                            self.info.controls.exclusion_zone(&ControlId::ExclusionZone3);
+                        self.exclusion_zones[2] = self
+                            .info
+                            .controls
+                            .exclusion_zone(&ControlId::ExclusionZone3);
                         self.current_exclusion_range = 0;
                     }
                     ControlId::ExclusionZone4 => {
-                        self.exclusion_zones[3] =
-                            self.info.controls.exclusion_zone(&ControlId::ExclusionZone4);
+                        self.exclusion_zones[3] = self
+                            .info
+                            .controls
+                            .exclusion_zone(&ControlId::ExclusionZone4);
                         self.current_exclusion_range = 0;
                     }
                     ControlId::ExclusionRect1 => {
-                        self.exclusion_rects[0] =
-                            self.info.controls.exclusion_rect(&ControlId::ExclusionRect1);
+                        self.exclusion_rects[0] = self
+                            .info
+                            .controls
+                            .exclusion_rect(&ControlId::ExclusionRect1);
                         self.current_exclusion_range = 0; // Force mask rebuild
                     }
                     ControlId::ExclusionRect2 => {
-                        self.exclusion_rects[1] =
-                            self.info.controls.exclusion_rect(&ControlId::ExclusionRect2);
+                        self.exclusion_rects[1] = self
+                            .info
+                            .controls
+                            .exclusion_rect(&ControlId::ExclusionRect2);
                         self.current_exclusion_range = 0;
                     }
                     ControlId::ExclusionRect3 => {
-                        self.exclusion_rects[2] =
-                            self.info.controls.exclusion_rect(&ControlId::ExclusionRect3);
+                        self.exclusion_rects[2] = self
+                            .info
+                            .controls
+                            .exclusion_rect(&ControlId::ExclusionRect3);
                         self.current_exclusion_range = 0;
                     }
                     ControlId::ExclusionRect4 => {
-                        self.exclusion_rects[3] =
-                            self.info.controls.exclusion_rect(&ControlId::ExclusionRect4);
+                        self.exclusion_rects[3] = self
+                            .info
+                            .controls
+                            .exclusion_rect(&ControlId::ExclusionRect4);
                         self.current_exclusion_range = 0;
                     }
                     _ => {}
@@ -1382,7 +1392,6 @@ impl CommonRadar {
                             let _ = blob_tx.try_send(msg);
                         }
                     }
-
                 }
 
                 // Get ready spokes (those not touched by any active blob)

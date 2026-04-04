@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use crate::config::get_project_dirs;
 
-use super::file_format::{MrrFooter, MrrHeader, FOOTER_SIZE};
+use super::file_format::{FOOTER_SIZE, MrrFooter, MrrHeader};
 
 /// Get the recordings directory path
 pub fn recordings_dir() -> PathBuf {
@@ -316,9 +316,7 @@ impl RecordingManager {
 
     pub fn generate_filename(&self, prefix: Option<&str>, subdirectory: Option<&str>) -> String {
         let now = chrono::Utc::now();
-        let prefix = prefix
-            .filter(|p| is_valid_name(p))
-            .unwrap_or("recording");
+        let prefix = prefix.filter(|p| is_valid_name(p)).unwrap_or("recording");
         let base_name = format!("{}_{}", prefix, now.format("%Y%m%d_%H%M%S"));
 
         let dir = match subdirectory {
@@ -440,7 +438,11 @@ mod tests {
         assert!(manager.get_recording("../../../etc/passwd", None).is_none());
 
         // Delete traversal
-        assert!(manager.delete_recording("../../../etc/passwd", None).is_err());
+        assert!(
+            manager
+                .delete_recording("../../../etc/passwd", None)
+                .is_err()
+        );
 
         // Delete directory traversal
         assert!(manager.delete_directory("../escape").is_err());

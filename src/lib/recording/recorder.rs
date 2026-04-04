@@ -4,16 +4,16 @@ use log::{debug, error, info, warn};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
-use crate::radar::RadarInfo;
 use crate::Brand;
+use crate::radar::RadarInfo;
 
 use super::file_format::{MrrFrame, MrrWriter};
-use super::manager::{recordings_dir, RecordingManager};
+use super::manager::{RecordingManager, recordings_dir};
 
 /// Recording state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,10 +136,7 @@ pub async fn start_recording(
             f
         }
         None => {
-            let prefix = radar_info
-                .controls
-                .user_name()
-                .replace(' ', "_");
+            let prefix = radar_info.controls.user_name().replace(' ', "_");
             let prefix = if prefix.is_empty() {
                 format!("radar-{}", radar_key)
             } else {

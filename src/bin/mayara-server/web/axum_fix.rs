@@ -95,11 +95,11 @@
 use self::rejection::*;
 use axum::extract::FromRequestParts;
 use axum::http::{
+    Method, StatusCode, Version,
     header::{self, HeaderMap, HeaderName, HeaderValue},
     request::Parts,
-    Method, StatusCode, Version,
 };
-use axum::{body::Bytes, response::Response, Error};
+use axum::{Error, body::Bytes, response::Response};
 use axum_core::body::Body;
 use futures_util::{
     sink::{Sink, SinkExt},
@@ -112,14 +112,14 @@ use std::{
     borrow::Cow,
     future::Future,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio_tungstenite::{
+    WebSocketStream,
     tungstenite::{
         self as ts,
         protocol::{self, WebSocketConfig},
     },
-    WebSocketStream,
 };
 use tungstenite::extensions::DeflateConfig;
 use tungstenite::handshake::headers::SecWebsocketExtensions;

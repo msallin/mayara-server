@@ -45,7 +45,9 @@ struct Assets;
 
 #[derive(Error, Debug)]
 pub enum WebError {
-    #[error("Port {0} is already in use. Another instance of mayara-server may be running, or another application is using this port. Use --port to specify a different port.")]
+    #[error(
+        "Port {0} is already in use. Another instance of mayara-server may be running, or another application is using this port. Use --port to specify a different port."
+    )]
     PortInUse(u16),
     #[error("Socket operation failed: {0}")]
     Io(#[from] io::Error),
@@ -177,10 +179,7 @@ async fn quit_handler(State(state): State<Web>) -> &'static str {
     "bye\n"
 }
 
-async fn endpoints(
-    State(state): State<Web>,
-    headers: hyper::header::HeaderMap,
-) -> Response {
+async fn endpoints(State(state): State<Web>, headers: hyper::header::HeaderMap) -> Response {
     let host: String = match headers.get(axum::http::header::HOST) {
         Some(host) => host.to_str().unwrap_or("localhost").to_string(),
         None => "localhost".to_string(),

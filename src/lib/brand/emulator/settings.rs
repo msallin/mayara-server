@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use super::EMULATOR_RANGES;
+use crate::Cli;
 use crate::radar::settings::{
     ControlId, HAS_AUTO_NOT_ADJUSTABLE, SharedControls, new_auto, new_list, new_numeric, new_string,
 };
 use crate::radar::units::Units;
 use crate::stream::SignalKDelta;
-use crate::Cli;
 
 pub fn new(
     radar_id: String,
@@ -23,8 +23,7 @@ pub fn new(
         .set_string("Emulator HALO".to_string());
 
     // Model name
-    new_string(ControlId::ModelName)
-        .build(&mut controls);
+    new_string(ControlId::ModelName).build(&mut controls);
     controls
         .get_mut(&ControlId::ModelName)
         .unwrap()
@@ -100,11 +99,7 @@ pub fn new(
     .build(&mut controls);
 
     // Noise rejection
-    new_list(
-        ControlId::NoiseRejection,
-        &["Off", "Low", "Medium", "High"],
-    )
-    .build(&mut controls);
+    new_list(ControlId::NoiseRejection, &["Off", "Low", "Medium", "High"]).build(&mut controls);
 
     // Target separation
     new_list(

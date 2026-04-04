@@ -118,7 +118,11 @@ impl BlobInProgress {
             if let Some(pixels) = self.pixels_by_spoke.get(&check_spoke) {
                 // Check if any pixel on this spoke is adjacent (within 1 pixel distance)
                 for &p in pixels {
-                    let diff = if p > pixel_idx { p - pixel_idx } else { pixel_idx - p };
+                    let diff = if p > pixel_idx {
+                        p - pixel_idx
+                    } else {
+                        pixel_idx - p
+                    };
                     if diff <= 1 {
                         return true;
                     }
@@ -359,14 +363,15 @@ impl BlobDetector {
                 // Check 4-neighbors using spatial index
                 // A pixel is on the contour if any neighbor is missing
                 let neighbors = [
-                    (p.spoke, p.pixel.wrapping_sub(1)),  // inner
-                    (p.spoke, p.pixel + 1),              // outer
-                    (prev_spoke, p.pixel),               // ccw
-                    (next_spoke, p.pixel),               // cw
+                    (p.spoke, p.pixel.wrapping_sub(1)), // inner
+                    (p.spoke, p.pixel + 1),             // outer
+                    (prev_spoke, p.pixel),              // ccw
+                    (next_spoke, p.pixel),              // cw
                 ];
 
                 neighbors.iter().any(|(spoke, pixel)| {
-                    !blob.pixels_by_spoke
+                    !blob
+                        .pixels_by_spoke
                         .get(spoke)
                         .map(|pixels| pixels.contains(pixel))
                         .unwrap_or(false)
@@ -482,7 +487,8 @@ impl BlobDetector {
                         } else {
                             // Wraparound case: blob spans spoke 0
                             // Add spokes_per_revolution to max_spoke for averaging, then normalize
-                            let adjusted_max = blob.max_spoke as u32 + self.spokes_per_revolution as u32;
+                            let adjusted_max =
+                                blob.max_spoke as u32 + self.spokes_per_revolution as u32;
                             let center = (blob.min_spoke as u32 + adjusted_max) / 2;
                             (center % self.spokes_per_revolution as u32) as u16
                         };

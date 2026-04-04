@@ -440,7 +440,8 @@ impl TrackerManager {
                     // Collect lost status updates
                     for id in &lost_ids {
                         if let Some(target) = tracker.get_target(*id) {
-                            let api = active_target_to_api(target, target.last_radar_position.as_ref());
+                            let api =
+                                active_target_to_api(target, target.last_radar_position.as_ref());
                             lost_updates.push((*id, radar_key.clone(), api));
                         }
                     }

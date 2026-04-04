@@ -23,7 +23,6 @@ type Vector2 = SVector<f64, 2>;
 /// Value 0.015 allows for reasonable maneuvering targets.
 const PROCESS_NOISE: f64 = 0.015;
 
-
 /// 4-state Kalman filter: [lat, lon, dlat/dt, dlon/dt]
 ///
 /// State vector (all in meters from radar position):
@@ -57,8 +56,8 @@ impl KalmanFilter {
         let mut p = Matrix4x4::zeros();
         p[(0, 0)] = 20.0; // lat position variance (m²)
         p[(1, 1)] = 20.0; // lon position variance (m²)
-        p[(2, 2)] = 4.0;  // lat velocity variance (m/s)²
-        p[(3, 3)] = 4.0;  // lon velocity variance (m/s)²
+        p[(2, 2)] = 4.0; // lat velocity variance (m/s)²
+        p[(3, 3)] = 4.0; // lon velocity variance (m/s)²
 
         // Q - process noise (velocity can change)
         let mut q = Matrix2x2::zeros();
@@ -90,7 +89,12 @@ impl KalmanFilter {
 
     /// Initialize filter with custom position uncertainty (for MARPA targets)
     /// position_variance should be in m² (e.g., 625 gives ~50m uncertainty)
-    pub fn init_with_uncertainty(&mut self, position: GeoPosition, time: u64, position_variance: f64) {
+    pub fn init_with_uncertainty(
+        &mut self,
+        position: GeoPosition,
+        time: u64,
+        position_variance: f64,
+    ) {
         self.ref_lat = position.lat();
         self.ref_lon = position.lon();
         // Initial state is at origin (0,0) in local coordinates with zero velocity
@@ -344,25 +348,40 @@ mod tests {
 
         // First update: Kalman filter is conservative due to high measurement noise (R=25m²)
         // With conservative settings, speed builds up gradually over multiple updates
-        assert!(sog1 > 5.0 && sog1 < 150.0, "SOG after 1st update was {}", sog1);
+        assert!(
+            sog1 > 5.0 && sog1 < 150.0,
+            "SOG after 1st update was {}",
+            sog1
+        );
 
         // Continue moving north at same rate
         let pos3 = GeoPosition::new(52.002, 4.0);
         let (sog2, _) = kf.update(pos3, 2000);
 
         // Speed should increase as filter gains confidence
-        assert!(sog2 > sog1 && sog2 < 150.0, "SOG after 2nd update was {}", sog2);
+        assert!(
+            sog2 > sog1 && sog2 < 150.0,
+            "SOG after 2nd update was {}",
+            sog2
+        );
 
         // More updates to let filter converge
         let pos4 = GeoPosition::new(52.003, 4.0);
         let (sog3, cog) = kf.update(pos4, 3000);
 
         // Speed continues to increase toward true value
-        assert!(sog3 > sog2 && sog3 < 150.0, "SOG after 3rd update was {}", sog3);
+        assert!(
+            sog3 > sog2 && sog3 < 150.0,
+            "SOG after 3rd update was {}",
+            sog3
+        );
 
         // COG should be approximately 0 (north)
-        assert!(cog.abs() < 0.2 || (cog - 2.0 * std::f64::consts::PI).abs() < 0.2,
-            "COG should be north: {}", cog);
+        assert!(
+            cog.abs() < 0.2 || (cog - 2.0 * std::f64::consts::PI).abs() < 0.2,
+            "COG should be north: {}",
+            cog
+        );
     }
 
     #[test]
@@ -380,7 +399,11 @@ mod tests {
         let (sog1, _) = kf.update(pos2, 3000);
 
         // Filter should show some speed
-        assert!(sog1 > 1.0 && sog1 < 20.0, "SOG for slow target was {}", sog1);
+        assert!(
+            sog1 > 1.0 && sog1 < 20.0,
+            "SOG for slow target was {}",
+            sog1
+        );
     }
 
     #[test]
@@ -403,7 +426,11 @@ mod tests {
         let final_uncertainty = kf.get_uncertainty();
 
         // Uncertainty should decrease with consistent measurements
-        assert!(final_uncertainty < initial_uncertainty,
-            "Uncertainty should decrease: {} -> {}", initial_uncertainty, final_uncertainty);
+        assert!(
+            final_uncertainty < initial_uncertainty,
+            "Uncertainty should decrease: {} -> {}",
+            initial_uncertainty,
+            final_uncertainty
+        );
     }
 }

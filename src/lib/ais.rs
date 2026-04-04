@@ -600,7 +600,13 @@ mod tests {
         vessel.update_from_signalk(&updates2);
 
         // Both should be present
-        assert_eq!(vessel.position, Some(Position { latitude: 52.0, longitude: 4.0 }));
+        assert_eq!(
+            vessel.position,
+            Some(Position {
+                latitude: 52.0,
+                longitude: 4.0
+            })
+        );
         assert_eq!(vessel.name, Some("MY VESSEL".to_string()));
     }
 
@@ -634,14 +640,23 @@ mod tests {
     fn test_ais_vessel_api_from_vessel() {
         let mut vessel = AisVessel::new("123456789".to_string());
         vessel.name = Some("TEST".to_string());
-        vessel.position = Some(Position { latitude: 52.0, longitude: 4.0 });
+        vessel.position = Some(Position {
+            latitude: 52.0,
+            longitude: 4.0,
+        });
         vessel.cog = Some(1.5);
         vessel.sog = Some(5.0);
 
         let api = AisVesselApi::from(&vessel);
         assert_eq!(api.mmsi, "123456789");
         assert_eq!(api.name, Some("TEST".to_string()));
-        assert_eq!(api.position, Some(Position { latitude: 52.0, longitude: 4.0 }));
+        assert_eq!(
+            api.position,
+            Some(Position {
+                latitude: 52.0,
+                longitude: 4.0
+            })
+        );
         assert_eq!(api.cog, Some(1.5));
         assert_eq!(api.sog, Some(5.0));
         assert_eq!(api.status, "Active");
@@ -663,7 +678,10 @@ mod tests {
     fn test_ais_vessel_api_serialization() {
         let mut vessel = AisVessel::new("227334400".to_string());
         vessel.name = Some("DOMICIL".to_string());
-        vessel.position = Some(Position { latitude: 9.51919, longitude: -78.64894 });
+        vessel.position = Some(Position {
+            latitude: 9.51919,
+            longitude: -78.64894,
+        });
         vessel.cog = Some(3.632);
         vessel.sog = Some(0.0);
         vessel.dimensions.length = Some(12.0);
@@ -906,9 +924,18 @@ mod tests {
 
     #[test]
     fn test_position_equality() {
-        let pos1 = Position { latitude: 52.0, longitude: 4.0 };
-        let pos2 = Position { latitude: 52.0, longitude: 4.0 };
-        let pos3 = Position { latitude: 52.1, longitude: 4.0 };
+        let pos1 = Position {
+            latitude: 52.0,
+            longitude: 4.0,
+        };
+        let pos2 = Position {
+            latitude: 52.0,
+            longitude: 4.0,
+        };
+        let pos3 = Position {
+            latitude: 52.1,
+            longitude: 4.0,
+        };
 
         assert_eq!(pos1, pos2);
         assert_ne!(pos1, pos3);

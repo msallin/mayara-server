@@ -43,12 +43,7 @@ async fn put_json(path: &str, body: &Value) -> reqwest::Response {
 
 async fn first_radar_id() -> String {
     let json = get_json("/signalk/v2/api/vessels/self/radars").await;
-    json.as_object()
-        .unwrap()
-        .keys()
-        .next()
-        .unwrap()
-        .clone()
+    json.as_object().unwrap().keys().next().unwrap().clone()
 }
 
 // ============================================================================
@@ -66,7 +61,12 @@ async fn test_root_redirects_to_gui() {
     let response = client.get(&url).send().await.unwrap();
 
     assert_eq!(response.status(), 303);
-    let location = response.headers().get("location").unwrap().to_str().unwrap();
+    let location = response
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert_eq!(location, "/gui/");
 }
 
@@ -105,8 +105,19 @@ async fn test_get_radars() {
     assert!(!radars.is_empty(), "No radars found");
 
     for (id, radar) in radars {
-        for field in ["name", "brand", "spokeDataUrl", "streamUrl", "radarIpAddress"] {
-            assert!(radar.get(field).is_some(), "Radar {} missing '{}'", id, field);
+        for field in [
+            "name",
+            "brand",
+            "spokeDataUrl",
+            "streamUrl",
+            "radarIpAddress",
+        ] {
+            assert!(
+                radar.get(field).is_some(),
+                "Radar {} missing '{}'",
+                id,
+                field
+            );
         }
     }
 }
@@ -156,7 +167,11 @@ async fn test_get_capabilities() {
         "controls",
         "legend",
     ] {
-        assert!(caps.get(field).is_some(), "Missing capability field: {}", field);
+        assert!(
+            caps.get(field).is_some(),
+            "Missing capability field: {}",
+            field
+        );
     }
 
     assert!(caps["maxRange"].is_number());
@@ -183,17 +198,21 @@ async fn test_capabilities_controls_structure() {
         id
     ))
     .await;
-    let controls = json["controls"]
-        .as_object()
-        .unwrap();
+    let controls = json["controls"].as_object().unwrap();
 
     assert!(controls.contains_key("power"), "Missing 'power' control");
     assert!(controls.contains_key("range"), "Missing 'range' control");
 
-    let valid_types = ["number", "enum", "string", "button", "sector", "zone", "rect"];
+    let valid_types = [
+        "number", "enum", "string", "button", "sector", "zone", "rect",
+    ];
     for (cid, control) in controls {
         assert!(control.get("id").is_some(), "Control {} missing 'id'", cid);
-        assert!(control.get("name").is_some(), "Control {} missing 'name'", cid);
+        assert!(
+            control.get("name").is_some(),
+            "Control {} missing 'name'",
+            cid
+        );
         assert!(
             control.get("dataType").is_some(),
             "Control {} missing 'dataType'",
@@ -247,9 +266,7 @@ async fn test_capabilities_units_are_si() {
         id
     ))
     .await;
-    let controls = json["controls"]
-        .as_object()
-        .unwrap();
+    let controls = json["controls"].as_object().unwrap();
 
     let valid_si_units = ["m", "m/s", "rad", "rad/s", "s"];
     for (cid, control) in controls {
@@ -343,7 +360,10 @@ async fn test_set_power_standby_transmit() {
     assert!(response.status().is_success(), "PUT standby should succeed");
 
     let response = put_json(&path, &serde_json::json!({"value": 2})).await;
-    assert!(response.status().is_success(), "PUT transmit should succeed");
+    assert!(
+        response.status().is_success(),
+        "PUT transmit should succeed"
+    );
 }
 
 #[tokio::test]

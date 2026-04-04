@@ -252,15 +252,9 @@ impl CommandSender for Command {
                 };
                 self.set_transmit_xhd(on).await
             }
-            (ControlId::Range, GarminRadarType::HD) => {
-                self.set_range_hd(value as u32).await
-            }
-            (ControlId::Range, GarminRadarType::XHD) => {
-                self.set_range_xhd(value as u32).await
-            }
-            (ControlId::Gain, GarminRadarType::HD) => {
-                self.set_gain_hd(auto, value as u32).await
-            }
+            (ControlId::Range, GarminRadarType::HD) => self.set_range_hd(value as u32).await,
+            (ControlId::Range, GarminRadarType::XHD) => self.set_range_xhd(value as u32).await,
+            (ControlId::Gain, GarminRadarType::HD) => self.set_gain_hd(auto, value as u32).await,
             (ControlId::Gain, GarminRadarType::XHD) => {
                 // auto_value 0 = low, 1 = high
                 let auto_high = auto_value > 0.5;
@@ -280,15 +274,11 @@ impl CommandSender for Command {
             (ControlId::InterferenceRejection, GarminRadarType::XHD) => {
                 self.set_interference_xhd(value as u8).await
             }
-            (ControlId::Rain, GarminRadarType::HD) => {
-                self.set_rain_hd(value as u8).await
-            }
+            (ControlId::Rain, GarminRadarType::HD) => self.set_rain_hd(value as u8).await,
             (ControlId::Rain, GarminRadarType::XHD) => {
                 self.set_rain_xhd(enabled, value as u8).await
             }
-            (ControlId::Sea, GarminRadarType::HD) => {
-                self.set_sea_hd(auto, value as u8).await
-            }
+            (ControlId::Sea, GarminRadarType::HD) => self.set_sea_hd(auto, value as u8).await,
             (ControlId::Sea, GarminRadarType::XHD) => {
                 let auto_level = auto_value as u8;
                 self.set_sea_xhd(auto, auto_level, value as u8).await
@@ -302,14 +292,11 @@ impl CommandSender for Command {
             (ControlId::NoTransmitSector1, GarminRadarType::XHD) => {
                 let start_rad = cv.as_f64().unwrap_or(0.0);
                 let end_rad = cv.end_as_f64().unwrap_or(0.0);
-                self.set_no_transmit_zone_xhd(enabled, start_rad, end_rad).await
+                self.set_no_transmit_zone_xhd(enabled, start_rad, end_rad)
+                    .await
             }
             _ => {
-                log::debug!(
-                    "Garmin {}: unhandled control {:?}",
-                    self.radar_type,
-                    cv.id
-                );
+                log::debug!("Garmin {}: unhandled control {:?}", self.radar_type, cv.id);
                 Ok(())
             }
         };

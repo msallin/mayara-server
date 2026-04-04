@@ -250,8 +250,7 @@ pub fn zone_to_internal(
     let meters_per_pixel = range_meters as f64 / spoke_len as f64;
 
     // Convert angles from radians to spokes
-    let start_spoke =
-        ((zone.start_angle / (2.0 * PI)) * spokes_per_revolution as f64) as i32;
+    let start_spoke = ((zone.start_angle / (2.0 * PI)) * spokes_per_revolution as f64) as i32;
     let start_spoke = start_spoke.rem_euclid(spokes_per_revolution as i32) as u16;
 
     let end_spoke = ((zone.end_angle / (2.0 * PI)) * spokes_per_revolution as f64) as i32;

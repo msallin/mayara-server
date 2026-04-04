@@ -12,9 +12,7 @@ pub struct Command {
 
 impl Command {
     pub fn new(info: RadarInfo) -> Self {
-        Command {
-            key: info.key(),
-        }
+        Command { key: info.key() }
     }
 }
 
@@ -25,7 +23,12 @@ impl CommandSender for Command {
         cv: &ControlValue,
         _controls: &SharedControls,
     ) -> Result<(), RadarError> {
-        log::debug!("{}: Emulator set_control {:?} = {:?}", self.key, cv.id, cv.value);
+        log::debug!(
+            "{}: Emulator set_control {:?} = {:?}",
+            self.key,
+            cv.id,
+            cv.value
+        );
         // Emulator just acknowledges the command - actual state is managed in report.rs
         Ok(())
     }

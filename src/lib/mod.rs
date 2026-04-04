@@ -3,8 +3,8 @@ extern crate tokio;
 use clap::Parser;
 use locator::Locator;
 use miette::Result;
-use radar::target::{BlobMessage, TrackerManager};
 use radar::SharedRadars;
+use radar::target::{BlobMessage, TrackerManager};
 use serde::{Serialize, Serializer};
 use std::{
     collections::{HashMap, HashSet},
@@ -344,15 +344,18 @@ pub async fn start_session(
         let (tracker_manager, command_tx) = TrackerManager::new(args.merge_targets, sk_client_tx);
         radars.set_tracker_command_tx(command_tx);
 
-        subsystem.start(SubsystemBuilder::new("TrackerManager", |subsys| async move {
-            tokio::select! { biased;
-                _ = subsys.on_shutdown_requested() => {
-                    log::debug!("TrackerManager shutdown requested");
-                },
-                _ = tracker_manager.run(blob_rx) => {}
-            }
-            Ok::<(), miette::Report>(())
-        }));
+        subsystem.start(SubsystemBuilder::new(
+            "TrackerManager",
+            |subsys| async move {
+                tokio::select! { biased;
+                    _ = subsys.on_shutdown_requested() => {
+                        log::debug!("TrackerManager shutdown requested");
+                    },
+                    _ = tracker_manager.run(blob_rx) => {}
+                }
+                Ok::<(), miette::Report>(())
+            },
+        ));
     }
 
     // Initialize navigation broadcast sender so navdata can push updates to GUI clients
@@ -386,23 +389,26 @@ pub async fn start_session(
 
         // Start background task to flush pending AIS broadcasts (every 50ms)
         // This coalesces rapid updates into single broadcasts
-        subsystem.start(SubsystemBuilder::new("AIS Broadcast", |subsys| async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
-            loop {
-                tokio::select! { biased;
-                    _ = subsys.on_shutdown_requested() => {
-                        log::debug!("AIS broadcast task shutdown");
-                        break;
-                    },
-                    _ = interval.tick() => {
-                        if let Some(store) = navdata::get_ais_store() {
-                            store.flush_pending_broadcasts();
+        subsystem.start(SubsystemBuilder::new(
+            "AIS Broadcast",
+            |subsys| async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+                loop {
+                    tokio::select! { biased;
+                        _ = subsys.on_shutdown_requested() => {
+                            log::debug!("AIS broadcast task shutdown");
+                            break;
+                        },
+                        _ = interval.tick() => {
+                            if let Some(store) = navdata::get_ais_store() {
+                                store.flush_pending_broadcasts();
+                            }
                         }
                     }
                 }
-            }
-            Ok::<(), miette::Report>(())
-        }));
+                Ok::<(), miette::Report>(())
+            },
+        ));
     }
 
     let locator = Locator::new(args.clone(), radars.clone());

@@ -523,5 +523,4 @@ mod tests {
             speed_ms
         );
     }
-
 }

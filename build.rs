@@ -1,7 +1,6 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
-
     let mut src_path = PathBuf::from("src");
     src_path.push("lib");
     src_path.push("protos");
@@ -36,7 +35,10 @@ fn main() {
     let gui_dir = PathBuf::from("web").join("gui");
     let mayara_gui_project_dir = PathBuf::from("..").join("mayara-gui");
 
-    if !is_dev && !gui_dir.join("viewer.js").exists() && mayara_gui_project_dir.join("viewer.js").exists() {
+    if !is_dev
+        && !gui_dir.join("viewer.js").exists()
+        && mayara_gui_project_dir.join("viewer.js").exists()
+    {
         println!("cargo:warning=Copying GUI from ../mayara-gui/...");
         copy_gui_files(&mayara_gui_project_dir, &gui_dir);
     }
@@ -66,18 +68,17 @@ fn main() {
     println!("cargo:rustc-env=MAYARA_GUI_DIR={}", gui_dir.display());
 
     // Read api-version from [package.metadata] in Cargo.toml
-    let api_version = env::var("CARGO_PKG_METADATA_API_VERSION")
-        .unwrap_or_else(|_| {
-            // Fallback: parse Cargo.toml directly
-            let toml = fs::read_to_string("Cargo.toml").expect("Cannot read Cargo.toml");
-            for line in toml.lines() {
-                if let Some(v) = line.strip_prefix("api-version") {
-                    let v = v.trim().trim_start_matches('=').trim().trim_matches('"');
-                    return v.to_string();
-                }
+    let api_version = env::var("CARGO_PKG_METADATA_API_VERSION").unwrap_or_else(|_| {
+        // Fallback: parse Cargo.toml directly
+        let toml = fs::read_to_string("Cargo.toml").expect("Cannot read Cargo.toml");
+        for line in toml.lines() {
+            if let Some(v) = line.strip_prefix("api-version") {
+                let v = v.trim().trim_start_matches('=').trim().trim_matches('"');
+                return v.to_string();
             }
-            panic!("api-version not found in [package.metadata]");
-        });
+        }
+        panic!("api-version not found in [package.metadata]");
+    });
     println!("cargo:rustc-env=SIGNALK_RADAR_API_VERSION={}", api_version);
 
     println!("cargo::rerun-if-changed=build.rs");

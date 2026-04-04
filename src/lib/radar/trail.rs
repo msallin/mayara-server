@@ -4,11 +4,11 @@ use ndarray::{Array2, s};
 mod cartesian;
 use super::settings::{ControlError, ControlId, ControlValue, SharedControls};
 use super::{RadarError, RadarInfo};
+use crate::TargetMode;
 use crate::protos::RadarMessage::radar_message::Spoke;
 use crate::radar::target::{METERS_PER_DEGREE_LATITUDE, meters_per_degree_longitude};
 use crate::radar::trail::cartesian::PointInt;
 use crate::radar::{BLOB_HISTORY_COLORS, GeoPosition, Legend, SpokeBearing};
-use crate::TargetMode;
 
 const MARGIN_I16: i16 = 100;
 const MARGIN_USIZE: usize = MARGIN_I16 as usize;
@@ -175,7 +175,12 @@ impl TrailBuffer {
         self.rotation_speed_ms = ms;
     }
 
-    pub fn update_trails(&mut self, spoke: &mut Spoke, _legend: &Legend, _controls: &SharedControls) {
+    pub fn update_trails(
+        &mut self,
+        spoke: &mut Spoke,
+        _legend: &Legend,
+        _controls: &SharedControls,
+    ) {
         if self.target_mode == TargetMode::None {
             return;
         }

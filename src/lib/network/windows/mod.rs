@@ -8,8 +8,8 @@ use windows::Win32::Foundation::{
     CloseHandle, ERROR_IO_PENDING, ERROR_SERVICE_NOT_ACTIVE, ERROR_SUCCESS, HANDLE, WAIT_EVENT,
 };
 use windows::Win32::NetworkManagement::IpHelper::NotifyAddrChange;
-use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects, INFINITE};
 use windows::Win32::System::IO::OVERLAPPED;
+use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
 
 use crate::radar::RadarError;
 
@@ -127,8 +127,8 @@ fn create_ip_addr_change_event() -> Result<HANDLE, RadarError> {
 pub fn is_wireless_interface(interface_name: &str) -> bool {
     use std::ptr::null_mut;
     use windows::Win32::NetworkManagement::WiFi::{
-        WlanCloseHandle, WlanEnumInterfaces, WlanFreeMemory, WlanOpenHandle,
-        WLAN_INTERFACE_INFO_LIST,
+        WLAN_INTERFACE_INFO_LIST, WlanCloseHandle, WlanEnumInterfaces, WlanFreeMemory,
+        WlanOpenHandle,
     };
 
     unsafe {

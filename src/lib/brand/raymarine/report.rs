@@ -103,7 +103,15 @@ impl RaymarineReportReceiver {
 
         let pixel_to_blob = pixel_to_blob(&info.get_legend());
 
-        let common = CommonRadar::new(args, key, info, radars.clone(), control_update_rx, replay, blob_tx);
+        let common = CommonRadar::new(
+            args,
+            key,
+            info,
+            radars.clone(),
+            control_update_rx,
+            replay,
+            blob_tx,
+        );
 
         let now = Instant::now();
         RaymarineReportReceiver {

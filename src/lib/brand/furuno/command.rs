@@ -370,20 +370,14 @@ impl CommandSender for Command {
             }
 
             ControlId::NoTransmitSector1 => {
-                let end_value = cv
-                    .end_as_f64()
-                    .map(|v| v as i32)
-                    .unwrap_or(0);
+                let end_value = cv.end_as_f64().map(|v| v as i32).unwrap_or(0);
                 let enabled = cv.enabled.unwrap_or(false);
                 cmd = self.fill_blind_sector(Some((value, end_value, enabled)), None);
 
                 CommandId::BlindSector
             }
             ControlId::NoTransmitSector2 => {
-                let end_value = cv
-                    .end_as_f64()
-                    .map(|v| v as i32)
-                    .unwrap_or(0);
+                let end_value = cv.end_as_f64().map(|v| v as i32).unwrap_or(0);
                 let enabled = cv.enabled.unwrap_or(false);
                 cmd = self.fill_blind_sector(None, Some((value, end_value, enabled)));
 

@@ -923,7 +923,6 @@ async fn get_control_value(
 //           "value": 4.32693662,
 //
 
-
 #[utoipa::path(
     get,
     path = "/signalk/v2/api/vessels/self/radars/{radar_id}/controls",

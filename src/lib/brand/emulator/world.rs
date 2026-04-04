@@ -183,7 +183,6 @@ impl LandArea {
         // Check if within the oblong bounds
         local_x.abs() <= self.half_width && local_y.abs() <= self.half_length
     }
-
 }
 
 /// Cached local coordinates for efficient per-spoke lookups
@@ -263,7 +262,8 @@ impl EmulatorWorld {
 
         // Position where crossing will happen: 20m east of front east-boat, at same latitude
         let east_bearing_for_crossing = 90.0 * DEG_TO_RAD;
-        let crossing_point = base_pos.position_from_bearing(east_bearing_for_crossing, ahead_distance);
+        let crossing_point =
+            base_pos.position_from_bearing(east_bearing_for_crossing, ahead_distance);
 
         // Starting position for first crossing boat: 400m north of crossing point
         let north_bearing = 0.0 * DEG_TO_RAD; // North
@@ -356,13 +356,25 @@ impl EmulatorWorld {
         self.cache = Some(LocalCache {
             land_center: to_local(&self.land.center),
             targets: self.targets.iter().map(|t| to_local(&t.position)).collect(),
-            crossing_targets: self.crossing_targets.iter().map(|t| to_local(&t.position)).collect(),
-            fast_targets: self.fast_targets.iter().map(|t| to_local(&t.position)).collect(),
+            crossing_targets: self
+                .crossing_targets
+                .iter()
+                .map(|t| to_local(&t.position))
+                .collect(),
+            fast_targets: self
+                .fast_targets
+                .iter()
+                .map(|t| to_local(&t.position))
+                .collect(),
             circling_target: to_local(&self.circling_target.position),
-            buoys: self.buoys.iter().map(|b| {
-                let (x, y) = to_local(&b.position);
-                (x, y, b.radius * b.radius)
-            }).collect(),
+            buoys: self
+                .buoys
+                .iter()
+                .map(|b| {
+                    let (x, y) = to_local(&b.position);
+                    (x, y, b.radius * b.radius)
+                })
+                .collect(),
         });
     }
 

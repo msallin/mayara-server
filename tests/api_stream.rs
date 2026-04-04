@@ -32,12 +32,7 @@ async fn first_radar_id() -> String {
         .json()
         .await
         .unwrap();
-    json.as_object()
-        .unwrap()
-        .keys()
-        .next()
-        .unwrap()
-        .clone()
+    json.as_object().unwrap().keys().next().unwrap().clone()
 }
 
 fn text_msg(v: &Value) -> Message {
@@ -54,7 +49,9 @@ async fn test_control_stream_connects() {
     let url = format!("{}/signalk/v1/stream", ws_url());
     let result = timeout(Duration::from_secs(5), connect_async(&url)).await;
     assert!(result.is_ok(), "Connection should not timeout");
-    result.unwrap().expect("WebSocket connection should succeed");
+    result
+        .unwrap()
+        .expect("WebSocket connection should succeed");
 }
 
 #[tokio::test]
@@ -126,7 +123,10 @@ async fn test_control_stream_desubscription() {
 
     // Stream should still be open
     let ping = write.send(Message::Ping(vec![].into())).await;
-    assert!(ping.is_ok(), "Stream should still be open after desubscribe");
+    assert!(
+        ping.is_ok(),
+        "Stream should still be open after desubscribe"
+    );
 }
 
 #[tokio::test]
@@ -168,7 +168,10 @@ async fn test_control_stream_set_control_via_stream() {
     write.send(text_msg(&msg)).await.unwrap();
 
     let result = timeout(Duration::from_secs(5), read.next()).await;
-    assert!(result.is_ok(), "Should receive response after setting control");
+    assert!(
+        result.is_ok(),
+        "Should receive response after setting control"
+    );
 }
 
 // ============================================================================
@@ -187,7 +190,9 @@ async fn test_spoke_stream_connects() {
 
     let result = timeout(Duration::from_secs(5), connect_async(&url)).await;
     assert!(result.is_ok(), "Connection should not timeout");
-    result.unwrap().expect("WebSocket connection should succeed");
+    result
+        .unwrap()
+        .expect("WebSocket connection should succeed");
 }
 
 #[tokio::test]

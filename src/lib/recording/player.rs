@@ -6,15 +6,15 @@ use std::fs::File;
 use std::io::BufReader;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
-use crate::radar::settings::{ControlId, SharedControls, new_string};
-use crate::radar::SharedRadars;
 use crate::Brand;
 use crate::Cli;
+use crate::radar::SharedRadars;
+use crate::radar::settings::{ControlId, SharedControls, new_string};
 
 use super::file_format::MrrReader;
 use super::manager::RecordingManager;
@@ -234,6 +234,7 @@ pub async fn load_recording(
         fake_addr,
         |id, tx| playback_controls(id, tx, args),
         false,
+        false,
     );
 
     let radar_key = info.key();
@@ -243,9 +244,8 @@ pub async fn load_recording(
 
     if let Some(mut info) = radars.add(info) {
         // Set ranges so the radar appears as active in the GUI
-        let ranges = crate::radar::range::Ranges::new_by_distance(
-            &vec![header.max_spoke_len as i32],
-        );
+        let ranges =
+            crate::radar::range::Ranges::new_by_distance(&vec![header.max_spoke_len as i32]);
         info.set_ranges(ranges);
 
         // Set power to transmit so GUI shows radar as active
@@ -307,10 +307,7 @@ pub async fn load_recording(
 
         Ok(active)
     } else {
-        Err(format!(
-            "Failed to register playback radar '{}'",
-            radar_key
-        ))
+        Err(format!("Failed to register playback radar '{}'", radar_key))
     }
 }
 

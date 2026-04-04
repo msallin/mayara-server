@@ -57,14 +57,16 @@ fn create_signalk_updates(lat: f64, lon: f64, cog: f64, sog: f64) -> Value {
 fn create_subscription(path: &str) -> Subscription {
     serde_json::from_value(json!({
         "subscribe": [{"path": path}]
-    })).unwrap()
+    }))
+    .unwrap()
 }
 
 /// Helper to create a desubscription from JSON
 fn create_desubscription(path: &str) -> Desubscription {
     serde_json::from_value(json!({
         "desubscribe": [{"path": path}]
-    })).unwrap()
+    }))
+    .unwrap()
 }
 
 #[test]

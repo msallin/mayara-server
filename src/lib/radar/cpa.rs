@@ -3,8 +3,8 @@
 //! This module provides functions to calculate collision avoidance parameters
 //! for both ARPA targets and AIS vessels.
 
-use super::target::{METERS_PER_DEGREE_LATITUDE, meters_per_degree_longitude};
 use super::GeoPosition;
+use super::target::{METERS_PER_DEGREE_LATITUDE, meters_per_degree_longitude};
 
 /// Result of CPA/TCPA calculation
 #[derive(Debug, Clone, Copy)]
@@ -157,9 +157,17 @@ mod tests {
         let result = calculate_cpa(&own, &target).expect("Should have CPA");
 
         // Closing at 20 m/s over 1000m -> TCPA = 50s
-        assert!(approx_eq(result.tcpa, 50.0, 1.0), "TCPA should be ~50s, got {}", result.tcpa);
+        assert!(
+            approx_eq(result.tcpa, 50.0, 1.0),
+            "TCPA should be ~50s, got {}",
+            result.tcpa
+        );
         // Head-on collision -> CPA should be ~0
-        assert!(result.cpa < 10.0, "CPA should be near 0, got {}", result.cpa);
+        assert!(
+            result.cpa < 10.0,
+            "CPA should be near 0, got {}",
+            result.cpa
+        );
     }
 
     #[test]
@@ -186,7 +194,10 @@ mod tests {
         // We will have moved 1000m North by then
         // So they pass at different points - need to calculate actual CPA
         assert!(result.tcpa > 0.0, "TCPA should be positive");
-        assert!(result.cpa < 1000.0, "CPA should be less than initial distance");
+        assert!(
+            result.cpa < 1000.0,
+            "CPA should be less than initial distance"
+        );
     }
 
     #[test]
@@ -244,7 +255,10 @@ mod tests {
         // Distance is sqrt(500² + (our_north_travel)²)
         // This is minimized at our_north_travel = 0, i.e., TCPA = 0 or already past
         // So this should return None
-        assert!(result.is_none(), "Should return None for perpendicular stationary target");
+        assert!(
+            result.is_none(),
+            "Should return None for perpendicular stationary target"
+        );
     }
 
     #[test]
@@ -268,8 +282,16 @@ mod tests {
 
         // We're closing at 10 m/s on a target 500m away
         // TCPA = 500/10 = 50s, CPA = 0
-        assert!(approx_eq(result.tcpa, 50.0, 1.0), "TCPA should be ~50s, got {}", result.tcpa);
-        assert!(result.cpa < 10.0, "CPA should be near 0, got {}", result.cpa);
+        assert!(
+            approx_eq(result.tcpa, 50.0, 1.0),
+            "TCPA should be ~50s, got {}",
+            result.tcpa
+        );
+        assert!(
+            result.cpa < 10.0,
+            "CPA should be near 0, got {}",
+            result.cpa
+        );
     }
 
     #[test]
@@ -312,8 +334,16 @@ mod tests {
         let result = calculate_cpa(&own, &target).expect("Should have CPA");
 
         // Closing at 5 m/s (15 - 10) over 500m -> TCPA = 100s
-        assert!(approx_eq(result.tcpa, 100.0, 1.0), "TCPA should be ~100s, got {}", result.tcpa);
+        assert!(
+            approx_eq(result.tcpa, 100.0, 1.0),
+            "TCPA should be ~100s, got {}",
+            result.tcpa
+        );
         // Same course, will collide -> CPA ~0
-        assert!(result.cpa < 10.0, "CPA should be near 0, got {}", result.cpa);
+        assert!(
+            result.cpa < 10.0,
+            "CPA should be near 0, got {}",
+            result.cpa
+        );
     }
 }
