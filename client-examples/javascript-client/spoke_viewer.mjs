@@ -19,6 +19,9 @@ import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { parseArgs } from "util";
 
+// Allow self-signed certificates for TLS connections
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 import protobuf from "protobufjs";
 import WebSocket from "ws";
 

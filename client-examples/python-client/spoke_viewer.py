@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 import requests
+import ssl
 import websockets
 
 # ---------------------------------------------------------------------------
@@ -96,7 +97,7 @@ pb2 = load_proto()
 
 def discover_radar(base_url):
     """Fetch the first radar from the API and return (radar_id, radar_info)."""
-    r = requests.get(f"{base_url}/signalk/v2/api/vessels/self/radars")
+    r = requests.get(f"{base_url}/signalk/v2/api/vessels/self/radars", verify=False)
     r.raise_for_status()
     data = r.json()
     radars = data
@@ -108,7 +109,7 @@ def discover_radar(base_url):
 
 def fetch_capabilities(base_url, radar_id):
     """Fetch radar capabilities."""
-    r = requests.get(f"{base_url}/signalk/v2/api/vessels/self/radars/{radar_id}/capabilities")
+    r = requests.get(f"{base_url}/signalk/v2/api/vessels/self/radars/{radar_id}/capabilities", verify=False)
     r.raise_for_status()
     return r.json()
 
@@ -212,7 +213,11 @@ async def view_spokes(base_url, ws_url):
     print(f"  URL: {spoke_url}")
     print()
 
-    async with websockets.connect(spoke_url) as ws:
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    async with websockets.connect(spoke_url, ssl=ssl_ctx if spoke_url.startswith("wss") else None) as ws:
         # Collect one revolution worth of spokes
         seen = set()
         sampled = []
