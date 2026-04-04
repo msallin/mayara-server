@@ -85,17 +85,6 @@ export async function fetchRadarIds() {
   const response = await fetch(getRadarsPath());
   const data = await response.json();
 
-  // SignalK v5 returns array of IDs: ["Furuno-RD003212", "Navico-HALO"]
-  if (Array.isArray(data)) {
-    // Could be array of IDs (strings) or array of radar objects
-    if (data.length > 0 && typeof data[0] === "string") {
-      return data;
-    }
-    // Legacy: array of radar objects
-    return data.map((r) => r.id);
-  }
-
-  // Standalone returns object keyed by ID
   return Object.keys(data);
 }
 
@@ -107,22 +96,7 @@ export async function fetchRadars() {
   await detectMode();
 
   const response = await fetch(getRadarsPath());
-  const data = await response.json();
-
-  // SignalK returns an array, standalone returns an object
-  if (detectedMode === "signalk" && Array.isArray(data)) {
-    // Convert array to object keyed by id
-    const radars = {};
-    for (const radar of data) {
-      radars[radar.id] = radar;
-    }
-    return radars;
-  }
-  if ("radars" in data) {
-    return data.radars;
-  }
-
-  return data;
+  return response.json();
 }
 
 /**

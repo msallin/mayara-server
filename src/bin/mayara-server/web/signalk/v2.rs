@@ -82,8 +82,6 @@ const RADAR_TARGET_URI: &str = "/signalk/v2/api/vessels/self/radars/{radar_id}/t
     ),
     components(schemas(
         RadarControlIdParam,
-        FullSignalKResponse,
-        RadarsResponse,
         RadarApiV3,
         Capabilities,
         BareControlValue,
@@ -171,27 +169,6 @@ struct RadarApiV3 {
     radar_ip_address: Ipv4Addr,
 }
 
-/// Response containing all active radars keyed by radar ID
-#[derive(Serialize, ToSchema)]
-#[schema(example = json!({
-    "version": "3.0.0",
-    "radars": {
-        "nav1034A": {
-            "name": "HALO 034A",
-            "brand": "Navico",
-            "model": "HALO",
-            "spokeDataUrl": "ws://192.168.1.100:8080/signalk/v2/api/vessels/self/radars/nav1034A/spokes",
-            "streamUrl": "ws://192.168.1.100:8080/signalk/v1/stream",
-            "radarIpAddress": "192.168.1.50"
-        }
-    }
-}))]
-struct RadarsResponse {
-    version: &'static str,
-    #[schema(value_type = HashMap<String, RadarApiV3>)]
-    radars: Value,
-}
-
 #[utoipa::path(
     get,
     path = "/signalk/v2/api/vessels/self/radars",
@@ -199,7 +176,7 @@ struct RadarsResponse {
     description = "Returns all radars that have been detected on the network and are currently online. \
                    Each radar entry includes WebSocket URLs for accessing spoke data and control streams.",
     responses(
-        (status = 200, body = RadarsResponse, description = "Map of radar IDs to radar information")
+        (status = 200, body = HashMap<String, RadarApiV3>, description = "Map of radar IDs to radar information")
     ),
     tag = "Radars"
 )]
@@ -240,7 +217,7 @@ async fn get_radars(
 
         api.insert(info.key(), v);
     }
-    wrap_response(api).into_response()
+    Json(api).into_response()
 }
 
 #[utoipa::path(
@@ -946,27 +923,6 @@ async fn get_control_value(
 //           "value": 4.32693662,
 //
 
-/// Signal K formatted response wrapper
-#[derive(Serialize, ToSchema)]
-#[schema(example = json!({
-    "version": "3.0.0",
-    "radars": {
-        "nav1034A": {
-            "controls": {
-                "gain": {"value": 50, "auto": false},
-                "sea": {"value": 30, "auto": true, "autoValue": 25, "allowed": true},
-                "range": {"value": 3000}
-            }
-        }
-    }
-}))]
-struct FullSignalKResponse {
-    /// API version
-    #[schema(example = "3.0.0")]
-    version: &'static str,
-    /// Radar data nested by radar ID
-    radars: Value,
-}
 
 #[utoipa::path(
     get,
@@ -1008,15 +964,6 @@ fn get_controls(info: &RadarInfo) -> Value {
     Value::Object(full)
 }
 
-fn wrap_response<T>(value: T) -> Json<FullSignalKResponse>
-where
-    T: Serialize,
-{
-    Json(FullSignalKResponse {
-        version: VERSION,
-        radars: serde_json::to_value(value).unwrap(),
-    })
-}
 // =============================================================================
 // WebSocket Stream Handler
 // =============================================================================

@@ -43,8 +43,7 @@ async fn put_json(path: &str, body: &Value) -> reqwest::Response {
 
 async fn first_radar_id() -> String {
     let json = get_json("/signalk/v2/api/vessels/self/radars").await;
-    json["radars"]
-        .as_object()
+    json.as_object()
         .unwrap()
         .keys()
         .next()
@@ -102,8 +101,7 @@ async fn test_signalk_endpoints() {
 async fn test_get_radars() {
     let json = get_json("/signalk/v2/api/vessels/self/radars").await;
 
-    assert!(json.get("version").is_some());
-    let radars = json["radars"].as_object().unwrap();
+    let radars = json.as_object().unwrap();
     assert!(!radars.is_empty(), "No radars found");
 
     for (id, radar) in radars {
@@ -117,7 +115,7 @@ async fn test_get_radars() {
 #[ignore = "requires running server"]
 async fn test_get_radars_returns_emulator() {
     let json = get_json("/signalk/v2/api/vessels/self/radars").await;
-    let radars = json["radars"].as_object().unwrap();
+    let radars = json.as_object().unwrap();
 
     let (_, radar) = radars
         .iter()

@@ -8,12 +8,10 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ## [Unreleased]
 
-## [Unreleased]
-
 ### Changed
 
-- OpenAPI schema: `allowed`, `error`, and `timestamp` fields on ControlValue marked `readOnly`
-- OpenAPI schema: renamed `RadarApiV3` to `RadarInfo`, `ArpaTargetApi` to `ArpaTarget`
+- `GET /signalk/v2/api/vessels/self/radars` returns bare radar map (removed `version`/`radars` wrapper)
+- All REST endpoints now return unwrapped responses
 - OpenAPI schema: `allowed`, `error`, and `timestamp` fields on ControlValue marked `readOnly`
 - OpenAPI schema: renamed `RadarApiV3` to `RadarInfo`, `ArpaTargetApi` to `ArpaTarget`
 

@@ -99,7 +99,7 @@ def discover_radar(base_url):
     r = requests.get(f"{base_url}/signalk/v2/api/vessels/self/radars")
     r.raise_for_status()
     data = r.json()
-    radars = data.get("radars", {})
+    radars = data
     if not radars:
         sys.exit("No radars found. Is the server running with --emulator or a real radar?")
     radar_id = next(iter(radars))

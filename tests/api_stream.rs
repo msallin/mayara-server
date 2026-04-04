@@ -32,8 +32,7 @@ async fn first_radar_id() -> String {
         .json()
         .await
         .unwrap();
-    json["radars"]
-        .as_object()
+    json.as_object()
         .unwrap()
         .keys()
         .next()

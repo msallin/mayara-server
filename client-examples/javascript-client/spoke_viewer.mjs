@@ -55,15 +55,14 @@ async function discoverRadar(baseUrl) {
   const data = await fetchJson(
     `${baseUrl}/signalk/v2/api/vessels/self/radars`
   );
-  const radars = data.radars || {};
-  const ids = Object.keys(radars);
+  const ids = Object.keys(data);
   if (ids.length === 0) {
     console.error(
       "No radars found. Is the server running with --emulator or a real radar?"
     );
     process.exit(1);
   }
-  return { id: ids[0], info: radars[ids[0]] };
+  return { id: ids[0], info: data[ids[0]] };
 }
 
 async function fetchCapabilities(baseUrl, radarId) {

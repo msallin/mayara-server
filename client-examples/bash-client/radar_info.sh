@@ -40,7 +40,7 @@ RADARS=$(curl -s "${API}")
 echo "$RADARS" | jq .
 
 # Pick the first radar
-RADAR_ID=$(echo "$RADARS" | jq -r '.radars | keys[0]')
+RADAR_ID=$(echo "$RADARS" | jq -r 'keys[0]')
 if [ "$RADAR_ID" = "null" ] || [ -z "$RADAR_ID" ]; then
     echo "No radars found."
     exit 1
