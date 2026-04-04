@@ -693,7 +693,7 @@ async function showInterfacesPopup() {
         let row = van.add(table, tr());
         van.add(
           row,
-          td({ class: "myr_interface_name" }, name + " (" + data.ip + ")")
+          td({ class: "myr_interface_name" }, name)
         );
         d.brands.forEach((b) => {
           let status = data.listeners[b];

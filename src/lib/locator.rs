@@ -328,7 +328,7 @@ impl Locator {
                                 if avoid_wifi && network::is_wireless_interface(&itf.name) {
                                     log::trace!("Ignoring wireless interface '{}'", itf.name);
                                     if_api.insert(
-                                        InterfaceId::new(&itf.name),
+                                        InterfaceId::new(&itf.name, Some(nic_ip)),
                                         RadarInterfaceApi::new(
                                             InterfaceStatus::WirelessIgnored,
                                             Some(nic_ip),
@@ -425,7 +425,7 @@ impl Locator {
                                 }
 
                                 if_api.insert(
-                                    InterfaceId::new(&itf.name),
+                                    InterfaceId::new(&itf.name, Some(nic_ip)),
                                     RadarInterfaceApi::new(
                                         InterfaceStatus::Ok,
                                         Some(nic_ip),
@@ -462,7 +462,7 @@ impl Locator {
                             }
                         }
                         if_api.insert(
-                            InterfaceId::new(&itf.name),
+                            InterfaceId::new(&itf.name, None),
                             RadarInterfaceApi::new(
                                 InterfaceStatus::NoIPv4Address,
                                 None,
