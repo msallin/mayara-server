@@ -139,7 +139,7 @@ pub fn generate_openapi_json() -> String {
 /// Information about a detected radar, including WebSocket URLs for data streams
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-#[schema(example = json!({
+#[schema(as = RadarInfo, example = json!({
     "name": "HALO 034A",
     "brand": "Navico",
     "model": "HALO",

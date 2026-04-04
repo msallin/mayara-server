@@ -43,6 +43,7 @@ pub fn meters_per_degree_longitude(lat: &f64) -> f64 {
 /// Signal K compatible target representation for API/WebSocket streaming
 #[derive(Serialize, Clone, Debug, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[schema(as = ArpaTarget)]
 pub struct ArpaTargetApi {
     /// Target ID (unique within radar)
     pub id: u64,

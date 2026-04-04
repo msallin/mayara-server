@@ -1890,8 +1890,8 @@ pub struct RadarControlValue {
     #[schema(example = 50.0)]
     pub width: Option<f64>,
     /// Timestamp when the control value was last changed (ISO 8601 format)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(example = "2025-01-15T10:30:00Z")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(read_only = true, example = "2025-01-15T10:30:00Z")]
     pub timestamp: Option<DateTime<Utc>>,
 }
 
@@ -2012,11 +2012,12 @@ pub struct BareControlValue {
     #[schema(example = true)]
     pub enabled: Option<bool>,
     /// Whether changing this control is currently allowed (read-only)
-    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
-    #[schema(example = true)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(read_only = true, example = true)]
     pub allowed: Option<bool>,
     /// Error message if the control change failed (read-only)
-    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(read_only = true)]
     pub error: Option<String>,
     /// First corner X for rectangular exclusion zones (meters from radar, positive = east)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2039,8 +2040,8 @@ pub struct BareControlValue {
     #[schema(example = 50.0)]
     pub width: Option<f64>,
     /// Timestamp when the control value was last changed (ISO 8601 format)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(example = "2025-01-15T10:30:00Z")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(read_only = true, example = "2025-01-15T10:30:00Z")]
     pub timestamp: Option<DateTime<Utc>>,
 }
 

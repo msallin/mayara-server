@@ -8,6 +8,15 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Changed
+
+- OpenAPI schema: `allowed`, `error`, and `timestamp` fields on ControlValue marked `readOnly`
+- OpenAPI schema: renamed `RadarApiV3` to `RadarInfo`, `ArpaTargetApi` to `ArpaTarget`
+- OpenAPI schema: `allowed`, `error`, and `timestamp` fields on ControlValue marked `readOnly`
+- OpenAPI schema: renamed `RadarApiV3` to `RadarInfo`, `ArpaTargetApi` to `ArpaTarget`
+
 ## [3.3.0]
 
 ### Added
