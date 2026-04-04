@@ -103,9 +103,6 @@ rtnetlink = "0.14.1"
 w32-error = "1.0.0"
 windows = { version = "0.59.0", features = ["Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_WiFi", "Win32_Networking_WinSock", "Win32_System", "Win32_System_Threading", "Win32_Security", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_IO", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_SystemServices" ] }
 
-[dev-dependencies]
-tempfile = "3"
-
 [build-dependencies]
 protobuf-codegen = "3.7.2"
 openssl = { version = "0.10", features = ["vendored"] }
@@ -115,4 +112,5 @@ rust-embed = { version = "8.11.0", features = ["axum","interpolate-folder-path"]
 [dev-dependencies]
 reqwest = { version = "0.12.28", features = ["json"] }
 tokio-test = "0.4"
+tempfile = "3"
 
