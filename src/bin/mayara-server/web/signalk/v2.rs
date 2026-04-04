@@ -11,11 +11,7 @@ use http::StatusCode;
 use hyper;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    net::Ipv4Addr,
-    str::FromStr,
-};
+use std::{collections::HashMap, net::Ipv4Addr, str::FromStr};
 use strum::EnumCount;
 use tokio::sync::{
     broadcast::{self},
@@ -211,10 +207,7 @@ struct RadarApiV3 {
     ),
     tag = "Radars"
 )]
-async fn get_radars(
-    State(state): State<Web>,
-    headers: hyper::header::HeaderMap,
-) -> Response {
+async fn get_radars(State(state): State<Web>, headers: hyper::header::HeaderMap) -> Response {
     let host: String = match headers.get(axum::http::header::HOST) {
         Some(host) => host.to_str().unwrap_or("localhost").to_string(),
         None => "localhost".to_string(),
@@ -262,10 +255,7 @@ async fn get_radars(
     ),
     tag = "Configuration"
 )]
-async fn get_interfaces(
-    State(state): State<Web>,
-    headers: hyper::header::HeaderMap,
-) -> Response {
+async fn get_interfaces(State(state): State<Web>, headers: hyper::header::HeaderMap) -> Response {
     let host: String = match headers.get(axum::http::header::HOST) {
         Some(host) => host.to_str().unwrap_or("localhost").to_string(),
         None => "localhost".to_string(),
