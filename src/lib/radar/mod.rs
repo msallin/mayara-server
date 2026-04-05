@@ -1368,10 +1368,13 @@ impl CommonRadar {
                 let max_value = self.info.legend.pixels.len() as u8;
                 for i in 0..generic_spoke.len() {
                     if generic_spoke[i] >= max_value {
-                        panic!(
-                            "Spoke contains value {} which is >= {}",
-                            generic_spoke[i], max_value
+                        log::error!(
+                            "{}: Spoke contains value {} which is >= {}",
+                            self.key,
+                            generic_spoke[i],
+                            max_value
                         );
+                        generic_spoke[i] = 0;
                     }
                 }
             }
@@ -1423,9 +1426,8 @@ impl CommonRadar {
                 let heading_spokes = (bearing as i32 - spoke.angle as i32)
                     .rem_euclid(self.info.spokes_per_revolution as i32)
                     as f64;
-                let heading_rad = heading_spokes
-                    / self.info.spokes_per_revolution as f64
-                    * std::f64::consts::TAU;
+                let heading_rad =
+                    heading_spokes / self.info.spokes_per_revolution as f64 * std::f64::consts::TAU;
                 crate::navdata::set_heading_true(Some(heading_rad), &self.key);
             }
 
