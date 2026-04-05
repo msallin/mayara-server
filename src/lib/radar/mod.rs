@@ -1214,8 +1214,13 @@ impl CommonRadar {
                     ControlId::ExclusionZone1
                     | ControlId::ExclusionZone2
                     | ControlId::ExclusionZone3
-                    | ControlId::ExclusionZone4 => {
-                        // Exclusion zones are already updated above, just persist and return
+                    | ControlId::ExclusionZone4
+                    | ControlId::ExclusionRect1
+                    | ControlId::ExclusionRect2
+                    | ControlId::ExclusionRect3
+                    | ControlId::ExclusionRect4
+                    | ControlId::DopplerAutoTrack
+                    | ControlId::ClearTargets => {
                         self.update();
                         return Ok(());
                     }
