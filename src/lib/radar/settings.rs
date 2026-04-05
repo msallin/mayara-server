@@ -1545,6 +1545,7 @@ impl SharedControls {
             control.start_distance = Some(zone.start_distance);
             control.end_distance = Some(zone.end_distance);
             control.enabled = Some(zone.enabled);
+            control.timestamp = Some(Utc::now());
         }
     }
 
@@ -1568,6 +1569,7 @@ impl SharedControls {
             control.start_distance = Some(zone.start_distance);
             control.end_distance = Some(zone.end_distance);
             control.enabled = Some(zone.enabled);
+            control.timestamp = Some(Utc::now());
         }
     }
 
@@ -1593,6 +1595,7 @@ impl SharedControls {
             control.y2 = Some(rect.y2);
             control.width = Some(rect.width);
             control.enabled = Some(rect.enabled);
+            control.timestamp = Some(Utc::now());
         }
     }
 
@@ -2521,6 +2524,11 @@ pub struct Control {
 impl Control {
     fn new(item: ControlDefinition) -> Self {
         let value = item.default_value.clone();
+        let timestamp = if value.is_some() {
+            Some(Utc::now())
+        } else {
+            None
+        };
         Control {
             item,
             value,
