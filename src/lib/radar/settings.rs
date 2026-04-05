@@ -981,7 +981,12 @@ impl SharedControls {
         let controls: Vec<Control> = {
             let locked = self.controls.read().unwrap();
 
-            locked.controls.clone().into_values().collect()
+            locked
+                .controls
+                .clone()
+                .into_values()
+                .filter(|c| c.item.data_type != ControlDataType::Button)
+                .collect()
         };
 
         for c in controls {
@@ -2536,7 +2541,7 @@ impl Control {
             x2: None,
             y2: None,
             width: None,
-            timestamp: None,
+            timestamp,
         }
     }
 
@@ -3097,7 +3102,7 @@ pub enum ControlDataType {
     Rect,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ControlDestination {
     ReadOnly,
     Internal,

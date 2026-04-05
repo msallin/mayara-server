@@ -23,6 +23,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - GUI shows "DISCONNECTED" when server connection is lost
 - GUI standby overlay always shows ON-TIME/TX-TIME
 - GUI WebSocket reconnect no longer creates duplicate connections
+- Target controls (guard zones, exclusion zones) are writable in replay mode
 - Furuno spoke data sockets retry on failure instead of silently staying dead
 - Accept 0xc2 as valid Navico spoke status for HALO20+ compatibility (#27)
 - Move inline `display: none` style to CSS for WebGPU warning element
