@@ -5,7 +5,7 @@ use tokio::time::{Instant, interval};
 use tokio_graceful_shutdown::SubsystemHandle;
 
 use super::command::Command;
-use super::world::EmulatorWorld;
+use super::world::{EmulatorWorld, TurnProgress, TURN_RADIUS};
 use super::{EMULATOR_SPOKE_LEN, EMULATOR_SPOKES, get_initial_position};
 use crate::Cli;
 use crate::radar::settings::{ControlId, ControlUpdate};
@@ -33,6 +33,10 @@ pub struct EmulatorReportReceiver {
     boat_speed: f64,    // knots
     current_range: u32, // meters
     transmitting: bool,
+
+    // Turn state for course reversal loop
+    boat_turn: Option<TurnProgress>,
+    initial_lon: f64,
 
     // Spoke generation state
     current_spoke: u16,
@@ -70,6 +74,8 @@ impl EmulatorReportReceiver {
             boat_speed: speed,
             current_range: (NAUTICAL_MILE / 2) as u32, // Default 1/2 nm
             transmitting: false,
+            boat_turn: None,
+            initial_lon: initial_pos.lon(),
             current_spoke: 0,
             last_update: Instant::now(),
             rotation_count: 0,
@@ -184,17 +190,110 @@ impl EmulatorReportReceiver {
         self.last_update = now;
         let elapsed_secs = elapsed.as_secs_f64();
 
-        // Update boat position if moving
-        if self.boat_speed != 0.0 {
+        if let Some(mut turn) = self.boat_turn.take() {
+            let speed_ms = self.boat_speed * KNOTS_TO_MS;
+            let angular_velocity = speed_ms / turn.radius;
+            turn.turned += angular_velocity * elapsed_secs;
+
+            if turn.turned >= PI {
+                // Turn complete: snap to final position
+                let final_bearing = if turn.clockwise {
+                    turn.start_bearing + PI
+                } else {
+                    turn.start_bearing - PI
+                };
+                self.boat_position =
+                    turn.center.position_from_bearing(final_bearing, turn.radius);
+                self.boat_heading = (turn.start_heading + 180.0) % 360.0;
+                log::info!(
+                    "Emulator: turn complete, now heading {:.0}°",
+                    self.boat_heading
+                );
+            } else {
+                let current_bearing = if turn.clockwise {
+                    turn.start_bearing + turn.turned
+                } else {
+                    turn.start_bearing - turn.turned
+                };
+                self.boat_position =
+                    turn.center.position_from_bearing(current_bearing, turn.radius);
+                let heading_delta_deg = turn.turned.to_degrees();
+                self.boat_heading = if turn.clockwise {
+                    (turn.start_heading + heading_delta_deg) % 360.0
+                } else {
+                    (turn.start_heading - heading_delta_deg + 360.0) % 360.0
+                };
+                self.boat_turn = Some(turn);
+            }
+        } else if self.boat_speed != 0.0 {
+            // Straight-line movement
             let distance = self.boat_speed * KNOTS_TO_MS * elapsed_secs;
             let heading_rad = self.boat_heading * DEG_TO_RAD;
             self.boat_position = self
                 .boat_position
                 .position_from_bearing(heading_rad, distance);
+
+            self.check_turn_trigger();
         }
 
         // Always update world (moving targets) even when boat is stationary
         self.world.update(elapsed_secs);
+    }
+
+    /// Check whether the boat should initiate a half-circle turn to reverse course.
+    /// Going west: turn when only 2 targets remain visible within radar range.
+    /// Going east: turn when back at the original starting longitude.
+    fn check_turn_trigger(&mut self) {
+        let heading_west = self.boat_heading > 180.0 && self.boat_heading < 360.0;
+        let heading_east = self.boat_heading > 0.0 && self.boat_heading < 180.0;
+
+        if heading_west {
+            let visible = self
+                .world
+                .count_visible_targets(&self.boat_position, self.current_range as f64);
+            if visible <= 2 {
+                log::info!(
+                    "Emulator: only {} targets visible at range {}m, initiating turn",
+                    visible,
+                    self.current_range
+                );
+                self.start_boat_turn();
+            }
+        } else if heading_east && self.boat_position.lon() >= self.initial_lon {
+            log::info!("Emulator: back at starting longitude, initiating turn");
+            self.start_boat_turn();
+        }
+    }
+
+    /// Start a starboard (clockwise) half-circle turn for the boat and
+    /// port (counterclockwise) turns for all linear targets.
+    fn start_boat_turn(&mut self) {
+        let heading_rad = self.boat_heading * DEG_TO_RAD;
+        // Starboard (right) = heading + π/2
+        let center_bearing = heading_rad + PI / 2.0;
+        let center = self
+            .boat_position
+            .position_from_bearing(center_bearing, TURN_RADIUS);
+        let start_bearing = center_bearing + PI;
+
+        log::info!(
+            "Emulator: starboard turn at ({:.6}, {:.6}), heading {:.0}°",
+            self.boat_position.lat(),
+            self.boat_position.lon(),
+            self.boat_heading
+        );
+
+        self.boat_turn = Some(TurnProgress {
+            center,
+            radius: TURN_RADIUS,
+            start_bearing,
+            start_heading: self.boat_heading,
+            turned: 0.0,
+            clockwise: true,
+        });
+
+        // All linear targets turn port (counterclockwise)
+        self.world.reverse_all_targets(TURN_RADIUS);
     }
 
     fn update_navdata(&self) {

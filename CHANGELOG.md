@@ -8,6 +8,10 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ## [Unreleased]
 
+### Changed
+
+- Emulator loops continuously: boat and targets reverse course when targets leave radar range, then turn back at the starting position (closes #38)
+
 ### Removed
 
 - Duplicate protobuf.js library copies in `web/imports/` and `web/protobuf/` (only `web/gui/protobuf/` is used)

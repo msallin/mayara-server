@@ -35,6 +35,26 @@ const NUM_FAST_TARGETS: usize = 10;
 const KNOTS_TO_MS: f64 = 1852.0 / 3600.0; // 1 knot = 1852m/h = 0.5144 m/s
 const DEG_TO_RAD: f64 = PI / 180.0;
 
+/// Radius of the half-circle turn when reversing course (meters)
+pub const TURN_RADIUS: f64 = 100.0;
+
+/// Progress state for a half-circle turn maneuver
+#[derive(Clone, Debug)]
+pub struct TurnProgress {
+    /// Center of the turning circle
+    pub center: GeoPosition,
+    /// Turn radius in meters
+    pub radius: f64,
+    /// Bearing from center to object at start of turn (radians)
+    pub start_bearing: f64,
+    /// Heading at start of turn (degrees)
+    pub start_heading: f64,
+    /// Radians turned so far (always positive)
+    pub turned: f64,
+    /// True for starboard (clockwise), false for port (counterclockwise)
+    pub clockwise: bool,
+}
+
 /// A moving target (boat)
 #[derive(Clone, Debug)]
 pub struct Target {
@@ -44,6 +64,8 @@ pub struct Target {
     pub heading: f64,
     /// Speed in m/s
     pub speed: f64,
+    /// Active half-circle turn maneuver, if any
+    turn: Option<TurnProgress>,
 }
 
 impl Target {
@@ -52,13 +74,63 @@ impl Target {
             position,
             heading,
             speed: speed_knots * KNOTS_TO_MS,
+            turn: None,
         }
     }
 
     fn update(&mut self, elapsed_secs: f64) {
-        let distance = self.speed * elapsed_secs;
+        if let Some(mut turn) = self.turn.take() {
+            let angular_velocity = self.speed / turn.radius;
+            turn.turned += angular_velocity * elapsed_secs;
+
+            if turn.turned >= PI {
+                // Turn complete: snap to final position
+                let final_bearing = if turn.clockwise {
+                    turn.start_bearing + PI
+                } else {
+                    turn.start_bearing - PI
+                };
+                self.position = turn.center.position_from_bearing(final_bearing, turn.radius);
+                self.heading = (turn.start_heading + 180.0) % 360.0;
+            } else {
+                let current_bearing = if turn.clockwise {
+                    turn.start_bearing + turn.turned
+                } else {
+                    turn.start_bearing - turn.turned
+                };
+                self.position = turn.center.position_from_bearing(current_bearing, turn.radius);
+                let heading_delta_deg = turn.turned.to_degrees();
+                self.heading = if turn.clockwise {
+                    (turn.start_heading + heading_delta_deg) % 360.0
+                } else {
+                    (turn.start_heading - heading_delta_deg + 360.0) % 360.0
+                };
+                self.turn = Some(turn);
+            }
+        } else {
+            let distance = self.speed * elapsed_secs;
+            let heading_rad = self.heading * DEG_TO_RAD;
+            self.position = self.position.position_from_bearing(heading_rad, distance);
+        }
+    }
+
+    /// Start a port (counterclockwise) half-circle turn
+    pub fn start_port_turn(&mut self, radius: f64) {
         let heading_rad = self.heading * DEG_TO_RAD;
-        self.position = self.position.position_from_bearing(heading_rad, distance);
+        // Port (left) direction is heading - π/2
+        let center_bearing = heading_rad - PI / 2.0;
+        let center = self.position.position_from_bearing(center_bearing, radius);
+        // Bearing from center back to target
+        let start_bearing = center_bearing + PI;
+
+        self.turn = Some(TurnProgress {
+            center,
+            radius,
+            start_bearing,
+            start_heading: self.heading,
+            turned: 0.0,
+            clockwise: false,
+        });
     }
 }
 
@@ -334,6 +406,55 @@ impl EmulatorWorld {
         self.circling_target.update(elapsed_secs);
         // Invalidate cache when positions change
         self.cache = None;
+    }
+
+    /// Initiate port (counterclockwise) half-circle turns for all linear targets
+    pub fn reverse_all_targets(&mut self, radius: f64) {
+        for target in &mut self.targets {
+            target.start_port_turn(radius);
+        }
+        for target in &mut self.crossing_targets {
+            target.start_port_turn(radius);
+        }
+        for target in &mut self.fast_targets {
+            target.start_port_turn(radius);
+        }
+        // Circling target keeps circling, buoys are static
+    }
+
+    /// Count how many targets are within the given range of the boat
+    pub fn count_visible_targets(&self, boat_pos: &GeoPosition, max_range: f64) -> usize {
+        let max_range_sq = max_range * max_range;
+        let meters_per_degree_lat: f64 = 111_320.0;
+        let lat_rad = boat_pos.lat().to_radians();
+        let meters_per_degree_lon = meters_per_degree_lat * lat_rad.cos();
+
+        let in_range = |pos: &GeoPosition| -> bool {
+            let dx = (pos.lon() - boat_pos.lon()) * meters_per_degree_lon;
+            let dy = (pos.lat() - boat_pos.lat()) * meters_per_degree_lat;
+            dx * dx + dy * dy <= max_range_sq
+        };
+
+        let mut count = 0;
+        for t in &self.targets {
+            if in_range(&t.position) {
+                count += 1;
+            }
+        }
+        for t in &self.crossing_targets {
+            if in_range(&t.position) {
+                count += 1;
+            }
+        }
+        for t in &self.fast_targets {
+            if in_range(&t.position) {
+                count += 1;
+            }
+        }
+        if in_range(&self.circling_target.position) {
+            count += 1;
+        }
+        count
     }
 
     /// Update the local coordinate cache for the current boat position
