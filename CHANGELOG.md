@@ -11,6 +11,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 ### Added
 
 - Optional TLS support (`--tls-cert` and `--tls-key` flags) (#36, #37)
+- Furuno DRS4W model detection (#48)
 
 ### Fixed
 

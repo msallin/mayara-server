@@ -228,9 +228,11 @@ fn get_ranges_by_model(model: &RadarModel) -> Vec<i32> {
         | RadarModel::FAR14x7 => RANGE_TABLE_FAR,
 
         // Standard DRS series and unknown models
-        RadarModel::Unknown | RadarModel::DRS | RadarModel::DRS4DL | RadarModel::DRS6AXCLASS => {
-            RANGE_TABLE_DRS
-        }
+        RadarModel::Unknown
+        | RadarModel::DRS
+        | RadarModel::DRS4DL
+        | RadarModel::DRS4W
+        | RadarModel::DRS6AXCLASS => RANGE_TABLE_DRS,
     };
 
     let ranges: Vec<i32> = range_table.to_vec();
