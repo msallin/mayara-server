@@ -206,15 +206,6 @@ impl TrackerManager {
             source,
         };
 
-        log::debug!(
-            "Processing blob: pos=({:.6}, {:.6}), angle={}, source={:?}, size={:.1}m",
-            position.lat(),
-            position.lon(),
-            ctx.angle,
-            source,
-            msg.blob.size_meters
-        );
-
         // Get tracker and process
         let tracker = self.get_or_create_tracker(&msg.radar_key, ctx.spokes_per_revolution);
 
@@ -224,6 +215,15 @@ impl TrackerManager {
         // Process the candidate and broadcast if needed
         let result = tracker.process_candidate(candidate);
 
+        log::debug!(
+            "Processing blob: pos=({:.6}, {:.6}), angle={}, source={:?}, size={:.1}m -> {:?}",
+            position.lat(),
+            position.lon(),
+            ctx.angle,
+            source,
+            msg.blob.size_meters,
+            result
+        );
         // Broadcast target updates to GUI
         match result {
             ProcessResult::Updated(target_id)
