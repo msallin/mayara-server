@@ -96,6 +96,7 @@ enum RadarModel {
     DRS6AXCLASS,
     FAR15x3,
     FAR14x6,
+    DRS4W,
     DRS12ANXT,
     DRS25ANXT,
 }
@@ -114,6 +115,7 @@ impl Display for RadarModel {
             RadarModel::DRS6AXCLASS => "DRS6AXCLASS",
             RadarModel::FAR15x3 => "FAR15x3",
             RadarModel::FAR14x6 => "FAR14x6",
+            RadarModel::DRS4W => "DRS4W",
             RadarModel::DRS12ANXT => "DRS12ANXT",
             RadarModel::DRS25ANXT => "DRS25ANXT",
         };

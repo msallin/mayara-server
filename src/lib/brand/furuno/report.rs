@@ -653,6 +653,7 @@ impl FurunoReportReceiver {
             "0359477" => RadarModel::FAR3000,
             "0359360" => RadarModel::DRS4DNXT,
             "0359421" => RadarModel::DRS6ANXT,
+            "0359329" => RadarModel::DRS4W,
             "0359355" => RadarModel::DRS6AXCLASS,
             "0359344" => RadarModel::FAR15x3,
             "0359397" => RadarModel::FAR14x6,

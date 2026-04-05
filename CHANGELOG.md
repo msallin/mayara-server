@@ -11,6 +11,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 ### Added
 
 - Optional TLS support (`--tls-cert` and `--tls-key` flags) (#36, #37)
+- Furuno DRS4W model detection (#48)
 
 ### Fixed
 
@@ -21,6 +22,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - Blob detection no longer blocks spoke broadcasting to clients
 - Navico doppler lookup used wrong nibble for HighBoth mode
 - Spoke pixel validation checks full legend size, not just normal colors
+- Spoke pixel validation no longer panics in debug builds, logs error and clamps instead
 - GUI shows "DISCONNECTED" when server connection is lost
 - GUI standby overlay always shows ON-TIME/TX-TIME
 - GUI WebSocket reconnect no longer creates duplicate connections
