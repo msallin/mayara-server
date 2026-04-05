@@ -14,6 +14,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Fixed
 
+- Furuno range report no longer rejects radars set to km or sm display units
 - All control values now include timestamps in state broadcasts
 - Button controls (clearTrails, clearTargets) no longer sent in state broadcasts
 - Unchanged control values no longer re-broadcast to clients

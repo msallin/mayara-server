@@ -465,11 +465,10 @@ impl FurunoReportReceiver {
                         numbers.len()
                     );
                 }
-                if numbers[2] != 0. {
-                    bail!("Cannot handle radar not set to NM range");
-                }
                 // CRITICAL: numbers[0] is a WIRE INDEX (non-sequential: 21, 0-15, 19)
                 // NOT an array position! Must convert to meters first.
+                // numbers[2] is the display unit (0=NM, 1=km, 2=sm) but the wire
+                // index maps to meters regardless of display unit.
                 let wire_index = numbers[0] as i32;
                 let range_meters =
                     super::command::wire_index_to_meters(wire_index).with_context(|| {
