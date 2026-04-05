@@ -14,6 +14,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Fixed
 
+- Multicast reception on multi-homed interfaces (multiple IPs on one NIC) (#51)
 - Furuno range report no longer rejects radars set to km or sm display units
 - All control values now include timestamps in state broadcasts
 - Button controls (clearTrails, clearTargets) no longer sent in state broadcasts

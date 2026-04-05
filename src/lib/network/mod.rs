@@ -158,6 +158,8 @@ fn bind_to_multicast(
         }
     }
 
+    socket.set_multicast_if_v4(nic_addr)?;
+
     let socketaddr = SocketAddr::new(IpAddr::V4(*addr.ip()), addr.port());
     socket.bind(&socket2::SockAddr::from(socketaddr))?;
 
