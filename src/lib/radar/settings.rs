@@ -570,7 +570,9 @@ impl Controls {
 
         if args.replay {
             controls.iter_mut().for_each(|(_k, v)| {
-                v.item.is_read_only = true;
+                if v.item.control_id.get_destination() != ControlDestination::Target {
+                    v.item.is_read_only = true;
+                }
             });
         }
 
@@ -967,6 +969,7 @@ impl SharedControls {
         locked
             .controls
             .iter()
+            .filter(|(_, c)| c.item.data_type != ControlDataType::Button)
             .map(|(_, c)| RadarControlValue::new(&locked.radar_id, c, None))
             .collect()
     }
