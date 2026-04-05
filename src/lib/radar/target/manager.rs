@@ -39,6 +39,8 @@ pub struct SpokeContext {
     pub angle: u16,
     /// Maximum target speed in m/s (from ArpaDetectMaxSpeed: 0=25kn, 1=40kn, 2=50kn)
     pub max_target_speed_ms: f64,
+    /// Whether DopplerAutoTrack is enabled (track approaching Doppler targets everywhere)
+    pub doppler_auto_track: bool,
 }
 
 impl SpokeContext {
@@ -81,6 +83,8 @@ pub enum TrackerCommand {
     Marpa(MarpaRequest),
     /// Delete a target by ID
     DeleteTarget { radar_key: String, target_id: u64 },
+    /// Clear all targets for a radar
+    ClearTargets { radar_key: String },
     /// Get all targets for a radar (or all radars if radar_key is None)
     GetTargets {
         radar_key: Option<String>,
@@ -187,11 +191,13 @@ impl TrackerManager {
             _ => None,
         };
 
-        // Determine candidate source based on guard zone presence
+        // Determine candidate source: guard zone takes priority, then Doppler auto-track,
+        // then Anywhere (matches existing targets only, no new acquisition).
         let source = if let Some(&zone_id) = msg.blob.in_guard_zones.first() {
             CandidateSource::GuardZone(zone_id)
+        } else if msg.blob.has_doppler_approaching && msg.context.doppler_auto_track {
+            CandidateSource::Doppler
         } else {
-            // TODO: Check for Doppler-colored pixels when implemented
             CandidateSource::Anywhere
         };
 
@@ -224,19 +230,23 @@ impl TrackerManager {
             msg.blob.size_meters,
             result
         );
-        // Broadcast target updates to GUI
+        // Broadcast target updates to GUI.
+        // Suppress until the target has been seen 3 times to avoid cluttering the display
+        // with blobs that will be deduplicated or discarded after the first few rotations.
         match result {
             ProcessResult::Updated(target_id)
             | ProcessResult::Promoted(target_id)
             | ProcessResult::NewAcquiring(target_id) => {
                 if let Some(target) = tracker.get_target(target_id) {
-                    let target_api = active_target_to_api(target, radar_position.as_ref());
+                    if target.update_count >= 4 {
+                        let target_api = active_target_to_api(target, radar_position.as_ref());
 
-                    let mut delta = SignalKDelta::new();
-                    delta.add_target_update(&msg.radar_key, target_id, Some(target_api));
+                        let mut delta = SignalKDelta::new();
+                        delta.add_target_update(&msg.radar_key, target_id, Some(target_api));
 
-                    if let Err(e) = self.sk_client_tx.send(delta) {
-                        log::trace!("Failed to broadcast target update: {}", e);
+                        if let Err(e) = self.sk_client_tx.send(delta) {
+                            log::trace!("Failed to broadcast target update: {}", e);
+                        }
                     }
                 }
             }
@@ -253,13 +263,17 @@ impl TrackerManager {
         if self.merge_mode {
             if let Some(ref tracker) = self.shared_tracker {
                 for target in tracker.get_active_targets() {
-                    targets.push(active_target_to_api(target, radar_position.as_ref()));
+                    if target.update_count >= 4 {
+                        targets.push(active_target_to_api(target, radar_position.as_ref()));
+                    }
                 }
             }
         } else {
             for tracker in self.per_radar_trackers.values() {
                 for target in tracker.get_active_targets() {
-                    targets.push(active_target_to_api(target, radar_position.as_ref()));
+                    if target.update_count >= 4 {
+                        targets.push(active_target_to_api(target, radar_position.as_ref()));
+                    }
                 }
             }
         }
@@ -308,6 +322,34 @@ impl TrackerManager {
         }
 
         target_id
+    }
+
+    /// Clear all active targets for a radar, broadcasting deletions to clients
+    fn clear_all_targets(&mut self, radar_key: &str) {
+        log::info!("Clearing all targets for radar {}", radar_key);
+
+        let ids: Vec<u64> = if self.merge_mode {
+            self.shared_tracker
+                .as_ref()
+                .map(|t| t.get_active_targets().map(|t| t.id).collect())
+                .unwrap_or_default()
+        } else {
+            self.per_radar_trackers
+                .get(radar_key)
+                .map(|t| t.get_active_targets().map(|t| t.id).collect())
+                .unwrap_or_default()
+        };
+
+        for id in ids {
+            if self.merge_mode {
+                if let Some(ref mut tracker) = self.shared_tracker {
+                    tracker.remove_target(id);
+                }
+            } else if let Some(tracker) = self.per_radar_trackers.get_mut(radar_key) {
+                tracker.remove_target(id);
+            }
+            self.broadcast_deletion(id, radar_key);
+        }
     }
 
     /// Delete a target by ID (cancel tracking)
@@ -368,6 +410,9 @@ impl TrackerManager {
                         }
                         TrackerCommand::DeleteTarget { radar_key, target_id } => {
                             self.delete_target(&radar_key, target_id);
+                        }
+                        TrackerCommand::ClearTargets { radar_key } => {
+                            self.clear_all_targets(&radar_key);
                         }
                         TrackerCommand::GetTargets { radar_key, radar_position, response_tx } => {
                             let targets = self.get_targets_api(radar_position);
@@ -662,6 +707,7 @@ mod tests {
             spoke_len: 512,
             angle: bearing,
             max_target_speed_ms: SpokeContext::max_speed_from_mode(0), // Normal mode
+            doppler_auto_track: false,
         }
     }
 

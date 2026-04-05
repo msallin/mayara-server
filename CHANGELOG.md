@@ -33,6 +33,9 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - Targets now require 4 updates before being promoted to tracking and displayed, reducing noise from clutter blobs
 - Large vessels no longer produce multiple duplicate tracks; young targets within 100m are merged at each revolution end
 - Lost targets deleted after 4 revolutions (was 30s); stationary targets after 10 revolutions
+- Blob detection now requires strong return (not medium) and at least 25 pixels to suppress wave/clutter arcs
+- Doppler-approaching targets tracked everywhere when doppler_auto_track is enabled, not only inside guard zones
+- clearTargets button now actually clears all targets immediately from both backend and GUI
 - Heading extracted from spoke data for GUI when no external heading source available
 - Furuno spoke data sockets retry on failure instead of silently staying dead
 - Accept 0xc2 as valid Navico spoke status for HALO20+ compatibility (#27)

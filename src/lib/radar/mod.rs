@@ -1028,13 +1028,16 @@ impl CommonRadar {
         // Create blob detector if ARPA mode is enabled
         let blob_detector = if info.targets == TargetMode::Arpa {
             log::info!(
-                "{}: BlobDetector created with threshold={}, spokes={}",
+                "{}: BlobDetector created with threshold={} (strong return), spokes={}",
                 key,
-                info.legend.medium_return,
+                info.legend.strong_return,
                 info.spokes_per_revolution
             );
-            let mut detector =
-                BlobDetector::new(info.spokes_per_revolution, info.legend.medium_return);
+            let mut detector = BlobDetector::new(
+                info.spokes_per_revolution,
+                info.legend.strong_return,
+                info.legend.doppler_approaching,
+            );
             // Initialize guard zones from current control values
             detector.set_guard_zone_1(info.controls.guard_zone(&ControlId::GuardZone1));
             detector.set_guard_zone_2(info.controls.guard_zone(&ControlId::GuardZone2));
@@ -1224,9 +1227,16 @@ impl CommonRadar {
                     | ControlId::ExclusionRect2
                     | ControlId::ExclusionRect3
                     | ControlId::ExclusionRect4
-                    | ControlId::DopplerAutoTrack
-                    | ControlId::ClearTargets => {
+                    | ControlId::DopplerAutoTrack => {
                         self.update();
+                        return Ok(());
+                    }
+                    ControlId::ClearTargets => {
+                        if let Some(tx) = self.radars.get_tracker_command_tx() {
+                            let _ = tx.try_send(TrackerCommand::ClearTargets {
+                                radar_key: self.key.clone(),
+                            });
+                        }
                         return Ok(());
                     }
                     _ => {}
@@ -1406,6 +1416,7 @@ impl CommonRadar {
                                 spoke_len: spoke.data.len(),
                                 angle: spoke.angle as u16,
                                 max_target_speed_ms,
+                                doppler_auto_track: self.info.controls.doppler_auto_track(),
                             };
                             let msg = BlobMessage {
                                 radar_key: self.key.clone(),

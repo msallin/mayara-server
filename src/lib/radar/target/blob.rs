@@ -14,9 +14,15 @@ use std::f64::consts::TAU;
 use crate::config::GuardZone;
 use crate::protos::RadarMessage::radar_message::Spoke;
 
-/// Default minimum pixel intensity to be considered part of a blob (1/3 of max 15)
-/// This is overridden by legend.medium_return which varies per radar brand.
-const DEFAULT_BLOB_THRESHOLD: u8 = 5;
+/// Default minimum pixel intensity to be considered part of a blob (2/3 of max 15, strong return).
+/// This is overridden by legend.strong_return which varies per radar brand.
+const DEFAULT_BLOB_THRESHOLD: u8 = 10;
+
+/// Minimum number of strong-return pixels a blob must contain to be considered a valid target.
+/// At 25km range each pixel is ~25m, so 25 pixels is the minimum for a plausible vessel return.
+/// Thin streaks (wave crests, clutter arcs) typically have < 20 strong pixels despite large
+/// bounding-box sizes; real vessels at this range produce dense clusters of 50+ pixels.
+const MIN_TARGET_PIXELS: usize = 25;
 
 /// Minimum ship size in meters
 pub const MIN_TARGET_SIZE_M: f64 = 5.0;
@@ -46,6 +52,8 @@ struct BlobInProgress {
     max_spoke: u16,
     min_pixel: usize,
     max_pixel: usize,
+    /// True if any pixel in this blob has Doppler-approaching intensity
+    has_doppler_approaching: bool,
 }
 
 impl BlobInProgress {
@@ -62,6 +70,7 @@ impl BlobInProgress {
             min_pixel: pixel_idx,
             max_pixel: pixel_idx,
             last_spoke_with_addition: spoke,
+            has_doppler_approaching: false,
             pixels: vec![pixel],
             pixels_by_spoke,
         }
@@ -99,6 +108,7 @@ impl BlobInProgress {
         self.min_spoke = self.min_spoke.min(other.min_spoke);
         self.max_spoke = self.max_spoke.max(other.max_spoke);
         self.last_spoke_with_addition = current_spoke;
+        self.has_doppler_approaching |= other.has_doppler_approaching;
         self.pixels.extend(other.pixels);
     }
 
@@ -145,6 +155,8 @@ pub struct CompletedBlob {
     pub size_meters: f64,
     /// Which guard zones contain this blob's center (1 and/or 2), empty if none
     pub in_guard_zones: Vec<u8>,
+    /// True if any pixel in this blob has Doppler-approaching intensity
+    pub has_doppler_approaching: bool,
 }
 
 /// Internal representation of a guard zone in spoke/pixel coordinates
@@ -165,8 +177,10 @@ struct GuardZoneInternal {
 /// Blob detector that processes spokes and identifies targets
 pub struct BlobDetector {
     spokes_per_revolution: u16,
-    /// Minimum pixel intensity to be considered part of a blob (from legend.medium_return)
+    /// Minimum pixel intensity to be considered part of a blob (from legend.strong_return)
     threshold: u8,
+    /// Pixel intensity value for Doppler-approaching returns (from legend.doppler_approaching)
+    doppler_approaching_value: Option<u8>,
     next_blob_id: u32,
     active_blobs: Vec<BlobInProgress>,
     current_range: u32,
@@ -179,7 +193,11 @@ pub struct BlobDetector {
 }
 
 impl BlobDetector {
-    pub fn new(spokes_per_revolution: u16, threshold: u8) -> Self {
+    pub fn new(
+        spokes_per_revolution: u16,
+        threshold: u8,
+        doppler_approaching_value: Option<u8>,
+    ) -> Self {
         let threshold = if threshold > 0 {
             threshold
         } else {
@@ -188,6 +206,7 @@ impl BlobDetector {
         BlobDetector {
             spokes_per_revolution,
             threshold,
+            doppler_approaching_value,
             next_blob_id: 0,
             active_blobs: Vec::new(),
             current_range: 0,
@@ -389,10 +408,16 @@ impl BlobDetector {
         // are defined relative to boat heading, not true north
         let spoke_angle = spoke.angle as u16 % self.spokes_per_revolution;
 
-        // Find strong pixels
+        // Find strong pixels (strong return) and Doppler-approaching pixels.
+        // Doppler pixels have a distinct intensity value outside the normal return scale
+        // so they are collected alongside strong pixels regardless of threshold.
         let mut strong_pixels: Vec<BlobPixel> = Vec::new();
         for (pixel_idx, &intensity) in spoke.data.iter().enumerate() {
-            if intensity >= self.threshold {
+            let is_doppler_approaching = self
+                .doppler_approaching_value
+                .map(|v| intensity == v)
+                .unwrap_or(false);
+            if intensity >= self.threshold || is_doppler_approaching {
                 strong_pixels.push(BlobPixel {
                     spoke: spoke_angle,
                     pixel: pixel_idx,
@@ -403,6 +428,11 @@ impl BlobDetector {
 
         // Process each strong pixel - use spatial index for O(1) adjacency lookup
         for pixel in strong_pixels {
+            let is_doppler_approaching = self
+                .doppler_approaching_value
+                .map(|v| pixel.intensity == v)
+                .unwrap_or(false);
+
             // Find which blobs this pixel is adjacent to using spatial index
             let mut adjacent_blob_indices: Vec<usize> = Vec::new();
             for (idx, blob) in self.active_blobs.iter().enumerate() {
@@ -416,11 +446,15 @@ impl BlobDetector {
                     // Start new blob
                     let id = self.next_blob_id;
                     self.next_blob_id += 1;
-                    self.active_blobs.push(BlobInProgress::new(id, pixel));
+                    let mut blob = BlobInProgress::new(id, pixel);
+                    blob.has_doppler_approaching = is_doppler_approaching;
+                    self.active_blobs.push(blob);
                 }
                 1 => {
                     // Add to existing blob
-                    self.active_blobs[adjacent_blob_indices[0]].add_pixel(pixel, spoke_angle);
+                    let blob = &mut self.active_blobs[adjacent_blob_indices[0]];
+                    blob.has_doppler_approaching |= is_doppler_approaching;
+                    blob.add_pixel(pixel, spoke_angle);
                 }
                 _ => {
                     // Merge multiple blobs - use dedicated merge method
@@ -436,7 +470,9 @@ impl BlobDetector {
                         let removed = self.active_blobs.remove(idx);
                         self.active_blobs[target_idx].merge(removed, spoke_angle);
                     }
-                    self.active_blobs[target_idx].add_pixel(pixel, spoke_angle);
+                    let blob = &mut self.active_blobs[target_idx];
+                    blob.has_doppler_approaching |= is_doppler_approaching;
+                    blob.add_pixel(pixel, spoke_angle);
                 }
             }
         }
@@ -456,13 +492,19 @@ impl BlobDetector {
                 if blob.last_spoke_with_addition != prev_spoke {
                     // Blob is complete
                     let size = self.calculate_size(blob);
+                    let pixel_count = blob.pixels.len();
                     log::debug!(
                         "BlobDetector: completed blob with {} pixels, size {:.1}m (valid: {})",
-                        blob.pixels.len(),
+                        pixel_count,
                         size,
-                        size >= MIN_TARGET_SIZE_M && size <= MAX_TARGET_SIZE_M
+                        pixel_count >= MIN_TARGET_PIXELS
+                            && size >= MIN_TARGET_SIZE_M
+                            && size <= MAX_TARGET_SIZE_M
                     );
-                    if size >= MIN_TARGET_SIZE_M && size <= MAX_TARGET_SIZE_M {
+                    if pixel_count >= MIN_TARGET_PIXELS
+                        && size >= MIN_TARGET_SIZE_M
+                        && size <= MAX_TARGET_SIZE_M
+                    {
                         let contour = self.calculate_contour(blob);
                         let all_pixels: Vec<(u16, usize)> =
                             blob.pixels.iter().map(|p| (p.spoke, p.pixel)).collect();
@@ -487,6 +529,7 @@ impl BlobDetector {
                             center_pixel,
                             size_meters: size,
                             in_guard_zones,
+                            has_doppler_approaching: blob.has_doppler_approaching,
                         });
                     }
                     to_remove.push(idx);
