@@ -460,12 +460,15 @@ function updatePowerLozenge(powerState, userName) {
     lozenge.classList.remove(
       "myr_power_transmit",
       "myr_power_standby",
-      "myr_power_off"
+      "myr_power_off",
+      "myr_power_disconnected"
     );
     if (powerState === "transmit") {
       lozenge.classList.add("myr_power_transmit");
     } else if (powerState === "standby") {
       lozenge.classList.add("myr_power_standby");
+    } else if (powerState === "disconnected") {
+      lozenge.classList.add("myr_power_disconnected");
     } else {
       lozenge.classList.add("myr_power_off");
     }
@@ -814,11 +817,15 @@ function radarLoaded(r) {
 
 function controlUpdate(controlId, value) {
   if (controlId === "power") {
-    const control = getControl(controlId);
-    // Default to "off" if control not loaded yet or description not found
-    let powerState = "off";
-    if (control?.descriptions && value.value in control.descriptions) {
-      powerState = control.descriptions[value.value].toLowerCase();
+    let powerState;
+    if (value.value === "disconnected") {
+      powerState = "disconnected";
+    } else {
+      const control = getControl(controlId);
+      powerState = "off";
+      if (control?.descriptions && value.value in control.descriptions) {
+        powerState = control.descriptions[value.value].toLowerCase();
+      }
     }
     if (ppi) {
       const time = getOperatingTime();

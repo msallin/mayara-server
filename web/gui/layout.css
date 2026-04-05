@@ -219,6 +219,14 @@ div.myr_ppi {
   stroke: #666;
 }
 
+.myr_power_lozenge.myr_power_disconnected .myr_power_lozenge_button {
+  background: #4d1a1a;
+}
+
+.myr_power_lozenge.myr_power_disconnected .myr_power_icon {
+  stroke: #ff4d4d;
+}
+
 /* User name display */
 .myr_power_lozenge_name {
   display: flex;

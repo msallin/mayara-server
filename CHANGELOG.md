@@ -20,6 +20,9 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - Blob detection no longer blocks spoke broadcasting to clients
 - Navico doppler lookup used wrong nibble for HighBoth mode
 - Spoke pixel validation checks full legend size, not just normal colors
+- GUI shows "DISCONNECTED" when server connection is lost
+- GUI standby overlay always shows ON-TIME/TX-TIME
+- GUI WebSocket reconnect no longer creates duplicate connections
 - Furuno spoke data sockets retry on failure instead of silently staying dead
 - Accept 0xc2 as valid Navico spoke status for HALO20+ compatibility (#27)
 - Move inline `display: none` style to CSS for WebGPU warning element

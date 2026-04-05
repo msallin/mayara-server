@@ -804,23 +804,25 @@ class PPI {
     ctx.shadowOffsetX = 2;
     ctx.shadowOffsetY = 2;
 
-    const standbyY =
-      this.onTimeSeconds > 0 || this.txTimeSeconds > 0
-        ? this.center_y - 40
-        : this.center_y;
+    if (this.powerMode === "disconnected") {
+      ctx.fillText("DISCONNECTED", this.center_x, this.center_y);
+      ctx.restore();
+      return;
+    }
+
+    const showTimes = this.powerMode === "standby";
+    const standbyY = showTimes ? this.center_y - 40 : this.center_y;
 
     ctx.fillText(this.powerMode.toUpperCase(), this.center_x, standbyY);
 
-    ctx.font = "bold 20px/1 Verdana, Geneva, sans-serif";
-    let yOffset = this.center_y + 10;
+    if (showTimes) {
+      ctx.font = "bold 20px/1 Verdana, Geneva, sans-serif";
+      let yOffset = this.center_y + 10;
 
-    if (this.onTimeSeconds > 0) {
       const onTimeStr = this.#formatSecondsAsTimeZero(this.onTimeSeconds);
       ctx.fillText("ON-TIME: " + onTimeStr, this.center_x, yOffset);
       yOffset += 30;
-    }
 
-    if (this.txTimeSeconds > 0) {
       const txTimeStr = this.#formatSecondsAsTimeZero(this.txTimeSeconds);
       ctx.fillText("TX-TIME: " + txTimeStr, this.center_x, yOffset);
     }
