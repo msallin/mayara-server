@@ -827,6 +827,10 @@ function controlUpdate(controlId, value) {
     let powerState;
     if (value.value === "disconnected") {
       powerState = "disconnected";
+      for (const targetId of knownTargets) {
+        ppi.removeTarget(targetId);
+      }
+      knownTargets.clear();
     } else {
       const control = getControl(controlId);
       powerState = "off";
