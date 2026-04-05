@@ -110,7 +110,16 @@ pub(crate) fn get_heading_true() -> Option<f64> {
 /// Set the heading in radians [0..2*PI>
 ///
 pub(crate) fn set_heading_true(heading: Option<f64>, source: &str) {
+    use std::f64::consts::TAU;
+
     if let Some(h) = heading {
+        assert!(
+            h > -TAU && h < 2.0 * TAU,
+            "set_heading_true: heading {h} rad ({} deg) from '{source}' is out of range",
+            h.to_degrees()
+        );
+        let h = h.rem_euclid(TAU);
+
         let old = HEADING_TRUE.swap(h, Ordering::AcqRel);
         // Only broadcast if value changed significantly (> 0.001 rad ~ 0.06 deg)
         if (old - h).abs() > 0.001 || old.is_nan() {
@@ -677,7 +686,10 @@ impl NavigationData {
                 set_position(gll.latitude, gll.longitude);
             }
             Ok(ParsedMessage::Hdt(hdt)) => {
-                set_heading_true(hdt.heading_true, "nmea0183");
+                set_heading_true(
+                    hdt.heading_true.map(|h| h.to_radians()),
+                    "nmea0183",
+                );
             }
             Ok(ParsedMessage::Vtg(vtg)) => {
                 set_cog(vtg.cog_true);
