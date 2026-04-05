@@ -8,7 +8,7 @@
 //! - MARPA (manual acquisition via user click)
 //! - DopplerAutoTrack (automatic acquisition of Doppler-colored targets)
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
 use crate::config::GuardZone;
@@ -132,18 +132,6 @@ impl BlobInProgress {
         false
     }
 
-    fn touches_spoke(&self, spoke: u16, spokes_per_revolution: u16) -> bool {
-        let prev_spoke = if spoke == 0 {
-            spokes_per_revolution - 1
-        } else {
-            spoke - 1
-        };
-        let next_spoke = (spoke + 1) % spokes_per_revolution;
-
-        self.pixels_by_spoke.contains_key(&spoke)
-            || self.pixels_by_spoke.contains_key(&prev_spoke)
-            || self.pixels_by_spoke.contains_key(&next_spoke)
-    }
 }
 
 /// A completed blob with contour information
@@ -181,7 +169,6 @@ pub struct BlobDetector {
     threshold: u8,
     next_blob_id: u32,
     active_blobs: Vec<BlobInProgress>,
-    spoke_buffer: VecDeque<Spoke>,
     current_range: u32,
     current_spoke_len: usize,
     /// Cached guard zone configs for refresh on range change
@@ -203,7 +190,6 @@ impl BlobDetector {
             threshold,
             next_blob_id: 0,
             active_blobs: Vec::new(),
-            spoke_buffer: VecDeque::new(),
             current_range: 0,
             current_spoke_len: 0,
             guard_zone_1: None,
@@ -515,38 +501,6 @@ impl BlobDetector {
             self.active_blobs.remove(idx);
         }
 
-        // Buffer this spoke for contour drawing and ready-check
-        self.spoke_buffer.push_back(spoke.clone());
-
-        // Limit buffer to 1/4 revolution to prevent unbounded growth
-        let max_buffer_size = (self.spokes_per_revolution / 4) as usize;
-        while self.spoke_buffer.len() > max_buffer_size {
-            self.spoke_buffer.pop_front();
-        }
-
         completed
-    }
-
-    /// Get spokes that are ready to be sent (no active blobs touch them)
-    pub fn get_ready_spokes(&mut self) -> Vec<Spoke> {
-        let mut ready = Vec::new();
-
-        while let Some(oldest) = self.spoke_buffer.front() {
-            let spoke_angle = oldest.angle as u16 % self.spokes_per_revolution;
-
-            // Check if any active blob touches this spoke (uses head-relative angle)
-            let blob_touches = self
-                .active_blobs
-                .iter()
-                .any(|b| b.touches_spoke(spoke_angle, self.spokes_per_revolution));
-
-            if blob_touches {
-                break;
-            }
-
-            ready.push(self.spoke_buffer.pop_front().unwrap());
-        }
-
-        ready
     }
 }

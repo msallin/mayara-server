@@ -1375,16 +1375,12 @@ impl CommonRadar {
             self.spoke_count += 1;
             self.max_spoke_length = max(self.max_spoke_length, spoke.data.len() as u32);
 
-            // Process through blob detector if active, otherwise add directly
+            // Feed spoke to blob detector for target tracking
             if let Some(ref mut detector) = self.blob_detector {
-                // Process spoke through blob detector (buffers it internally)
-                // Guard zones are updated via control_update_rx when changed
                 let completed_blobs = detector.process_spoke(&spoke);
 
-                // Send completed blobs to tracker
                 if !completed_blobs.is_empty() {
                     if let Some(ref blob_tx) = self.blob_tx {
-                        // Get max target speed from ArpaDetectMaxSpeed control
                         let max_speed_mode = self.info.controls.arpa_detect_max_speed();
                         let max_target_speed_ms = SpokeContext::max_speed_from_mode(max_speed_mode);
 

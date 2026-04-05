@@ -17,6 +17,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - All control values now include timestamps in state broadcasts
 - Button controls (clearTrails, clearTargets) no longer sent in state broadcasts
 - Unchanged control values no longer re-broadcast to clients
+- Blob detection no longer blocks spoke broadcasting to clients
 - Furuno spoke data sockets retry on failure instead of silently staying dead
 - Accept 0xc2 as valid Navico spoke status for HALO20+ compatibility (#27)
 - Move inline `display: none` style to CSS for WebGPU warning element
