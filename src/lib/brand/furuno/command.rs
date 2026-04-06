@@ -412,14 +412,9 @@ impl Command {
                 .await?; // $REF - Target Analyzer (Doppler)
         }
 
-        // Activate dual range: send a Range command for Range B.
-        // The radar firmware only starts interleaving Range B spokes once it
-        // receives a command with drid=1. We set Range B to 6 NM (wire_idx=9)
-        // as a sensible default for the secondary range.
-        if self.has_dual_range {
-            self.send(CommandMode::Set, CommandId::Range, &[9, WIRE_UNIT_NM, 1])
-                .await?; // $S62,9,0,1 — set Range B to 6 NM
-        }
+        // Note: dual range is NOT activated automatically. The radar only starts
+        // sending Range B spokes after receiving a Range command with drid=1.
+        // This happens when the user sets a range on Range B via the GUI.
 
         Ok(())
     }

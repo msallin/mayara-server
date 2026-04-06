@@ -947,7 +947,7 @@ impl FurunoReportReceiver {
             let heading = (((sweep[3] & 0x1F) as u16) << 8) | sweep[2] as u16;
             sweep = &sweep[4..];
 
-            let (generic_spoke, used) = match metadata.encoding {
+            let (mut generic_spoke, used) = match metadata.encoding {
                 0 => Self::decode_sweep_encoding_0(sweep),
                 1 => Self::decode_sweep_encoding_1(sweep, sweep_len),
                 2 => {
@@ -962,6 +962,15 @@ impl FurunoReportReceiver {
                     panic!("Impossible encoding value")
                 }
             };
+
+            // Pad short spokes to sweep_len with zeros. This happens on radars
+            // with compact compressed data (e.g., DRS4W) where the decompressor
+            // runs out of input before producing sweep_len samples. The missing
+            // samples represent zero-return (empty) pixels.
+            if generic_spoke.len() < sweep_len {
+                generic_spoke.resize(sweep_len, 0);
+            }
+
             sweep = &sweep[used..];
 
             if is_range_b {

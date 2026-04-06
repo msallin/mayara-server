@@ -1,18 +1,20 @@
 # Furuno DRS Spoke UDP Frame Header Analysis
 
-Cross-referenced from four sources:
+Cross-referenced from five sources:
 1. **radar.dll disassembly** (radare2 on `\FecDll_x64\radar.dll`) — parses raw UDP
 2. **Fec.FarApi.dll decompilation** (ilspycmd) — managed wrapper, struct definitions
 3. **MaxSea.Radar.dll decompilation** (ilspycmd) — application-level spoke processing
 4. **Live packet captures** from DRS4D-NXT (serial 6424, firmware 01.05) in dual range mode
+5. **Live packet captures** from DRS4W (firmware 01.06) via iOS app
 
 > **Note on conflicting sources:** The radar.dll disassembly (source 1) identifies byte 11
 > bits 6-7 as `radar_id` and uses it to index into per-radar sweep buffers. However, live
 > captures from a DRS4D-NXT (source 4) show this field is always `0b11` regardless of which
-> range a spoke belongs to. The actual dual range identifier was found at byte 15 bit 6 by
-> comparing alternating frames with different range values. It is possible that byte 11
-> bits 6-7 serve a different purpose on DRS4D-NXT than on older models, or that the
-> disassembly was misinterpreted. The live captures are treated as authoritative where they
+> range a spoke belongs to, while the DRS4W (source 5) shows `0b01`. This field varies by
+> model and is NOT the dual range identifier. The actual dual range identifier was found at
+> byte 15 bit 6 by comparing alternating frames with different range values. It is possible
+> that byte 11 bits 6-7 serve a different purpose than the disassembly suggests. The live
+> captures are treated as authoritative where they
 > conflict with the disassembly. See `research/furuno/captures/drs4dnxt-dual-range-tcp.pcap` for the raw capture.
 
 ## Frame Structure
@@ -81,9 +83,14 @@ Starting at frame offset 16, repeated `spoke_count` times:
 | 3 | [4:0] | `heading_hi` | High 5 bits. Full heading = `(byte[3] & 0x1F) << 8 \| byte[2]`. Range 0-8191 (13-bit). |
 | 3 | [7:5] | | Upper bits — unused or reserved. |
 
-After the 4-byte sub-header, compressed echo sample data follows. The length depends on
-the compression encoding. The total data consumed per spoke (including sub-header) equals the
-`spoke_data_len` computed from bytes 8-9.
+After the 4-byte sub-header, compressed echo sample data follows. The compressed data
+length is **variable per spoke** — it depends on how much data compresses. The `spoke_data_len`
+from bytes 8-9 is the total data for ALL spokes in the frame (including sub-headers), not
+per-spoke. Each spoke's compressed data ends at a 4-byte aligned boundary.
+
+**Important:** On compact radars (DRS4W), the compressed data per spoke can be as short as
+16 bytes, producing far fewer than `sample_count` samples. The decompressor must pad short
+spokes with zeros to `sample_count` to represent empty (no return) pixels at the outer ranges.
 
 ## Compression Encodings
 
@@ -146,7 +153,7 @@ The callback wrapper in Fec.FarApi.dll also:
 
 | Byte | Field | Use Case |
 |------|-------|----------|
-| 11 [7:6] | `unknown` | Always `0b11` on DRS4D-NXT. Purpose unknown — possibly antenna type or firmware variant. |
+| 11 [7:6] | `unknown` | `0b11` on DRS4D-NXT, `0b01` on DRS4W. Varies by model — purpose unknown. |
 | 11 [5] | `heading_valid` | **Correct heading validity flag.** Should replace the current byte 15 extraction. |
 | 1 | `sequence_number` | Packet loss detection / reordering. |
 | 2-3 | `total_length` | Frame integrity validation. |
@@ -168,3 +175,25 @@ The callback wrapper in Fec.FarApi.dll also:
 3. **Mask `range_index`**: Changed to `data[12] & 0x3F` to isolate the 6-bit range wire index.
 
 4. **Mask per-spoke angles**: Applied `& 0x1FFF` to angle and heading values for correct 13-bit extraction.
+
+5. **Pad short spokes**: The decompressor now pads output to `sample_count` with zeros when
+   compressed data runs out early. This is essential for the DRS4W where spokes can be as
+   short as 16 compressed bytes producing only ~19 samples out of 430.
+
+## Model Comparison
+
+| Field | DRS4D-NXT | DRS4W |
+|-------|-----------|-------|
+| `sample_count` | 884 | 430 |
+| `encoding` | 3 | 3 |
+| `spoke_count` per frame | 4-5 | 8 |
+| `byte[11] bits 6-7` | `0b11` (3) | `0b01` (1) |
+| `heading_valid` | 0 (no heading) | 1 (heading present, value=0) |
+| Compressed bytes per spoke | ~200-400 | 16-24 |
+| Spokes per revolution | 8192 | 8192 |
+| Angle increment per spoke | ~9-10 | ~10-16 |
+| UDP destination | multicast 239.255.0.2:10024 | broadcast 172.31.255.255:10024 |
+| TCP command protocol | identical | identical |
+| Model code ($N96) | 0359360 | 0359329 |
+| Firmware | 01.05 | 01.06 |
+| Interface | Wired Ethernet | WiFi |

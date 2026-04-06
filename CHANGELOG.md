@@ -37,6 +37,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 - Furuno spoke header: dual_range_id is at byte 15 bit 6 (was incorrectly at byte 11 bits 6-7, which are always 0b11)
 - Furuno spoke header: init sends Range B command ($S62,9,0,1) to activate dual range spoke interleaving
 - Furuno tune control max increased from 100 to 2000 to accommodate raw radar values
+- Furuno DRS4W: pad short spokes to sweep_len — compressed data on compact WiFi radars can produce fewer samples than expected (#48)
 - Furuno spoke header: heading_valid now correctly read from byte 11 bit 5 (was reading byte 15 bits 4-5)
 - Furuno spoke header: range wire index masked to 6 bits, angle/heading masked to 13 bits
 - Furuno frequent heartbeat ($NAF) and NN3 diagnostic ($NF5) messages no longer cause log noise
