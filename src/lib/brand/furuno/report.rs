@@ -732,7 +732,9 @@ impl FurunoReportReceiver {
             | CommandId::TrailProcess
             | CommandId::CustomATFSettings
             | CommandId::ATFSettings
-            | CommandId::AutoAcquire => {}
+            | CommandId::AutoAcquire
+            | CommandId::TuneIndicator
+            | CommandId::DRS4WHeartbeat => {}
 
             _ => {
                 log::debug!(

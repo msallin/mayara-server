@@ -26,7 +26,9 @@ pub(crate) enum CommandId {
     AntennaType = 0x6E,
 
     Tune = 0x75,
+    TuneIndicator = 0x76,
     BlindSector = 0x77,
+    DRS4WHeartbeat = 0x7D, // DRS4W-specific heartbeat (every ~1s)
 
     Att = 0x80,
     MainBangSize = 0x83,

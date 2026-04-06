@@ -20,7 +20,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 ### Added
 
 - Optional TLS support (`--tls-cert` and `--tls-key` flags) (#36, #37)
-- Furuno DRS4W model detection (#48)
+- Furuno DRS4W model detection and full spoke support (#48)
 - ARPA target tracking documentation (`docs/arpa.md`)
 - Furuno range units support: Nautical (NM) and Metric (km) modes with per-model range tables
 - Furuno dual range support for NXT models: two independent radar instances (Range A/B) with shared TCP/UDP connections
