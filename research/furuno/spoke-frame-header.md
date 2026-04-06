@@ -1,9 +1,19 @@
 # Furuno DRS Spoke UDP Frame Header Analysis
 
-Cross-referenced from three sources:
-1. **radar.dll disassembly** (radare2 on `\FecDll_x64\radar.dll`) — authoritative, parses raw UDP
+Cross-referenced from four sources:
+1. **radar.dll disassembly** (radare2 on `\FecDll_x64\radar.dll`) — parses raw UDP
 2. **Fec.FarApi.dll decompilation** (ilspycmd) — managed wrapper, struct definitions
 3. **MaxSea.Radar.dll decompilation** (ilspycmd) — application-level spoke processing
+4. **Live packet captures** from DRS4D-NXT (serial 6424, firmware 01.05) in dual range mode
+
+> **Note on conflicting sources:** The radar.dll disassembly (source 1) identifies byte 11
+> bits 6-7 as `radar_id` and uses it to index into per-radar sweep buffers. However, live
+> captures from a DRS4D-NXT (source 4) show this field is always `0b11` regardless of which
+> range a spoke belongs to. The actual dual range identifier was found at byte 15 bit 6 by
+> comparing alternating frames with different range values. It is possible that byte 11
+> bits 6-7 serve a different purpose on DRS4D-NXT than on older models, or that the
+> disassembly was misinterpreted. The live captures are treated as authoritative where they
+> conflict with the disassembly. See `research/furuno/captures/drs4dnxt-dual-range-tcp.pcap` for the raw capture.
 
 ## Frame Structure
 

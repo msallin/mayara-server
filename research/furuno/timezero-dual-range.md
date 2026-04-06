@@ -311,7 +311,9 @@ each command to know which range context to apply it to.
   querying or setting other per-range controls is not sufficient.
 - **UDP spoke header**: The DLL callback's `radarNo` maps to byte 15 bit 6 of the raw UDP
   frame header (0 = Range A, 1 = Range B). Byte 11 bits 6-7 — originally identified as
-  `radar_id` from disassembly — are always `0b11` on DRS4D-NXT and do NOT indicate the range.
+  `radar_id` from radar.dll disassembly — are always `0b11` on DRS4D-NXT and do NOT indicate
+  the range. This contradicts the disassembly; see `spoke-frame-header.md` for discussion.
+  Evidence: `research/furuno/captures/drs4dnxt-dual-range-tcp.pcap`.
 - **TCP connection isolation**: Each client gets its own TCP session. One client's commands
   and responses are not visible to other connected clients.
 
