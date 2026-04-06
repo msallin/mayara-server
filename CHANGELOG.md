@@ -27,6 +27,12 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Fixed
 
+- Furuno spoke header: radar_id now correctly read from byte 11 bits 6-7 (was incorrectly reading byte 13)
+- Furuno spoke header: heading_valid now correctly read from byte 11 bit 5 (was reading byte 15 bits 4-5)
+- Furuno spoke header: range wire index masked to 6 bits, angle/heading masked to 13 bits
+
+### Fixed
+
 - Raymarine HD main bang suppression control was missing, causing error in logs (#35)
 - Multicast reception on multi-homed interfaces (multiple IPs on one NIC) (#51)
 - Furuno range report no longer rejects radars set to km or sm display units

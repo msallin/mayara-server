@@ -833,8 +833,8 @@ impl FurunoReportReceiver {
                 log::error!("Unsufficient data for sweep {}", sweep_idx);
                 break;
             }
-            let angle = ((sweep[1] as u16) << 8) | sweep[0] as u16;
-            let heading = ((sweep[3] as u16) << 8) | sweep[2] as u16;
+            let angle = (((sweep[1] & 0x1F) as u16) << 8) | sweep[0] as u16;
+            let heading = (((sweep[3] & 0x1F) as u16) << 8) | sweep[2] as u16;
             sweep = &sweep[4..];
 
             let (generic_spoke, used) = match metadata.encoding {
@@ -1058,27 +1058,41 @@ impl FurunoReportReceiver {
     // [2, 250, 0, 1, 0, 0, 0, 0, 36, 49, 116, 59, 0, 0, 240, 9]
 
     fn parse_metadata_header(&self, data: &[u8]) -> FurunoSpokeMetadata {
-        // Extract all the fields from the header
-        let v1 = (data[8] as u32 + (data[9] as u32 & 0x01) * 256) * 4 + 4;
+        // Frame header layout (16 bytes), derived from radar.dll disassembly:
+        //
+        // Bytes 0-7: Packet header
+        //   [0]    packet_type (always 0x02)
+        //   [1]    sequence_number
+        //   [2-3]  total_length (big-endian)
+        //   [4-7]  timestamp (little-endian u32)
+        //
+        // Bytes 8-11: Sweep metadata
+        //   [8]    spoke_data_len low byte
+        //   [9]    bit 0: spoke_data_len high bit; bits 1-7: spoke_count
+        //   [10]   sample_count low byte
+        //   [11]   bits 0-2: sample_count high; bits 3-4: encoding;
+        //          bit 5: heading_valid; bits 6-7: radar_id (0-3)
+        //
+        // Bytes 12-15: Range and status
+        //   [12]   bits 0-5: range wire index; bits 6-7: range_status
+        //   [13]   range resolution metadata
+        //   [14]   range_value low byte
+        //   [15]   bits 0-2: range_value high; bit 3: flag;
+        //          bits 4-5: echo_type; bits 6-7: status_bits
+
+        let _spoke_data_len = (data[8] as u32 + (data[9] as u32 & 0x01) * 256) * 4 + 4;
         let sweep_count = (data[9] >> 1) as u32;
         let sweep_len = ((data[11] & 0x07) as u32) << 8 | data[10] as u32;
         let encoding = (data[11] & 0x18) >> 3;
-        let v2 = (data[11] & 0x20) >> 5;
-        let v3 = (data[11] & 0xc0) >> 6;
-        // CRITICAL: data[12] is a WIRE INDEX (non-sequential: 21, 0-15, 19)
-        // NOT an array position! Must convert to meters.
-        let wire_index = data[12] as i32;
-        // data[13]: radar number for dual range (0 = Range A, 1 = Range B)
-        // For non-dual-range radars this is always 0.
-        let radar_no = data[13];
-        let have_heading = ((data[15] & 0x30) >> 3) as u8;
+        let have_heading = (data[11] & 0x20) >> 5;
+        let radar_no = (data[11] & 0xC0) >> 6;
+        let wire_index = (data[12] & 0x3F) as i32;
 
-        // Now do stuff with the data
         let range = super::command::wire_index_to_meters(wire_index).unwrap_or_else(|| {
             log::warn!(
                 "Unknown wire index {} in spoke header: {:?}",
                 wire_index,
-                &data[0..20]
+                &data[0..16]
             );
             0
         });
@@ -1092,8 +1106,8 @@ impl FurunoReportReceiver {
             radar_no,
         };
         log::trace!(
-            "header {:?} -> v1={v1}, v2={v2}, v3={v3}, sweep_count={} sweep_len={} encoding={} have_heading={} range={} radar_no={}",
-            &data[0..20],
+            "header {:?} -> sweep_count={} sweep_len={} encoding={} have_heading={} range={} radar_no={}",
+            &data[0..16],
             sweep_count,
             sweep_len,
             encoding,
