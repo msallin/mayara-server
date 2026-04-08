@@ -1,13 +1,10 @@
-use bincode::deserialize;
 use num_derive::{FromPrimitive, ToPrimitive};
-use serde::Deserialize;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{fmt, io};
 use strum::VariantNames;
 use tokio_graceful_shutdown::{SubsystemBuilder, SubsystemHandle};
 
 use crate::locator::LocatorAddress;
-use crate::network::NetworkSocketAddrV4;
 use crate::radar::range::Ranges;
 use crate::radar::settings::ControlId;
 use crate::radar::{RadarInfo, SharedRadars};
@@ -69,90 +66,8 @@ Not definitive list for
 //
 const NAVICO_ADDRESS_REQUEST_PACKET: [u8; 2] = [0x01, 0xB1];
 
-#[derive(Deserialize, Debug, Copy, Clone)]
-#[repr(packed)]
-struct NavicoBeaconHeader {
-    _id: u16,
-    serial_no: [u8; 16],             // ASCII serial number, zero terminated
-    radar_addr: NetworkSocketAddrV4, // 0A 00 43 D9 01 01 = DHCP address of radar
-    _filler1: [u8; 12],              // 11000000
-    _addr1: NetworkSocketAddrV4,     // EC0608201970 = 236.6.8.32 port 6512
-    _filler2: [u8; 4],               // 11000000
-    _addr2: NetworkSocketAddrV4,     // EC0607161A26 = 236.6.8.22 port 6694
-    _filler3: [u8; 10],              // 1F002001020010000000
-    _addr3: NetworkSocketAddrV4,     // EC0608211971 = 236.6.8.33 port 6513
-    _filler4: [u8; 4],               // 11000000
-    _addr4: NetworkSocketAddrV4,     // EC0608221972 = 236.6.8.34 port 6514
-}
-
-#[derive(Deserialize, Debug, Copy, Clone)]
-#[repr(packed)]
-struct NavicoBeaconRadar {
-    _filler1: [u8; 10],          // 10002001030010000000
-    data: NetworkSocketAddrV4,   // EC0608231973 = 236.6.8.35 port 6515
-    _filler2: [u8; 4],           // 11000000
-    send: NetworkSocketAddrV4,   // EC0608241974 = 236.6.8.36 port 6516
-    _filler3: [u8; 4],           // 12000000
-    report: NetworkSocketAddrV4, // EC0608231975 = 236.6.7.35 port 6517
-}
-
-// Radars that have one internal radar: 3G, Halo 20, etc.
-
-#[derive(Deserialize, Debug, Copy, Clone)]
-#[repr(packed)]
-struct NavicoBeaconSingle {
-    header: NavicoBeaconHeader,
-    a: NavicoBeaconRadar,
-}
-
-// As seen on all dual radar (4G, HALO 20+, 24, 3, etc)
-#[derive(Deserialize, Debug, Copy, Clone)]
-#[repr(packed)]
-struct NavicoBeaconDual {
-    header: NavicoBeaconHeader,
-    a: NavicoBeaconRadar,
-    b: NavicoBeaconRadar,
-    /* We don't care about the rest: */
-    /*
-    _filler11: [u8; 10],           // 12002001030010000000
-    addr11: NetworkSocketAddrV4,        // EC0608231979 = 236.6.8.35 port 6521
-    _filler12: [u8; 4],            // 11000000
-    addr12: NetworkSocketAddrV4,        // EC060827197A = 236.6.8.39 port 6522
-    _filler13: [u8; 4],            // 12000000
-    addr13: NetworkSocketAddrV4,        // EC060823197B = 236.6.8.35 port 6523
-    _filler14: [u8; 10],           // 12002002030010000000
-    addr14: NetworkSocketAddrV4,        // EC060825197C = 236.6.8.37 port 6524
-    _filler15: [u8; 4],            // 11000000
-    addr15: NetworkSocketAddrV4,        // EC060828197D = 236.6.8.40 port 6525
-    _filler16: [u8; 4],            // 12000000
-    addr16: NetworkSocketAddrV4,        // EC060825197E = 236.6.8.37 port 6526
-    */
-}
-
 const NAVICO_BR24_BEACON_ADDRESS: SocketAddr =
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(236, 6, 7, 4)), 6768);
-
-// The beacon message from BR24 (and first gen 3G) is _slightly_ different,
-// so it needs a different structure. It is also sent to a different MultiCast address!
-#[derive(Deserialize, Debug, Copy, Clone)]
-#[repr(packed)]
-struct BR24Beacon {
-    _id: u16,
-    serial_no: [u8; 16], // ASCII serial number, zero terminated
-    radar_addr: NetworkSocketAddrV4,
-    _filler1: [u8; 12],
-    _addr1: NetworkSocketAddrV4,
-    _filler2: [u8; 4],
-    _addr2: NetworkSocketAddrV4,
-    _filler3: [u8; 4],
-    _addr3: NetworkSocketAddrV4,
-    _filler4: [u8; 10],
-    report: NetworkSocketAddrV4,
-    _filler5: [u8; 4],
-    send: NetworkSocketAddrV4,
-    _filler6: [u8; 4],
-    data: NetworkSocketAddrV4, // Note different order from newer radars
-}
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Model {
@@ -222,9 +137,112 @@ const DYNAMIC_ALLOWED_CONTROLS: [ControlId; 5] = [
     ControlId::ScanSpeed,
 ];
 
-const NAVICO_BEACON_SINGLE_SIZE: usize = size_of::<NavicoBeaconSingle>();
-const NAVICO_BEACON_DUAL_SIZE: usize = size_of::<NavicoBeaconDual>();
-const NAVICO_BEACON_BR24_SIZE: usize = size_of::<BR24Beacon>();
+
+// Service type and subtype identifiers for the Gen3+ beacon protocol.
+// Each device group has a service_type identifying its function, and contains
+// service entries with subtypes for data/command/report channels.
+// See research/navico/discovery-protocol.md.
+const RADAR_SERVICE_TYPE: u16 = 0x0010; // Device group: primary radar services
+const DATA_SUBTYPE: u16 = 0x0010; // Spoke/radar data (multicast RX)
+const COMMAND_SUBTYPE: u16 = 0x0011; // Control commands (multicast TX to radar)
+const REPORT_SUBTYPE: u16 = 0x0012; // State/reports (multicast RX from radar)
+
+#[derive(Debug, PartialEq)]
+struct RadarScanner {
+    data: SocketAddrV4,
+    send: SocketAddrV4,
+    report: SocketAddrV4,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+struct Gen3PlusBeacon<'a> {
+    serial_no: &'a str,
+    radar_addr: SocketAddrV4,
+    num_devices: u16,
+    scanners: Vec<RadarScanner>,
+}
+
+/// Parse a Gen3+ beacon packet (3G, 4G, HALO) using the dynamic device/service
+/// format instead of fixed-size structs. The packet layout is:
+///
+///   [opcode: 2] [serial: 16] [radar_addr: 6] [num_devices: 2]
+///   For each device group:
+///     [service_type: 2] [reserved: 1] [subcomponent: 1] [num_services: 2]
+///     For each service entry:
+///       [subtype: 2] [unknown: 2] [ip: 4] [port: 2]
+fn parse_gen3plus_beacon(data: &[u8]) -> Option<Gen3PlusBeacon<'_>> {
+    if data.len() < 26 {
+        return None;
+    }
+
+    let serial_no = c_string(&data[2..18])?;
+    let radar_ip = Ipv4Addr::new(data[18], data[19], data[20], data[21]);
+    let radar_port = u16::from_be_bytes([data[22], data[23]]);
+    let radar_addr = SocketAddrV4::new(radar_ip, radar_port);
+    let num_devices = u16::from_le_bytes([data[24], data[25]]);
+
+    let mut offset = 26;
+    let mut scanner_pairs: Vec<(u8, RadarScanner)> = Vec::new();
+
+    for _ in 0..num_devices {
+        if offset + 6 > data.len() {
+            break;
+        }
+        let service_type = u16::from_le_bytes([data[offset], data[offset + 1]]);
+        let subcomponent = data[offset + 3];
+        let num_services = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
+        offset += 6;
+
+        let services_len = num_services * 10;
+        if offset + services_len > data.len() {
+            break;
+        }
+
+        if service_type == RADAR_SERVICE_TYPE {
+            let mut data_addr = None;
+            let mut send_addr = None;
+            let mut report_addr = None;
+
+            for _ in 0..num_services {
+                let subtype = u16::from_le_bytes([data[offset], data[offset + 1]]);
+                let ip = Ipv4Addr::new(
+                    data[offset + 4],
+                    data[offset + 5],
+                    data[offset + 6],
+                    data[offset + 7],
+                );
+                let port = u16::from_be_bytes([data[offset + 8], data[offset + 9]]);
+                let addr = SocketAddrV4::new(ip, port);
+
+                match subtype {
+                    DATA_SUBTYPE => data_addr = Some(addr),
+                    COMMAND_SUBTYPE => send_addr = Some(addr),
+                    REPORT_SUBTYPE => report_addr = Some(addr),
+                    _ => {}
+                }
+                offset += 10;
+            }
+
+            if let (Some(d), Some(s), Some(r)) = (data_addr, send_addr, report_addr) {
+                scanner_pairs.push((subcomponent, RadarScanner { data: d, send: s, report: r }));
+            }
+        } else {
+            offset += services_len;
+        }
+    }
+
+    // Sort by subcomponent so A (0x01) comes before B (0x02)
+    scanner_pairs.sort_by_key(|(sub, _)| *sub);
+    let scanners = scanner_pairs.into_iter().map(|(_, s)| s).collect();
+
+    Some(Gen3PlusBeacon {
+        serial_no,
+        radar_addr,
+        num_devices,
+        scanners,
+    })
+}
 
 #[derive(Clone)]
 struct NavicoLocator {
@@ -272,173 +290,77 @@ impl NavicoLocator {
         radars: &SharedRadars,
         subsys: &SubsystemHandle,
     ) -> Result<(), io::Error> {
-        if report.len() < size_of::<BR24Beacon>() {
-            log::debug!(
-                "{} via {}: Incomplete beacon, length {}",
-                from,
-                via,
-                report.len()
-            );
-            return Ok(());
-        }
-
         if radars.is_radar_active_by_addr(&Brand::Navico, from) {
             log::debug!("{}: already active Navico radar", from);
             return Ok(());
         }
 
-        if report.len() >= NAVICO_BEACON_DUAL_SIZE {
-            match deserialize::<NavicoBeaconDual>(report) {
-                Ok(data) => {
-                    log::debug!("{} sent NavicoBeaconDual {:?}", from, data);
-                    if let Some(serial_no) = c_string(&data.header.serial_no) {
-                        log::debug!(
-                            "{} locating dual-range radar @ {}",
-                            from,
-                            data.header.radar_addr
-                        );
-
-                        let radar_addr: SocketAddrV4 = from.clone();
-
-                        let radar_data: SocketAddrV4 = data.a.data.into();
-                        let radar_report: SocketAddrV4 = data.a.report.into();
-                        let radar_send: SocketAddrV4 = data.a.send.into();
-                        let location_info: RadarInfo = RadarInfo::new(
-                            radars,
-                            &self.args,
-                            Brand::Navico,
-                            Some(serial_no),
-                            Some("A"),
-                            16,
-                            NAVICO_SPOKES,
-                            NAVICO_SPOKE_LEN,
-                            radar_addr.into(),
-                            via.clone(),
-                            radar_data.into(),
-                            radar_report.into(),
-                            radar_send.into(),
-                            |id, tx| settings::new(id, tx, &self.args, None),
-                            true,
-                            false,
-                        );
-                        self.found(location_info, radars, subsys);
-
-                        let radar_data: SocketAddrV4 = data.b.data.into();
-                        let radar_report: SocketAddrV4 = data.b.report.into();
-                        let radar_send: SocketAddrV4 = data.b.send.into();
-                        let location_info: RadarInfo = RadarInfo::new(
-                            radars,
-                            &self.args,
-                            Brand::Navico,
-                            Some(serial_no),
-                            Some("B"),
-                            16,
-                            NAVICO_SPOKES,
-                            NAVICO_SPOKE_LEN,
-                            radar_addr.into(),
-                            via.clone(),
-                            radar_data.into(),
-                            radar_report.into(),
-                            radar_send.into(),
-                            |id, tx| settings::new(id, tx, &self.args, None),
-                            true,
-                            false,
-                        );
-                        self.found(location_info, radars, subsys);
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "{} via {}: Failed to decode dual range capable data: {}",
-                        from,
-                        via,
-                        e
-                    );
-                }
+        // All Navico beacons (BR24, 3G, 4G, HALO) use the same dynamic
+        // device/service format — parse with the unified parser.
+        let beacon = match parse_gen3plus_beacon(report) {
+            Some(b) => b,
+            None => {
+                log::debug!(
+                    "{} via {}: Incomplete Gen3+ beacon, length {}",
+                    from,
+                    via,
+                    report.len()
+                );
+                return Ok(());
             }
-        } else if report.len() >= NAVICO_BEACON_SINGLE_SIZE {
-            match deserialize::<NavicoBeaconSingle>(report) {
-                Ok(data) => {
-                    log::debug!("{} sent NavicoBeaconSingle {:?}", from, data);
-                    if let Some(serial_no) = c_string(&data.header.serial_no) {
-                        log::debug!(
-                            "{} locating single-range radar @ {}",
-                            from,
-                            data.header.radar_addr
-                        );
+        };
 
-                        let radar_addr: SocketAddrV4 = from.clone();
+        if beacon.scanners.is_empty() {
+            log::debug!(
+                "{} via {}: Gen3+ beacon has no radar scanners (serial {})",
+                from,
+                via,
+                beacon.serial_no
+            );
+            return Ok(());
+        }
 
-                        let radar_data: SocketAddrV4 = data.a.data.into();
-                        let radar_report: SocketAddrV4 = data.a.report.into();
-                        let radar_send: SocketAddrV4 = data.a.send.into();
-                        let location_info: RadarInfo = RadarInfo::new(
-                            radars,
-                            &self.args,
-                            Brand::Navico,
-                            Some(serial_no),
-                            None,
-                            16,
-                            NAVICO_SPOKES,
-                            NAVICO_SPOKE_LEN,
-                            radar_addr.into(),
-                            via.clone(),
-                            radar_data.into(),
-                            radar_report.into(),
-                            radar_send.into(),
-                            |id, tx| settings::new(id, tx, &self.args, None),
-                            false,
-                            false,
-                        );
-                        self.found(location_info, radars, subsys);
-                    }
-                }
-                Err(e) => {
-                    log::error!(
-                        "{} via {}: Failed to decode single range capable data: {}",
-                        from,
-                        via,
-                        e
-                    );
-                }
-            }
-        } else if report.len() == NAVICO_BEACON_BR24_SIZE {
-            match deserialize::<BR24Beacon>(report) {
-                Ok(data) => {
-                    log::debug!("{} sent BR24Beacon {:?}", from, data);
+        let dual_range = beacon.scanners.len() > 1;
+        let scanner_names: &[&str] = if dual_range {
+            &["A", "B", "C", "D"]
+        } else {
+            &[""]
+        };
 
-                    if let Some(serial_no) = c_string(&data.serial_no) {
-                        log::debug!("{} locating BR24 @ {}", from, data.radar_addr);
-                        let radar_addr: SocketAddrV4 = from.clone();
+        log::debug!(
+            "{} via {}: Gen3+ beacon serial {} with {} scanner(s)",
+            from,
+            via,
+            beacon.serial_no,
+            beacon.scanners.len()
+        );
 
-                        let radar_data: SocketAddrV4 = data.data.into();
-                        let radar_report: SocketAddrV4 = data.report.into();
-                        let radar_send: SocketAddrV4 = data.send.into();
-                        let location_info: RadarInfo = RadarInfo::new(
-                            radars,
-                            &self.args,
-                            Brand::Navico,
-                            Some(serial_no),
-                            None,
-                            16,
-                            NAVICO_SPOKES,
-                            NAVICO_SPOKE_LEN,
-                            radar_addr.into(),
-                            via.clone(),
-                            radar_data.into(),
-                            radar_report.into(),
-                            radar_send.into(),
-                            |id, tx| settings::new(id, tx, &self.args, Some(BR24_MODEL_NAME)),
-                            false,
-                            false,
-                        );
-                        self.found(location_info, radars, subsys);
-                    }
-                }
-                Err(e) => {
-                    log::error!("{} via {}: Failed to decode BR24 data: {}", from, via, e);
-                }
-            }
+        for (i, scanner) in beacon.scanners.iter().enumerate() {
+            let suffix = if dual_range {
+                Some(scanner_names.get(i).copied().unwrap_or("?"))
+            } else {
+                None
+            };
+
+            let location_info = RadarInfo::new(
+                radars,
+                &self.args,
+                Brand::Navico,
+                Some(beacon.serial_no),
+                suffix,
+                16,
+                NAVICO_SPOKES,
+                NAVICO_SPOKE_LEN,
+                (*from).into(),
+                via.clone(),
+                scanner.data.into(),
+                scanner.report.into(),
+                scanner.send.into(),
+                |id, tx| settings::new(id, tx, &self.args, None),
+                dual_range,
+                false,
+            );
+            self.found(location_info, radars, subsys);
         }
         Ok(())
     }
@@ -576,4 +498,339 @@ fn default_navico_ranges() -> Ranges {
     ];
 
     Ranges::new_by_distance(&distances)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bincode::deserialize;
+    use crate::network::NetworkSocketAddrV4;
+    use serde::Deserialize as TestDeserialize;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    // Old fixed-size beacon structs, retained here to verify the dynamic parser
+    // produces identical results. These were the production structs before the
+    // switch to dynamic parsing.
+
+    #[derive(TestDeserialize, Debug, Copy, Clone)]
+    #[repr(packed)]
+    struct NavicoBeaconHeader {
+        _id: u16,
+        _serial_no: [u8; 16],
+        _radar_addr: NetworkSocketAddrV4,
+        _filler1: [u8; 12],
+        _addr1: NetworkSocketAddrV4,
+        _filler2: [u8; 4],
+        _addr2: NetworkSocketAddrV4,
+        _filler3: [u8; 10],
+        _addr3: NetworkSocketAddrV4,
+        _filler4: [u8; 4],
+        _addr4: NetworkSocketAddrV4,
+    }
+
+    #[derive(TestDeserialize, Debug, Copy, Clone)]
+    #[repr(packed)]
+    struct NavicoBeaconRadar {
+        _filler1: [u8; 10],
+        data: NetworkSocketAddrV4,
+        _filler2: [u8; 4],
+        send: NetworkSocketAddrV4,
+        _filler3: [u8; 4],
+        report: NetworkSocketAddrV4,
+    }
+
+    #[derive(TestDeserialize, Debug, Copy, Clone)]
+    #[repr(packed)]
+    struct NavicoBeaconDual {
+        _header: NavicoBeaconHeader,
+        a: NavicoBeaconRadar,
+        b: NavicoBeaconRadar,
+    }
+
+    // Real 4G dual-range beacon (222 bytes) — serial 1403302452, IP 169.254.24.199
+    const BEACON_4G: [u8; 222] = [
+        0x01, 0xB2, 0x31, 0x34, 0x30, 0x33, 0x33, 0x30, 0x32, 0x34, 0x35, 0x32, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xA9, 0xFE, 0x18, 0xC7, 0x01, 0x01, 0x06, 0x00, 0xFD, 0xFF,
+        0x20, 0x01, 0x02, 0x00, 0x10, 0x00, 0x00, 0x00, 0xA9, 0xFE, 0x18, 0xC7, 0x17, 0x60,
+        0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x16, 0x1A, 0x26, 0x1F, 0x00, 0x20, 0x01,
+        0x02, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x17, 0x1A, 0x1C, 0x11, 0x00,
+        0x00, 0x00, 0xEC, 0x06, 0x07, 0x18, 0x1A, 0x1D, 0x10, 0x00, 0x20, 0x01, 0x03, 0x00,
+        0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x08, 0x1A, 0x16, 0x11, 0x00, 0x00, 0x00,
+        0xEC, 0x06, 0x07, 0x0A, 0x1A, 0x18, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x09,
+        0x1A, 0x17, 0x10, 0x00, 0x20, 0x02, 0x03, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06,
+        0x07, 0x0D, 0x1A, 0x01, 0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0E, 0x1A, 0x02,
+        0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0F, 0x1A, 0x03, 0x12, 0x00, 0x20, 0x01,
+        0x03, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x12, 0x1A, 0x20, 0x11, 0x00,
+        0x00, 0x00, 0xEC, 0x06, 0x07, 0x14, 0x1A, 0x22, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06,
+        0x07, 0x13, 0x1A, 0x21, 0x12, 0x00, 0x20, 0x02, 0x03, 0x00, 0x10, 0x00, 0x00, 0x00,
+        0xEC, 0x06, 0x07, 0x0C, 0x1A, 0x04, 0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0D,
+        0x1A, 0x05, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0E, 0x1A, 0x06,
+    ];
+
+    // Real HALO 20+ dual-range beacon (222 bytes) — serial 129848770, IP 192.168.1.10
+    const BEACON_HALO20P: [u8; 222] = [
+        0x01, 0xB2, 0x31, 0x32, 0x39, 0x38, 0x34, 0x38, 0x37, 0x37, 0x30, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xC0, 0xA8, 0x01, 0x0A, 0x01, 0x33, 0x06, 0x00, 0xFD, 0xFF,
+        0x20, 0x01, 0x02, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0C, 0x17, 0x70,
+        0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x16, 0x1A, 0x26, 0x1F, 0x00, 0x20, 0x01,
+        0x02, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x17, 0x1A, 0x1C, 0x11, 0x00,
+        0x00, 0x00, 0xEC, 0x06, 0x07, 0x18, 0x1A, 0x1D, 0x10, 0x00, 0x20, 0x01, 0x03, 0x00,
+        0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x08, 0x1A, 0x16, 0x11, 0x00, 0x00, 0x00,
+        0xEC, 0x06, 0x07, 0x0A, 0x1A, 0x18, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x09,
+        0x1A, 0x17, 0x10, 0x00, 0x20, 0x02, 0x03, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06,
+        0x07, 0x0D, 0x17, 0x71, 0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0E, 0x17, 0x72,
+        0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0D, 0x17, 0x73, 0x12, 0x00, 0x20, 0x01,
+        0x03, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x12, 0x1A, 0x20, 0x11, 0x00,
+        0x00, 0x00, 0xEC, 0x06, 0x07, 0x14, 0x1A, 0x22, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06,
+        0x07, 0x13, 0x1A, 0x21, 0x12, 0x00, 0x20, 0x02, 0x03, 0x00, 0x10, 0x00, 0x00, 0x00,
+        0xEC, 0x06, 0x07, 0x0D, 0x17, 0x74, 0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0F,
+        0x17, 0x75, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x0D, 0x17, 0x76,
+    ];
+
+    // Real HALO 24 dual-range beacon (222 bytes) — serial 1902501034, IP 10.56.0.24
+    const BEACON_HALO24: [u8; 222] = [
+        0x01, 0xB2, 0x31, 0x39, 0x30, 0x32, 0x35, 0x30, 0x31, 0x30, 0x33, 0x34, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x0A, 0x38, 0x00, 0x18, 0x31, 0x31, 0x06, 0x00, 0xFD, 0xFF,
+        0x20, 0x01, 0x02, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x30, 0x1B, 0x90,
+        0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x16, 0x1A, 0x26, 0x1F, 0x00, 0x20, 0x01,
+        0x02, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x31, 0x1B, 0x91, 0x11, 0x00,
+        0x00, 0x00, 0xEC, 0x06, 0x09, 0x32, 0x1B, 0x92, 0x10, 0x00, 0x20, 0x01, 0x03, 0x00,
+        0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x33, 0x1B, 0x93, 0x11, 0x00, 0x00, 0x00,
+        0xEC, 0x06, 0x09, 0x34, 0x1B, 0x94, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x33,
+        0x1B, 0x95, 0x10, 0x00, 0x20, 0x02, 0x03, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06,
+        0x09, 0x35, 0x1B, 0x96, 0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x36, 0x1B, 0x97,
+        0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x35, 0x1B, 0x98, 0x12, 0x00, 0x20, 0x01,
+        0x03, 0x00, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x33, 0x1B, 0x99, 0x11, 0x00,
+        0x00, 0x00, 0xEC, 0x06, 0x09, 0x37, 0x1B, 0x9A, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06,
+        0x09, 0x33, 0x1B, 0x9B, 0x12, 0x00, 0x20, 0x02, 0x03, 0x00, 0x10, 0x00, 0x00, 0x00,
+        0xEC, 0x06, 0x09, 0x35, 0x1B, 0x9C, 0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x38,
+        0x1B, 0x9D, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x09, 0x35, 0x1B, 0x9E,
+    ];
+
+    #[test]
+    fn parse_4g_beacon() {
+        let beacon = parse_gen3plus_beacon(&BEACON_4G).unwrap();
+
+        assert_eq!(beacon.serial_no, "1403302452");
+        assert_eq!(beacon.radar_addr, SocketAddrV4::new(Ipv4Addr::new(169, 254, 24, 199), 257));
+        assert_eq!(beacon.num_devices, 6);
+        assert_eq!(beacon.scanners.len(), 2);
+
+        // Radar A
+        assert_eq!(beacon.scanners[0].data, SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 8), 6678));
+        assert_eq!(beacon.scanners[0].send, SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 10), 6680));
+        assert_eq!(
+            beacon.scanners[0].report,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 9), 6679)
+        );
+
+        // Radar B
+        assert_eq!(
+            beacon.scanners[1].data,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 13), 6657)
+        );
+        assert_eq!(
+            beacon.scanners[1].send,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 14), 6658)
+        );
+        assert_eq!(
+            beacon.scanners[1].report,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 15), 6659)
+        );
+    }
+
+    #[test]
+    fn parse_halo20p_beacon() {
+        let beacon = parse_gen3plus_beacon(&BEACON_HALO20P).unwrap();
+
+        assert_eq!(beacon.serial_no, "129848770");
+        assert_eq!(beacon.radar_addr, SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 10), 307));
+        assert_eq!(beacon.num_devices, 6);
+        assert_eq!(beacon.scanners.len(), 2);
+
+        // Radar A — same multicast group as 4G for the A scanner
+        assert_eq!(beacon.scanners[0].data, SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 8), 6678));
+        assert_eq!(beacon.scanners[0].send, SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 10), 6680));
+        assert_eq!(
+            beacon.scanners[0].report,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 9), 6679)
+        );
+
+        // Radar B — HALO 20+ uses different ports for B than 4G
+        assert_eq!(
+            beacon.scanners[1].data,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 13), 6001)
+        );
+        assert_eq!(
+            beacon.scanners[1].send,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 14), 6002)
+        );
+        assert_eq!(
+            beacon.scanners[1].report,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 13), 6003)
+        );
+    }
+
+    #[test]
+    fn parse_halo24_beacon() {
+        let beacon = parse_gen3plus_beacon(&BEACON_HALO24).unwrap();
+
+        assert_eq!(beacon.serial_no, "1902501034");
+        assert_eq!(beacon.radar_addr, SocketAddrV4::new(Ipv4Addr::new(10, 56, 0, 24), 12593));
+        assert_eq!(beacon.num_devices, 6);
+        assert_eq!(beacon.scanners.len(), 2);
+
+        // Radar A — HALO 24 uses 236.6.9.x subnet and 7000+ ports
+        assert_eq!(
+            beacon.scanners[0].data,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 9, 51), 7059)
+        );
+        assert_eq!(
+            beacon.scanners[0].send,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 9, 52), 7060)
+        );
+        assert_eq!(
+            beacon.scanners[0].report,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 9, 51), 7061)
+        );
+
+        // Radar B
+        assert_eq!(
+            beacon.scanners[1].data,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 9, 53), 7062)
+        );
+        assert_eq!(
+            beacon.scanners[1].send,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 9, 54), 7063)
+        );
+        assert_eq!(
+            beacon.scanners[1].report,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 9, 53), 7064)
+        );
+    }
+
+    /// Verify the dynamic parser extracts the same radar addresses as the old
+    /// fixed-struct bincode approach for all three captured beacons.
+    #[test]
+    fn dynamic_parser_matches_fixed_structs() {
+        for (name, packet) in [
+            ("4G", &BEACON_4G[..]),
+            ("HALO 20+", &BEACON_HALO20P[..]),
+            ("HALO 24", &BEACON_HALO24[..]),
+        ] {
+            let old: NavicoBeaconDual = deserialize(packet).expect(&format!("{}: bincode failed", name));
+            let new = parse_gen3plus_beacon(packet).expect(&format!("{}: dynamic parse failed", name));
+
+            let old_a_data: SocketAddrV4 = old.a.data.into();
+            let old_a_send: SocketAddrV4 = old.a.send.into();
+            let old_a_report: SocketAddrV4 = old.a.report.into();
+            let old_b_data: SocketAddrV4 = old.b.data.into();
+            let old_b_send: SocketAddrV4 = old.b.send.into();
+            let old_b_report: SocketAddrV4 = old.b.report.into();
+
+            assert_eq!(new.scanners[0].data, old_a_data, "{}: A data mismatch", name);
+            assert_eq!(new.scanners[0].send, old_a_send, "{}: A send mismatch", name);
+            assert_eq!(new.scanners[0].report, old_a_report, "{}: A report mismatch", name);
+            assert_eq!(new.scanners[1].data, old_b_data, "{}: B data mismatch", name);
+            assert_eq!(new.scanners[1].send, old_b_send, "{}: B send mismatch", name);
+            assert_eq!(new.scanners[1].report, old_b_report, "{}: B report mismatch", name);
+        }
+    }
+
+    // Real BR24 beacon (98 bytes) — serial 1047300043, IP 169.254.210.23
+    // Extracted from radar-recordings/navico/br24/104730043/br24-full.pcap
+    const BEACON_BR24: [u8; 98] = [
+        0x01, 0xB2, 0x31, 0x30, 0x34, 0x37, 0x33, 0x30, 0x30, 0x30, 0x34, 0x33, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xA9, 0xFE, 0xD2, 0x17, 0x01, 0x01, 0x02, 0x00, 0x12, 0x00,
+        0x20, 0x01, 0x03, 0x00, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x13, 0x1A, 0x21,
+        0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x14, 0x1A, 0x22, 0x10, 0x00, 0x00, 0x00,
+        0xEC, 0x06, 0x07, 0x12, 0x1A, 0x20, 0x10, 0x00, 0x20, 0x01, 0x03, 0x00, 0x12, 0x00,
+        0x00, 0x00, 0xEC, 0x06, 0x07, 0x09, 0x1A, 0x17, 0x11, 0x00, 0x00, 0x00, 0xEC, 0x06,
+        0x07, 0x0A, 0x1A, 0x18, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x08, 0x1A, 0x16,
+    ];
+
+    #[test]
+    fn parse_br24_beacon() {
+        let beacon = parse_gen3plus_beacon(&BEACON_BR24).unwrap();
+
+        assert_eq!(beacon.serial_no, "1047300043");
+        assert_eq!(
+            beacon.radar_addr,
+            SocketAddrV4::new(Ipv4Addr::new(169, 254, 210, 23), 257)
+        );
+        assert_eq!(beacon.num_devices, 2);
+        assert_eq!(beacon.scanners.len(), 1);
+
+        // Single scanner — service_type 0x0010 is the radar
+        assert_eq!(
+            beacon.scanners[0].data,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 8), 6678)
+        );
+        assert_eq!(
+            beacon.scanners[0].send,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 10), 6680)
+        );
+        assert_eq!(
+            beacon.scanners[0].report,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 9), 6679)
+        );
+    }
+
+    // Real BR24 NorthStar beacon (98 bytes) — serial 0924A10745, IP 169.254.174.127
+    // Extracted from radar-recordings/navico/br24/northstar/br24_davy.pcapng
+    const BEACON_BR24_NORTHSTAR: [u8; 98] = [
+        0x01, 0xB2, 0x30, 0x39, 0x32, 0x34, 0x41, 0x31, 0x30, 0x37, 0x34, 0x35, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xA9, 0xFE, 0xAE, 0x7F, 0x01, 0x01, 0x02, 0x00, 0x12, 0x00,
+        0x20, 0x01, 0x03, 0x00, 0x12, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x13, 0x1A, 0x21,
+        0x11, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x14, 0x1A, 0x22, 0x10, 0x00, 0x00, 0x00,
+        0xEC, 0x06, 0x07, 0x12, 0x1A, 0x20, 0x10, 0x00, 0x20, 0x01, 0x03, 0x00, 0x12, 0x00,
+        0x00, 0x00, 0xEC, 0x06, 0x07, 0x09, 0x1A, 0x17, 0x11, 0x00, 0x00, 0x00, 0xEC, 0x06,
+        0x07, 0x0A, 0x1A, 0x18, 0x10, 0x00, 0x00, 0x00, 0xEC, 0x06, 0x07, 0x08, 0x1A, 0x16,
+    ];
+
+    #[test]
+    fn parse_br24_northstar_beacon() {
+        let beacon = parse_gen3plus_beacon(&BEACON_BR24_NORTHSTAR).unwrap();
+
+        assert_eq!(beacon.serial_no, "0924A10745");
+        assert_eq!(
+            beacon.radar_addr,
+            SocketAddrV4::new(Ipv4Addr::new(169, 254, 174, 127), 257)
+        );
+        assert_eq!(beacon.num_devices, 2);
+        assert_eq!(beacon.scanners.len(), 1);
+
+        // Same service addresses as the other BR24 — all BR24s use the same multicast group
+        assert_eq!(
+            beacon.scanners[0].data,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 8), 6678)
+        );
+        assert_eq!(
+            beacon.scanners[0].send,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 10), 6680)
+        );
+        assert_eq!(
+            beacon.scanners[0].report,
+            SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 9), 6679)
+        );
+    }
+
+    #[test]
+    fn parse_truncated_beacon_returns_none() {
+        // Too short for header
+        assert!(parse_gen3plus_beacon(&BEACON_4G[..25]).is_none());
+        // Empty
+        assert!(parse_gen3plus_beacon(&[]).is_none());
+    }
+
+    #[test]
+    fn parse_truncated_services_returns_partial() {
+        // Truncate mid-way through device 3 (radar A) — should still parse
+        // the non-radar device groups but find no radar scanners
+        let beacon = parse_gen3plus_beacon(&BEACON_4G[..80]);
+        assert!(beacon.is_some());
+        let beacon = beacon.unwrap();
+        assert_eq!(beacon.serial_no, "1403302452");
+        // May have 0 scanners since the radar device entry is incomplete
+    }
 }
