@@ -217,14 +217,14 @@ const FAR_FUTURE: Duration = Duration::from_secs(86400 * 365 * 30);
 
 #[derive(Debug)]
 #[repr(packed)]
-struct RadarReport1_18 {
-    _what: u8,
-    _command: u8,
+struct StateMode {
+    _sub_opcode: u8,
+    _category: u8,
     status: u8,
-    _u00: [u8; 15], // Lots of unknown
+    _u00: [u8; 15],
 }
 
-impl RadarReport1_18 {
+impl StateMode {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -235,13 +235,13 @@ impl RadarReport1_18 {
     }
 }
 
-const REPORT_01_C4_18: u8 = 0x01;
+const STATE_MODE: u8 = 0x01;
 
 #[derive(Debug)]
 #[repr(packed)]
-struct RadarReport2_99 {
-    _what: u8,
-    _command: u8,
+struct StateSetup {
+    _sub_opcode: u8,
+    _category: u8,
     range: [u8; 4],             // 2..6 = range
     _u00: [u8; 1],              // 6
     mode: u8,                   // 7 = mode
@@ -262,7 +262,7 @@ struct RadarReport2_99 {
     _u07: [u8; 56],             // 43..99
 }
 
-impl RadarReport2_99 {
+impl StateSetup {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -273,13 +273,13 @@ impl RadarReport2_99 {
     }
 }
 
-const REPORT_02_C4_99: u8 = 0x02;
+const STATE_SETUP: u8 = 0x02;
 
 #[derive(Debug)]
 #[repr(packed)]
-struct RadarReport3_129 {
-    _what: u8,
-    _command: u8,
+struct StateConfig {
+    _sub_opcode: u8,
+    _category: u8,
     model: u8,      // So far: 01 = 4G and new 3G, 08 = 3G, 0E and 0F = BR24, 00 = HALO
     _u00: [u8; 31], // Lots of unknown
     hours: [u8; 4], // Hours of operation
@@ -289,7 +289,7 @@ struct RadarReport3_129 {
     _u02: [u8; 7],
 }
 
-impl RadarReport3_129 {
+impl StateConfig {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -300,13 +300,13 @@ impl RadarReport3_129 {
     }
 }
 
-const REPORT_03_C4_129: u8 = 0x03;
+const STATE_CONFIG: u8 = 0x03;
 
 #[derive(Debug)]
 #[repr(packed)]
-struct RadarReport4_66 {
-    _what: u8,
-    _command: u8,
+struct StateFeatures {
+    _sub_opcode: u8,
+    _category: u8,
     _u00: [u8; 4],              // 2..6
     bearing_alignment: [u8; 2], // 6..8
     _u01: [u8; 2],              // 8..10
@@ -316,7 +316,7 @@ struct RadarReport4_66 {
     _u03: [u8; 46],             // 20..66
 }
 
-impl RadarReport4_66 {
+impl StateFeatures {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -327,7 +327,7 @@ impl RadarReport4_66 {
     }
 }
 
-const REPORT_04_C4_66: u8 = 0x04;
+const STATE_FEATURES: u8 = 0x04;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(packed)]
@@ -339,9 +339,9 @@ struct SectorBlankingReport {
 
 #[derive(Debug)]
 #[repr(packed)]
-struct RadarReport6_68 {
-    _what: u8,
-    _command: u8,
+struct StateProperties68 {
+    _sub_opcode: u8,
+    _category: u8,
     _u00: [u8; 4],                       // 2..6
     name: [u8; 6],                       // 6..12
     _u01: [u8; 24],                      // 12..36
@@ -349,7 +349,7 @@ struct RadarReport6_68 {
     _u02: [u8; 12],                      // 56..68
 }
 
-impl RadarReport6_68 {
+impl StateProperties68 {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -361,9 +361,9 @@ impl RadarReport6_68 {
 }
 #[derive(Debug)]
 #[repr(packed)]
-struct RadarReport6_74 {
-    _what: u8,
-    _command: u8,
+struct StateProperties74 {
+    _sub_opcode: u8,
+    _category: u8,
     _u00: [u8; 4],                       // 2..6
     name: [u8; 6],                       // 6..12
     _u01: [u8; 30],                      // 12..42
@@ -371,7 +371,7 @@ struct RadarReport6_74 {
     _u0: [u8; 12],                       // 62..74
 }
 
-impl RadarReport6_74 {
+impl StateProperties74 {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -382,14 +382,13 @@ impl RadarReport6_74 {
     }
 }
 
-const REPORT_06_C4_68: u8 = 0x06;
+const STATE_PROPERTIES: u8 = 0x06;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(packed)]
-struct RadarReport8_18 {
-    // 08 c4  length 18
-    _what: u8,                  // 0  0x08
-    _command: u8,               // 1  0xC4
+struct StateInstallation {
+    _sub_opcode: u8,            // 0  0x08
+    _category: u8,              // 1  0xC4
     sea_state: u8,              // 2
     interference_rejection: u8, // 3
     scan_speed: u8,             // 4
@@ -409,23 +408,23 @@ struct RadarReport8_18 {
 
 #[derive(Debug)]
 #[repr(packed)]
-struct RadarReport8_21 {
-    _old: RadarReport8_18,
+struct StateInstallation21 {
+    _base: StateInstallation,
     doppler_state: u8,
     doppler_speed: [u8; 2], // doppler speed threshold in values 0..1594 (in cm/s).
 }
 
 #[derive(Debug)]
 #[repr(packed)]
-struct RadarReport8_32 {
-    _old: RadarReport8_18,
+struct StateInstallation32 {
+    _base: StateInstallation,
     doppler_state: u8,
     doppler_speed: [u8; 2], // doppler speed threshold in values 0..1594 (in cm/s).
     w: u8,
     x: [u8; 10],
 }
 
-impl RadarReport8_18 {
+impl StateInstallation {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -436,7 +435,7 @@ impl RadarReport8_18 {
     }
 }
 
-impl RadarReport8_21 {
+impl StateInstallation21 {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -447,7 +446,7 @@ impl RadarReport8_21 {
     }
 }
 
-impl RadarReport8_32 {
+impl StateInstallation32 {
     fn transmute(bytes: &[u8]) -> Result<Self, anyhow::Error> {
         // This is safe as the struct's bits are always all valid representations,
         // or we convert them using a fail safe function
@@ -458,7 +457,7 @@ impl RadarReport8_32 {
     }
 }
 
-const REPORT_08_C4_18_OR_21_OR_22_OR_32: u8 = 0x08;
+const STATE_INSTALLATION: u8 = 0x08;
 
 impl NavicoReportReceiver {
     pub fn new(
@@ -1009,41 +1008,41 @@ impl NavicoReportReceiver {
             }
             return Ok(());
         }
-        let report_identification = data[0];
-        match report_identification {
-            REPORT_01_C4_18 => {
-                return self.process_report_01().await;
+        let sub_opcode = data[0];
+        match sub_opcode {
+            STATE_MODE => {
+                return self.process_state_mode().await;
             }
-            REPORT_02_C4_99 => {
+            STATE_SETUP => {
                 if self.model != Model::Unknown {
-                    return self.process_report_02().await;
+                    return self.process_state_setup().await;
                 }
             }
-            REPORT_03_C4_129 => {
-                return self.process_report_03().await;
+            STATE_CONFIG => {
+                return self.process_state_config().await;
             }
-            REPORT_04_C4_66 => {
-                return self.process_report_04().await;
+            STATE_FEATURES => {
+                return self.process_state_features().await;
             }
-            REPORT_06_C4_68 => {
+            STATE_PROPERTIES => {
                 if self.model != Model::Unknown {
                     if data.len() == 68 {
-                        return self.process_report_06_68().await;
+                        return self.process_state_properties_68().await;
                     }
-                    return self.process_report_06_74().await;
+                    return self.process_state_properties_74().await;
                 }
             }
-            REPORT_08_C4_18_OR_21_OR_22_OR_32 => {
+            STATE_INSTALLATION => {
                 if self.model != Model::Unknown {
-                    return self.process_report_08().await;
+                    return self.process_state_installation().await;
                 }
             }
             _ => {
-                if !self.reported_unknown[report_identification as usize] {
-                    self.reported_unknown[report_identification as usize] = true;
+                if !self.reported_unknown[sub_opcode as usize] {
+                    self.reported_unknown[sub_opcode as usize] = true;
                     log::trace!(
-                        "Unknown report identification {} len {} data {:02X?} dropped",
-                        report_identification,
+                        "Unknown state sub_opcode 0x{:02X} len {} data {:02X?} dropped",
+                        sub_opcode,
                         data.len(),
                         data
                     );
@@ -1053,8 +1052,8 @@ impl NavicoReportReceiver {
         Ok(())
     }
 
-    async fn process_report_01(&mut self) -> Result<(), Error> {
-        let report = RadarReport1_18::transmute(&self.report_buf)?;
+    async fn process_state_mode(&mut self) -> Result<(), Error> {
+        let report = StateMode::transmute(&self.report_buf)?;
 
         log::debug!("{}: report {:?}", self.common.key, report);
 
@@ -1076,8 +1075,8 @@ impl NavicoReportReceiver {
         Ok(())
     }
 
-    async fn process_report_02(&mut self) -> Result<(), Error> {
-        let report = RadarReport2_99::transmute(&self.report_buf)?;
+    async fn process_state_setup(&mut self) -> Result<(), Error> {
+        let report = StateSetup::transmute(&self.report_buf)?;
 
         log::trace!("{}: report {:?}", self.common.key, report);
 
@@ -1134,8 +1133,8 @@ impl NavicoReportReceiver {
         Ok(())
     }
 
-    async fn process_report_03(&mut self) -> Result<(), Error> {
-        let report = RadarReport3_129::transmute(&self.report_buf)?;
+    async fn process_state_config(&mut self) -> Result<(), Error> {
+        let report = StateConfig::transmute(&self.report_buf)?;
 
         log::trace!("{}: report {:?}", self.common.key, report);
 
@@ -1188,8 +1187,8 @@ impl NavicoReportReceiver {
         Ok(())
     }
 
-    async fn process_report_04(&mut self) -> Result<(), Error> {
-        let report = RadarReport4_66::transmute(&self.report_buf)?;
+    async fn process_state_features(&mut self) -> Result<(), Error> {
+        let report = StateFeatures::transmute(&self.report_buf)?;
 
         log::trace!("{}: report {:?}", self.common.key, report);
 
@@ -1212,8 +1211,8 @@ impl NavicoReportReceiver {
     ///
     /// Blanking (No Transmit) report as seen on HALO 2006
     ///
-    async fn process_report_06_68(&mut self) -> Result<(), Error> {
-        let report = RadarReport6_68::transmute(&self.report_buf)?;
+    async fn process_state_properties_68(&mut self) -> Result<(), Error> {
+        let report = StateProperties68::transmute(&self.report_buf)?;
 
         log::debug!("{}: report {:?}", self.common.key, report);
 
@@ -1240,8 +1239,8 @@ impl NavicoReportReceiver {
     ///
     /// Blanking (No Transmit) report as seen on HALO 24 (Firmware 2023)
     ///
-    async fn process_report_06_74(&mut self) -> Result<(), Error> {
-        let report = RadarReport6_74::transmute(&self.report_buf)?;
+    async fn process_state_properties_74(&mut self) -> Result<(), Error> {
+        let report = StateProperties74::transmute(&self.report_buf)?;
 
         log::debug!("{}: report {:?}", self.common.key, report);
 
@@ -1276,22 +1275,22 @@ impl NavicoReportReceiver {
         Ok(())
     }
 
-    async fn process_report_08(&mut self) -> Result<(), Error> {
+    async fn process_state_installation(&mut self) -> Result<(), Error> {
         let data = &self.report_buf;
 
-        if data.len() != size_of::<RadarReport8_18>()
-            && data.len() != size_of::<RadarReport8_21>()
-            && data.len() != size_of::<RadarReport8_21>() + 1
-            && data.len() != size_of::<RadarReport8_32>()
+        if data.len() != size_of::<StateInstallation>()
+            && data.len() != size_of::<StateInstallation21>()
+            && data.len() != size_of::<StateInstallation21>() + 1
+            && data.len() != size_of::<StateInstallation32>()
         {
             bail!(
-                "{}: Report 0x08C4 invalid length {}",
+                "{}: StateInstallation (0xC408) invalid length {}",
                 self.common.key,
                 data.len()
             );
         }
 
-        let model = if data.len() >= size_of::<RadarReport8_21>() {
+        let model = if data.len() >= size_of::<StateInstallation21>() {
             Model::HALO
         } else if self.model == Model::HaloOrG4 {
             Model::Gen4
@@ -1309,7 +1308,7 @@ impl NavicoReportReceiver {
             self.common.update();
         }
 
-        let report = RadarReport8_18::transmute(&data[0..size_of::<RadarReport8_18>()])?;
+        let report = StateInstallation::transmute(&data[0..size_of::<StateInstallation>()])?;
 
         log::trace!("{}: report {:?}", self.common.key, report);
 
@@ -1324,8 +1323,8 @@ impl NavicoReportReceiver {
         let auto_sea_clutter = report.auto_sea_clutter;
 
         // There are reports of size 21, but also 22. HALO new firmware sends 22. The last byte content is unknown.
-        if data.len() >= size_of::<RadarReport8_32>() {
-            let report = RadarReport8_32::transmute(&data[0..size_of::<RadarReport8_32>()])?;
+        if data.len() >= size_of::<StateInstallation32>() {
+            let report = StateInstallation32::transmute(&data[0..size_of::<StateInstallation32>()])?;
 
             log::debug!("{}: report {:?}", self.common.key, report);
 
@@ -1362,8 +1361,8 @@ impl NavicoReportReceiver {
                 report.w,
                 report.x,
             );
-        } else if data.len() >= size_of::<RadarReport8_21>() {
-            let report = RadarReport8_21::transmute(&data[0..size_of::<RadarReport8_21>()])?;
+        } else if data.len() >= size_of::<StateInstallation21>() {
+            let report = StateInstallation21::transmute(&data[0..size_of::<StateInstallation21>()])?;
 
             log::trace!("{}: report {:?}", self.common.key, report);
 
