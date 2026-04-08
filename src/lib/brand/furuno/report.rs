@@ -1275,12 +1275,18 @@ impl FurunoReportReceiver {
 
         // The radar's active range unit (NM / km) determines which wire-index
         // table to use: the same wire index means different physical distances
-        // in nautical vs metric mode. Read the unit from the current range
-        // controls; defaults to NM.
-        let wire_unit = self
-            .common
-            .info
-            .controls
+        // in nautical vs metric mode. Read RangeUnits from the controls that
+        // belong to the specific range this spoke is for — Range A and Range B
+        // can be configured with different units.
+        let range_controls = if radar_no == 1 {
+            self.common_b
+                .as_ref()
+                .map(|cb| &cb.info.controls)
+                .unwrap_or(&self.common.info.controls)
+        } else {
+            &self.common.info.controls
+        };
+        let wire_unit = range_controls
             .get(&crate::radar::settings::ControlId::RangeUnits)
             .and_then(|c| c.value)
             .map(|v| {

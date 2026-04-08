@@ -149,20 +149,15 @@ pub fn meters_to_wire_index_for_unit(meters: i32, wire_unit: i32) -> i32 {
 }
 
 fn lookup_wire_index(table: &[(i32, i32)], meters: i32) -> i32 {
-    // Try exact match first
-    for (wire_idx, m) in table.iter() {
-        if *m == meters {
-            return *wire_idx;
-        }
-    }
-    // If no exact match, find the closest one that's >= requested meters
-    for (wire_idx, m) in table.iter() {
-        if *m >= meters {
-            return *wire_idx;
-        }
-    }
-    // Fallback to last entry in table
-    table.last().map(|(idx, _)| *idx).unwrap_or(15)
+    // Return the wire index whose range is closest (in absolute distance) to
+    // the requested value. Previously this was a ceiling search which could
+    // jump to a much larger range (e.g. 66672 m would round up to 72 NM
+    // instead of the nearest 64 NM entry).
+    table
+        .iter()
+        .min_by_key(|(_, m)| (i64::from(*m) - i64::from(meters)).abs())
+        .map(|(idx, _)| *idx)
+        .unwrap_or(15)
 }
 
 /// Convert Furuno wire index to meters (NM mode)
