@@ -1388,7 +1388,7 @@ impl CommonRadar {
                     }
                 }
             }
-            let spoke = to_protobuf_spoke(
+            let mut spoke = to_protobuf_spoke(
                 self.info.spokes_per_revolution,
                 range,
                 angle,
@@ -1396,6 +1396,7 @@ impl CommonRadar {
                 Some(self.spoke_time),
                 generic_spoke,
             );
+            apply_antenna_offset(&mut spoke, &self.info.controls);
             self.spoke_count += 1;
             self.max_spoke_length = max(self.max_spoke_length, spoke.data.len() as u32);
 
@@ -1653,4 +1654,40 @@ impl CommonRadar {
             Ok(None) => {}
         };
     }
+}
+
+/// Adjust a spoke's lat/lon by the antenna offset (forward/starboard of GPS).
+/// Requires both a valid position and heading to compute the offset.
+fn apply_antenna_offset(
+    spoke: &mut crate::protos::RadarMessage::radar_message::Spoke,
+    controls: &SharedControls,
+) {
+    let (Some(lat), Some(lon)) = (spoke.lat, spoke.lon) else {
+        return;
+    };
+    let Some(heading) = crate::navdata::get_heading_true() else {
+        return;
+    };
+
+    let forward_m = controls
+        .get(&ControlId::AntennaForward)
+        .and_then(|c| c.as_f64())
+        .unwrap_or(0.0);
+    let starboard_m = controls
+        .get(&ControlId::AntennaStarboard)
+        .and_then(|c| c.as_f64())
+        .unwrap_or(0.0);
+
+    if forward_m == 0.0 && starboard_m == 0.0 {
+        return;
+    }
+
+    // Rotate forward/starboard into north/east using vessel heading
+    let (sin_h, cos_h) = heading.sin_cos();
+    let north_m = forward_m * cos_h - starboard_m * sin_h;
+    let east_m = forward_m * sin_h + starboard_m * cos_h;
+
+    const METERS_PER_DEG_LAT: f64 = 111_111.0;
+    spoke.lat = Some(lat + north_m / METERS_PER_DEG_LAT);
+    spoke.lon = Some(lon + east_m / (METERS_PER_DEG_LAT * lat.to_radians().cos()));
 }
