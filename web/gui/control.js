@@ -1330,7 +1330,7 @@ function buildSingleControl(k, v) {
   } else if (
     "maxValue" in v &&
     v.maxValue <= 100 &&
-    (!v.units || v.units !== "m/s")
+    (!v.units || (v.units !== "m/s" && v.units !== "m" && v.units !== "deg"))
   ) {
     const min = v.minValue || 0;
     const max = v.maxValue;
