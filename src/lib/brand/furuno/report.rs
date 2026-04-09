@@ -57,6 +57,7 @@ pub struct FurunoReportReceiver {
     command_sender: Option<Command>,
     report_request_interval: Duration,
     model_known: bool,
+    model: RadarModel,
 
     receive_type: ReceiveAddressType,
     multicast_socket: Option<UdpSocket>,
@@ -99,6 +100,7 @@ impl FurunoReportReceiver {
             command_sender,
             report_request_interval: Duration::from_millis(5000),
             model_known: false,
+            model: RadarModel::Unknown,
             receive_type: ReceiveAddressType::Both,
             multicast_socket: None,
             broadcast_socket: None,
@@ -791,6 +793,7 @@ impl FurunoReportReceiver {
                 model,
                 version
             );
+            self.model = model;
             settings::update_when_model_known(&mut self.common.info, model, version);
             if let Some(cs) = &mut self.command_sender {
                 cs.set_ranges(self.common.info.ranges.clone());
@@ -1020,6 +1023,17 @@ impl FurunoReportReceiver {
                 FURUNO_SPOKE_LEN,
             );
 
+            // Low-power radars (DRS4W: 2.2 kW WiFi) produce raw echo values
+            // well below the encoding maximum (~124 vs 252), so the 64-color
+            // palette is only half-utilised and targets appear uniformly blue.
+            // A software gain of 2× doubles the palette spread without
+            // affecting full-power models (NXT, FAR) where values already
+            // reach the encoding ceiling.
+            let echo_gain: u8 = match self.model {
+                RadarModel::DRS4W | RadarModel::DRS => 2,
+                _ => 1,
+            };
+
             if is_range_b {
                 Self::add_spoke_to_common(
                     self.common_b.as_mut().unwrap(),
@@ -1027,9 +1041,17 @@ impl FurunoReportReceiver {
                     angle,
                     heading,
                     &send_spoke,
+                    echo_gain,
                 );
             } else {
-                Self::add_spoke_to_common(&mut self.common, &metadata, angle, heading, &send_spoke);
+                Self::add_spoke_to_common(
+                    &mut self.common,
+                    &metadata,
+                    angle,
+                    heading,
+                    &send_spoke,
+                    echo_gain,
+                );
             }
 
             self.prev_angle[range_idx] = angle;
@@ -1190,6 +1212,7 @@ impl FurunoReportReceiver {
         angle: SpokeBearing,
         heading: SpokeBearing,
         sweep: &[u8],
+        echo_gain: u8,
     ) {
         if common.replay {
             let _ = common
@@ -1210,12 +1233,18 @@ impl FurunoReportReceiver {
             heading.map(|h| (h * FURUNO_SPOKES as f64 / TAU) as u16)
         };
 
+        let pixel_max = common.info.pixel_values.saturating_sub(1) as u16;
         let mut data = vec![0; sweep.len()];
 
-        let mut i = 0;
-        for b in sweep {
-            data[i] = b >> 2;
-            i += 1;
+        for (i, b) in sweep.iter().enumerate() {
+            // Map raw echo byte to palette index. The raw value range depends
+            // on the encoding (max 252 for encoding 3, 254 for encoding 1/2).
+            // Low-power radars (DRS4W: 2.2 kW) produce values well below the
+            // hardware maximum, so echo_gain > 1 applies software amplification
+            // before the palette mapping. Clamped to pixel_max (63 for the
+            // default 64-color palette).
+            let amplified = (*b as u16 * echo_gain as u16) >> 2;
+            data[i] = amplified.min(pixel_max) as u8;
         }
         if common.replay {
             data[sweep.len() - 1] = 64;

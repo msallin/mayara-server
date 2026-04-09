@@ -479,7 +479,7 @@ impl FurunoLocator {
                         true,
                         true,
                     );
-                    info_b.controls.set_model_name(format!("{} B", model));
+                    info_b.controls.set_model_name(model.to_string());
                     info_b.controls.set_user_name(
                         format!("{model} {} B", serial_no.unwrap_or(""))
                             .trim()
