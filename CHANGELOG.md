@@ -8,6 +8,10 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ## [Unreleased]
 
+### Changed
+
+- Furuno protocol constants, command IDs, wire index tables, and model identification consolidated into `protocol.rs`
+
 ### Fixed
 
 - Furuno DRS4W range table restricted to wire indices 3-13 (0.75-24 NM), matching the hardware's actual supported ranges

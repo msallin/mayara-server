@@ -12,12 +12,17 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::{Instant, sleep, sleep_until};
 use tokio_graceful_shutdown::SubsystemHandle;
 
-use super::RadarModel;
-use super::command::{Command, CommandId};
+use super::command::Command;
+use super::protocol::{
+    CommandId, DATA_BROADCAST_ADDRESS, ECHO_GAIN_DEFAULT, ECHO_GAIN_LOW_POWER,
+    ENCODING_1_REPEAT_DEFAULT, ENCODING_3_REPEAT_DEFAULT, FRAME_DUAL_RANGE_BIT,
+    FRAME_ENCODING_MASK, FRAME_ENCODING_SHIFT, FRAME_HEADING_VALID_BIT, FRAME_MAGIC,
+    FRAME_SCALE_HIGH_MASK, FRAME_SPOKE_DATA_LEN_HIGH_BIT, FRAME_SWEEP_LEN_HIGH_MASK,
+    FRAME_WIRE_INDEX_MASK, RadarModel, SPOKE_ALIGNMENT_MASK, SPOKE_ANGLE_HIGH_MASK, SPOKE_LEN,
+    SPOKES, WIRE_UNIT_KM, WIRE_UNIT_NM, wire_index_to_meters_for_unit,
+};
 use super::settings;
-use super::{FURUNO_DATA_BROADCAST_ADDRESS, FURUNO_SPOKE_LEN};
 use crate::Cli;
-use crate::brand::furuno::FURUNO_SPOKES;
 use crate::network::{create_udp_listen, create_udp_multicast_listen};
 use crate::radar::CommonRadar;
 use crate::radar::SharedRadars;
@@ -605,7 +610,7 @@ impl FurunoReportReceiver {
                 let wire_index = numbers[0] as i32;
                 let wire_unit = numbers[1] as i32;
                 let range_meters =
-                    super::command::wire_index_to_meters_for_unit(wire_index, wire_unit)
+                    wire_index_to_meters_for_unit(wire_index, wire_unit)
                         .with_context(|| {
                             format!(
                                 "Unknown wire index {} (unit {}) from radar range response",
@@ -615,7 +620,7 @@ impl FurunoReportReceiver {
 
                 let drid = self.extract_drid(&command_id, &numbers);
                 let range_units_value = match wire_unit {
-                    super::command::WIRE_UNIT_KM => 1.0, // Metric
+                    WIRE_UNIT_KM => 1.0, // Metric
                     _ => 0.0,                            // Nautical
                 };
                 let target = self.common_for_range(drid);
@@ -786,7 +791,7 @@ impl FurunoReportReceiver {
         self.model_known = true; // We set this even if we can't parse the model, there is no point in logging errors many times.
 
         if let Some((model, version)) = values[0].split_once('-') {
-            let model = Self::parse_model(model);
+            let model = RadarModel::from_part_number(model);
             log::info!(
                 "{}: Radar model {} version {}",
                 self.common.key,
@@ -819,29 +824,6 @@ impl FurunoReportReceiver {
         );
     }
 
-    // See TZ Fec.Wrapper.SensorProperty.GetRadarSensorType
-    fn parse_model(model: &str) -> RadarModel {
-        match model {
-            "0359235" => RadarModel::DRS,
-            "0359255" => RadarModel::FAR14x7,
-            "0359204" => RadarModel::FAR21x7,
-            "0359321" => RadarModel::FAR14x7,
-            "0359338" => RadarModel::DRS4DL,
-            "0359367" => RadarModel::DRS4DL,
-            "0359281" => RadarModel::FAR3000,
-            "0359286" => RadarModel::FAR3000,
-            "0359477" => RadarModel::FAR3000,
-            "0359360" => RadarModel::DRS4DNXT,
-            "0359421" => RadarModel::DRS6ANXT,
-            "0359329" => RadarModel::DRS4W,
-            "0359355" => RadarModel::DRS6AXCLASS,
-            "0359344" => RadarModel::FAR15x3,
-            "0359397" => RadarModel::FAR14x6,
-
-            _ => RadarModel::Unknown, // Default case
-        }
-    }
-
     async fn start_multicast_socket(&mut self) -> io::Result<()> {
         match create_udp_multicast_listen(
             &self.common.info.spoke_data_addr,
@@ -870,7 +852,7 @@ impl FurunoReportReceiver {
 
     async fn start_broadcast_socket(&mut self) -> io::Result<()> {
         match create_udp_listen(
-            &FURUNO_DATA_BROADCAST_ADDRESS,
+            &DATA_BROADCAST_ADDRESS,
             &self.common.info.nic_addr,
             true,
         ) {
@@ -878,7 +860,7 @@ impl FurunoReportReceiver {
                 self.broadcast_socket = Some(sock);
                 log::debug!(
                     "{} via {}: listening for spoke data",
-                    &FURUNO_DATA_BROADCAST_ADDRESS,
+                    &DATA_BROADCAST_ADDRESS,
                     &self.common.info.nic_addr
                 );
                 Ok(())
@@ -886,7 +868,7 @@ impl FurunoReportReceiver {
             Err(e) => {
                 log::warn!(
                     "{} via {}: listen broadcast failed: {}",
-                    &FURUNO_DATA_BROADCAST_ADDRESS,
+                    &DATA_BROADCAST_ADDRESS,
                     &self.common.info.nic_addr,
                     e
                 );
@@ -935,7 +917,7 @@ impl FurunoReportReceiver {
     }
 
     fn process_frame(&mut self, data: &[u8]) {
-        if data.len() < 16 || data[0] != 0x02 {
+        if data.len() < 16 || data[0] != FRAME_MAGIC {
             log::debug!("Dropping invalid frame");
             return;
         }
@@ -964,8 +946,8 @@ impl FurunoReportReceiver {
                 log::error!("Unsufficient data for sweep {}", sweep_idx);
                 break;
             }
-            let angle = (((sweep[1] & 0x1F) as u16) << 8) | sweep[0] as u16;
-            let heading = (((sweep[3] & 0x1F) as u16) << 8) | sweep[2] as u16;
+            let angle = (((sweep[1] & SPOKE_ANGLE_HIGH_MASK) as u16) << 8) | sweep[0] as u16;
+            let heading = (((sweep[3] & SPOKE_ANGLE_HIGH_MASK) as u16) << 8) | sweep[2] as u16;
             sweep = &sweep[4..];
 
             let range_idx = if is_range_b { 1 } else { 0 };
@@ -1003,10 +985,10 @@ impl FurunoReportReceiver {
 
             sweep = &sweep[used..];
 
-            // The GUI buffers each angle in a slot of FURUNO_SPOKE_LEN samples
+            // The GUI buffers each angle in a slot of SPOKE_LEN samples
             // and treats that whole slot as covering the spoke's reported
             // physical range, so sample i is drawn at
-            // `i / FURUNO_SPOKE_LEN * metadata.range`.
+            // `i / SPOKE_LEN * metadata.range`.
             //
             // The radar always transmits `sweep_len` total samples per spoke,
             // but only the first `metadata.scale` of them cover the configured
@@ -1014,13 +996,13 @@ impl FurunoReportReceiver {
             // oversampled data outside the display range. Verified against
             // radar.dll disassembly and ARM MFD firmware (imoecho.c).
             //
-            // Stretch the first `scale` samples to fill FURUNO_SPOKE_LEN so
+            // Stretch the first `scale` samples to fill SPOKE_LEN so
             // that sample i in the output represents physical distance
-            // `i / FURUNO_SPOKE_LEN * range_meters`.
+            // `i / SPOKE_LEN * range_meters`.
             let send_spoke: Vec<u8> = Self::stretch_spoke(
                 &generic_spoke,
                 metadata.scale as usize,
-                FURUNO_SPOKE_LEN,
+                SPOKE_LEN,
             );
 
             // Low-power radars (DRS4W: 2.2 kW WiFi) produce raw echo values
@@ -1030,8 +1012,8 @@ impl FurunoReportReceiver {
             // affecting full-power models (NXT, FAR) where values already
             // reach the encoding ceiling.
             let echo_gain: u8 = match self.model {
-                RadarModel::DRS4W | RadarModel::DRS => 2,
-                _ => 1,
+                RadarModel::DRS4W | RadarModel::DRS => ECHO_GAIN_LOW_POWER,
+                _ => ECHO_GAIN_DEFAULT,
             };
 
             if is_range_b {
@@ -1073,7 +1055,7 @@ impl FurunoReportReceiver {
     }
 
     fn decode_sweep_encoding_1(sweep: &[u8], sweep_len: usize) -> (Vec<u8>, usize) {
-        let mut spoke = Vec::with_capacity(FURUNO_SPOKE_LEN);
+        let mut spoke = Vec::with_capacity(SPOKE_LEN);
         let mut used = 0;
         let mut strength: u8 = 0;
 
@@ -1082,9 +1064,9 @@ impl FurunoReportReceiver {
                 strength = sweep[used];
                 spoke.push(strength);
             } else {
-                let mut repeat = sweep[used] >> 1;
+                let mut repeat = (sweep[used] >> 1) as usize;
                 if repeat == 0 {
-                    repeat = 0x80;
+                    repeat = ENCODING_1_REPEAT_DEFAULT;
                 }
 
                 for _ in 0..repeat {
@@ -1094,7 +1076,7 @@ impl FurunoReportReceiver {
             used += 1;
         }
 
-        used = (used + 3) & !3; // round up to int32 size
+        used = (used + 3) & SPOKE_ALIGNMENT_MASK;
         (spoke, used)
     }
 
@@ -1103,7 +1085,7 @@ impl FurunoReportReceiver {
         prev_spoke: &[u8],
         sweep_len: usize,
     ) -> (Vec<u8>, usize) {
-        let mut spoke = Vec::with_capacity(FURUNO_SPOKE_LEN);
+        let mut spoke = Vec::with_capacity(SPOKE_LEN);
         let mut used = 0;
 
         while spoke.len() < sweep_len && used < sweep.len() {
@@ -1111,9 +1093,9 @@ impl FurunoReportReceiver {
                 let strength = sweep[used];
                 spoke.push(strength);
             } else {
-                let mut repeat = sweep[used] >> 1;
+                let mut repeat = (sweep[used] >> 1) as usize;
                 if repeat == 0 {
-                    repeat = 0x80;
+                    repeat = ENCODING_1_REPEAT_DEFAULT;
                 }
 
                 for _ in 0..repeat {
@@ -1129,7 +1111,7 @@ impl FurunoReportReceiver {
             used += 1;
         }
 
-        used = (used + 3) & !3; // round up to int32 size
+        used = (used + 3) & SPOKE_ALIGNMENT_MASK;
         (spoke, used)
     }
 
@@ -1138,7 +1120,7 @@ impl FurunoReportReceiver {
         prev_spoke: &[u8],
         sweep_len: usize,
     ) -> (Vec<u8>, usize) {
-        let mut spoke = Vec::with_capacity(FURUNO_SPOKE_LEN);
+        let mut spoke = Vec::with_capacity(SPOKE_LEN);
         let mut used = 0;
         let mut strength: u8 = 0;
 
@@ -1147,9 +1129,9 @@ impl FurunoReportReceiver {
                 strength = sweep[used];
                 spoke.push(strength);
             } else {
-                let mut repeat = sweep[used] >> 2;
+                let mut repeat = (sweep[used] >> 2) as usize;
                 if repeat == 0 {
-                    repeat = 0x40;
+                    repeat = ENCODING_3_REPEAT_DEFAULT;
                 }
 
                 if sweep[used] & 0x01 == 0 {
@@ -1171,7 +1153,7 @@ impl FurunoReportReceiver {
             used += 1;
         }
 
-        used = (used + 3) & !3; // round up to int32 size
+        used = (used + 3) & SPOKE_ALIGNMENT_MASK;
         (spoke, used)
     }
 
@@ -1179,7 +1161,7 @@ impl FurunoReportReceiver {
     /// from the front of `src`) to `dst_len` samples using nearest-neighbour
     /// interpolation.
     ///
-    /// On most Furuno models the native spoke length matches FURUNO_SPOKE_LEN
+    /// On most Furuno models the native spoke length matches SPOKE_LEN
     /// and `src_effective == src.len()` — the stretch becomes a no-op copy.
     ///
     /// The DRS4W is special: every spoke carries 430 samples on the wire, but
@@ -1230,7 +1212,7 @@ impl FurunoReportReceiver {
             Some(heading as u16)
         } else {
             let heading = crate::navdata::get_heading_true();
-            heading.map(|h| (h * FURUNO_SPOKES as f64 / TAU) as u16)
+            heading.map(|h| (h * SPOKES as f64 / TAU) as u16)
         };
 
         let pixel_max = common.info.pixel_values.saturating_sub(1) as u16;
@@ -1313,13 +1295,16 @@ impl FurunoReportReceiver {
         //          bits 4-5: echo_type; bit 6: dual_range_id (0=A, 1=B);
         //          bit 7: unknown
 
-        let _spoke_data_len = (data[8] as u32 + (data[9] as u32 & 0x01) * 256) * 4 + 4;
+        let _spoke_data_len =
+            (data[8] as u32 + (data[9] as u32 & FRAME_SPOKE_DATA_LEN_HIGH_BIT as u32) * 256) * 4
+                + 4;
         let sweep_count = (data[9] >> 1) as u32;
-        let sweep_len = ((data[11] & 0x07) as u32) << 8 | data[10] as u32;
-        let encoding = (data[11] & 0x18) >> 3;
-        let have_heading = (data[11] & 0x20) >> 5;
-        let radar_no = (data[15] & 0x40) >> 6;
-        let wire_index = (data[12] & 0x3F) as i32;
+        let sweep_len =
+            ((data[11] & FRAME_SWEEP_LEN_HIGH_MASK) as u32) << 8 | data[10] as u32;
+        let encoding = (data[11] & FRAME_ENCODING_MASK) >> FRAME_ENCODING_SHIFT;
+        let have_heading = (data[11] & FRAME_HEADING_VALID_BIT) >> 5;
+        let radar_no = (data[15] & FRAME_DUAL_RANGE_BIT) >> 6;
+        let wire_index = (data[12] & FRAME_WIRE_INDEX_MASK) as i32;
 
         // The radar's active range unit (NM / km) determines which wire-index
         // table to use: the same wire index means different physical distances
@@ -1339,13 +1324,13 @@ impl FurunoReportReceiver {
             .and_then(|c| c.value)
             .map(|v| {
                 if v as i32 == 1 {
-                    super::command::WIRE_UNIT_KM
+                    WIRE_UNIT_KM
                 } else {
-                    super::command::WIRE_UNIT_NM
+                    WIRE_UNIT_NM
                 }
             })
-            .unwrap_or(super::command::WIRE_UNIT_NM);
-        let range = super::command::wire_index_to_meters_for_unit(wire_index, wire_unit)
+            .unwrap_or(WIRE_UNIT_NM);
+        let range = wire_index_to_meters_for_unit(wire_index, wire_unit)
             .unwrap_or_else(|| {
                 log::warn!(
                     "Unknown wire index {} (unit {}) in spoke header: {:?}",
@@ -1363,7 +1348,7 @@ impl FurunoReportReceiver {
         // first `scale` map to 0..range_meters. Verified against radar.dll
         // disassembly (DecodeImoEchoFormat) and the ARM MFD firmware
         // (libNAVNETDLL.so, not-stripped symbols from imoecho.c).
-        let scale = (((data[15] & 0x07) as u32) << 8) | data[14] as u32;
+        let scale = (((data[15] & FRAME_SCALE_HIGH_MASK) as u32) << 8) | data[14] as u32;
         // Fall back to sweep_len if scale is zero (malformed packet)
         let scale = if scale == 0 { sweep_len } else { scale };
 

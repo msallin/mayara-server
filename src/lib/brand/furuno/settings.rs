@@ -10,7 +10,7 @@ use crate::{
     stream::SignalKDelta,
 };
 
-use super::RadarModel;
+use super::protocol::RadarModel;
 
 pub fn new(
     radar_id: String,
