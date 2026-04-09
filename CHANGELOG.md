@@ -8,6 +8,10 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ## [Unreleased]
 
+### Fixed
+
+- Target tracker pegged one CPU core on noisy radar feeds: the blob detector now uses a single detector-wide `(spoke, pixel) -> blob id` spatial index, so adjacency and contour lookups are O(1) in both blob size and number of active blobs instead of scanning every active blob for every strong pixel
+
 ### Changed
 
 - Emulator loops continuously: boat and targets reverse course when targets leave radar range, then turn back at the starting position (closes #38)

@@ -41,12 +41,8 @@ struct BlobPixel {
 
 /// A blob that is still being built as spokes arrive
 struct BlobInProgress {
-    #[allow(dead_code)] // Useful for debugging
     id: u32,
     pixels: Vec<BlobPixel>,
-    /// Spatial index: pixel positions by spoke for O(1) adjacency lookup
-    /// Key: spoke number, Value: sorted list of pixel indices on that spoke
-    pixels_by_spoke: HashMap<u16, Vec<usize>>,
     last_spoke_with_addition: u16,
     min_spoke: u16,
     max_spoke: u16,
@@ -60,9 +56,6 @@ impl BlobInProgress {
     fn new(id: u32, pixel: BlobPixel) -> Self {
         let spoke = pixel.spoke;
         let pixel_idx = pixel.pixel;
-        let mut pixels_by_spoke = HashMap::new();
-        pixels_by_spoke.insert(spoke, vec![pixel_idx]);
-
         BlobInProgress {
             id,
             min_spoke: spoke,
@@ -72,18 +65,10 @@ impl BlobInProgress {
             last_spoke_with_addition: spoke,
             has_doppler_approaching: false,
             pixels: vec![pixel],
-            pixels_by_spoke,
         }
     }
 
     fn add_pixel(&mut self, pixel: BlobPixel, current_spoke: u16) {
-        // Update spatial index
-        self.pixels_by_spoke
-            .entry(pixel.spoke)
-            .or_insert_with(Vec::new)
-            .push(pixel.pixel);
-
-        // Update bounds
         self.min_pixel = self.min_pixel.min(pixel.pixel);
         self.max_pixel = self.max_pixel.max(pixel.pixel);
         self.min_spoke = self.min_spoke.min(pixel.spoke);
@@ -92,17 +77,9 @@ impl BlobInProgress {
         self.pixels.push(pixel);
     }
 
-    /// Merge another blob into this one
-    fn merge(&mut self, other: BlobInProgress, current_spoke: u16) {
-        // Merge spatial index
-        for (spoke, pixels) in other.pixels_by_spoke {
-            self.pixels_by_spoke
-                .entry(spoke)
-                .or_insert_with(Vec::new)
-                .extend(pixels);
-        }
-
-        // Merge bounds
+    /// Absorb another blob's pixels and bounds. The detector-level index is
+    /// updated separately by the caller.
+    fn absorb(&mut self, other: BlobInProgress, current_spoke: u16) {
         self.min_pixel = self.min_pixel.min(other.min_pixel);
         self.max_pixel = self.max_pixel.max(other.max_pixel);
         self.min_spoke = self.min_spoke.min(other.min_spoke);
@@ -111,37 +88,6 @@ impl BlobInProgress {
         self.has_doppler_approaching |= other.has_doppler_approaching;
         self.pixels.extend(other.pixels);
     }
-
-    /// Check if a pixel at (spoke, pixel_idx) is adjacent to any pixel in this blob
-    /// Uses spatial index for O(1) average case instead of O(n)
-    fn is_adjacent_to(&self, spoke: u16, pixel_idx: usize, spokes_per_revolution: u16) -> bool {
-        // Get the three spokes we need to check (prev, current, next)
-        let prev_spoke = if spoke == 0 {
-            spokes_per_revolution - 1
-        } else {
-            spoke - 1
-        };
-        let next_spoke = (spoke + 1) % spokes_per_revolution;
-
-        // Check each relevant spoke
-        for &check_spoke in &[prev_spoke, spoke, next_spoke] {
-            if let Some(pixels) = self.pixels_by_spoke.get(&check_spoke) {
-                // Check if any pixel on this spoke is adjacent (within 1 pixel distance)
-                for &p in pixels {
-                    let diff = if p > pixel_idx {
-                        p - pixel_idx
-                    } else {
-                        pixel_idx - p
-                    };
-                    if diff <= 1 {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
 }
 
 /// A completed blob with contour information
@@ -182,7 +128,11 @@ pub struct BlobDetector {
     /// Pixel intensity value for Doppler-approaching returns (from legend.doppler_approaching)
     doppler_approaching_value: Option<u8>,
     next_blob_id: u32,
-    active_blobs: Vec<BlobInProgress>,
+    /// Active blobs keyed by stable blob id so merges/removals don't invalidate references.
+    active_blobs: HashMap<u32, BlobInProgress>,
+    /// Detector-wide spatial index: (spoke, pixel) -> id of the blob that owns that pixel.
+    /// Enables O(1) adjacency lookup independent of the number of active blobs.
+    pixel_index: HashMap<(u16, usize), u32>,
     current_range: u32,
     current_spoke_len: usize,
     /// Cached guard zone configs for refresh on range change
@@ -208,7 +158,8 @@ impl BlobDetector {
             threshold,
             doppler_approaching_value,
             next_blob_id: 0,
-            active_blobs: Vec::new(),
+            active_blobs: HashMap::new(),
+            pixel_index: HashMap::new(),
             current_range: 0,
             current_spoke_len: 0,
             guard_zone_1: None,
@@ -352,8 +303,9 @@ impl BlobDetector {
         radial_extent.max(angular_extent)
     }
 
-    /// Calculate the contour (edge pixels) of a blob
-    /// Uses the blob's spatial index for O(1) neighbor lookups
+    /// Calculate the contour (edge pixels) of a blob.
+    /// A pixel is on the contour if any of its 4 neighbors is not part of the
+    /// same blob in the detector-level spatial index.
     fn calculate_contour(&self, blob: &BlobInProgress) -> Vec<(u16, usize)> {
         blob.pixels
             .iter()
@@ -365,8 +317,6 @@ impl BlobDetector {
                 };
                 let next_spoke = (p.spoke + 1) % self.spokes_per_revolution;
 
-                // Check 4-neighbors using spatial index
-                // A pixel is on the contour if any neighbor is missing
                 let neighbors = [
                     (p.spoke, p.pixel.wrapping_sub(1)), // inner
                     (p.spoke, p.pixel + 1),             // outer
@@ -374,16 +324,38 @@ impl BlobDetector {
                     (next_spoke, p.pixel),              // cw
                 ];
 
-                neighbors.iter().any(|(spoke, pixel)| {
-                    !blob
-                        .pixels_by_spoke
-                        .get(spoke)
-                        .map(|pixels| pixels.contains(pixel))
-                        .unwrap_or(false)
-                })
+                neighbors
+                    .iter()
+                    .any(|key| self.pixel_index.get(key).copied() != Some(blob.id))
             })
             .map(|p| (p.spoke, p.pixel))
             .collect()
+    }
+
+    /// Return the set of blob ids whose pixels are 8-neighbors of (spoke, pixel_idx).
+    fn adjacent_blob_ids(&self, spoke: u16, pixel_idx: usize) -> Vec<u32> {
+        let prev_spoke = if spoke == 0 {
+            self.spokes_per_revolution - 1
+        } else {
+            spoke - 1
+        };
+        let next_spoke = (spoke + 1) % self.spokes_per_revolution;
+
+        let mut ids: Vec<u32> = Vec::new();
+        for &s in &[prev_spoke, spoke, next_spoke] {
+            for dp in [-1i64, 0, 1] {
+                let p = pixel_idx as i64 + dp;
+                if p < 0 {
+                    continue;
+                }
+                if let Some(&id) = self.pixel_index.get(&(s, p as usize)) {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+        ids
     }
 
     /// Process a single spoke and return any completed blobs
@@ -426,122 +398,124 @@ impl BlobDetector {
             }
         }
 
-        // Process each strong pixel - use spatial index for O(1) adjacency lookup
+        // Process each strong pixel using the detector-level spatial index.
         for pixel in strong_pixels {
             let is_doppler_approaching = self
                 .doppler_approaching_value
                 .map(|v| pixel.intensity == v)
                 .unwrap_or(false);
 
-            // Find which blobs this pixel is adjacent to using spatial index
-            let mut adjacent_blob_indices: Vec<usize> = Vec::new();
-            for (idx, blob) in self.active_blobs.iter().enumerate() {
-                if blob.is_adjacent_to(pixel.spoke, pixel.pixel, self.spokes_per_revolution) {
-                    adjacent_blob_indices.push(idx);
-                }
-            }
+            let adjacent_ids = self.adjacent_blob_ids(pixel.spoke, pixel.pixel);
 
-            match adjacent_blob_indices.len() {
+            let target_id = match adjacent_ids.len() {
                 0 => {
-                    // Start new blob
                     let id = self.next_blob_id;
                     self.next_blob_id += 1;
-                    let mut blob = BlobInProgress::new(id, pixel);
+                    let mut blob = BlobInProgress::new(id, pixel.clone());
                     blob.has_doppler_approaching = is_doppler_approaching;
-                    self.active_blobs.push(blob);
+                    self.active_blobs.insert(id, blob);
+                    self.pixel_index.insert((pixel.spoke, pixel.pixel), id);
+                    continue;
                 }
-                1 => {
-                    // Add to existing blob
-                    let blob = &mut self.active_blobs[adjacent_blob_indices[0]];
-                    blob.has_doppler_approaching |= is_doppler_approaching;
-                    blob.add_pixel(pixel, spoke_angle);
-                }
+                1 => adjacent_ids[0],
                 _ => {
-                    // Merge multiple blobs - use dedicated merge method
-                    adjacent_blob_indices.sort_unstable();
-                    adjacent_blob_indices.reverse();
-
-                    // Remove all but the target (lowest index) and merge them
-                    let target_idx = *adjacent_blob_indices.last().unwrap();
-                    for &idx in adjacent_blob_indices
-                        .iter()
-                        .take(adjacent_blob_indices.len() - 1)
-                    {
-                        let removed = self.active_blobs.remove(idx);
-                        self.active_blobs[target_idx].merge(removed, spoke_angle);
+                    // Merge all adjacent blobs into the one with the lowest id
+                    // (stable across iterations). Reassign their pixels in the index.
+                    let survivor = *adjacent_ids.iter().min().unwrap();
+                    for id in adjacent_ids.iter().copied().filter(|id| *id != survivor) {
+                        let absorbed = self
+                            .active_blobs
+                            .remove(&id)
+                            .expect("absorbed blob must exist");
+                        for p in &absorbed.pixels {
+                            self.pixel_index.insert((p.spoke, p.pixel), survivor);
+                        }
+                        self.active_blobs
+                            .get_mut(&survivor)
+                            .expect("survivor blob must exist")
+                            .absorb(absorbed, spoke_angle);
                     }
-                    let blob = &mut self.active_blobs[target_idx];
-                    blob.has_doppler_approaching |= is_doppler_approaching;
-                    blob.add_pixel(pixel, spoke_angle);
+                    survivor
                 }
-            }
+            };
+
+            let blob = self
+                .active_blobs
+                .get_mut(&target_id)
+                .expect("target blob must exist");
+            blob.has_doppler_approaching |= is_doppler_approaching;
+            let spoke = pixel.spoke;
+            let pixel_idx = pixel.pixel;
+            blob.add_pixel(pixel, spoke_angle);
+            self.pixel_index.insert((spoke, pixel_idx), target_id);
         }
 
-        // Check for completed blobs (not extended on this spoke)
-        let mut completed: Vec<CompletedBlob> = Vec::new();
-        let mut to_remove: Vec<usize> = Vec::new();
-
-        for (idx, blob) in self.active_blobs.iter().enumerate() {
-            if blob.last_spoke_with_addition != spoke_angle {
-                // Check if this blob is truly done (no pixels on adjacent spokes still coming)
-                let prev_spoke = if spoke_angle == 0 {
-                    self.spokes_per_revolution - 1
+        // Check for completed blobs (not extended on this spoke nor the previous one)
+        let prev_spoke = if spoke_angle == 0 {
+            self.spokes_per_revolution - 1
+        } else {
+            spoke_angle - 1
+        };
+        let completed_ids: Vec<u32> = self
+            .active_blobs
+            .iter()
+            .filter_map(|(&id, blob)| {
+                if blob.last_spoke_with_addition != spoke_angle
+                    && blob.last_spoke_with_addition != prev_spoke
+                {
+                    Some(id)
                 } else {
-                    spoke_angle - 1
-                };
-                if blob.last_spoke_with_addition != prev_spoke {
-                    // Blob is complete
-                    let size = self.calculate_size(blob);
-                    let pixel_count = blob.pixels.len();
-                    log::debug!(
-                        "BlobDetector: completed blob with {} pixels, size {:.1}m (valid: {})",
-                        pixel_count,
-                        size,
-                        pixel_count >= MIN_TARGET_PIXELS
-                            && size >= MIN_TARGET_SIZE_M
-                            && size <= MAX_TARGET_SIZE_M
-                    );
-                    if pixel_count >= MIN_TARGET_PIXELS
-                        && size >= MIN_TARGET_SIZE_M
-                        && size <= MAX_TARGET_SIZE_M
-                    {
-                        let contour = self.calculate_contour(blob);
-                        let all_pixels: Vec<(u16, usize)> =
-                            blob.pixels.iter().map(|p| (p.spoke, p.pixel)).collect();
-                        // Calculate center spoke, handling wraparound
-                        let center_spoke = if blob.max_spoke >= blob.min_spoke {
-                            // Normal case: no wraparound
-                            ((blob.min_spoke as u32 + blob.max_spoke as u32) / 2) as u16
-                        } else {
-                            // Wraparound case: blob spans spoke 0
-                            // Add spokes_per_revolution to max_spoke for averaging, then normalize
-                            let adjusted_max =
-                                blob.max_spoke as u32 + self.spokes_per_revolution as u32;
-                            let center = (blob.min_spoke as u32 + adjusted_max) / 2;
-                            (center % self.spokes_per_revolution as u32) as u16
-                        };
-                        let center_pixel = (blob.min_pixel + blob.max_pixel) / 2;
-                        let in_guard_zones = self.check_guard_zones(center_spoke, center_pixel);
-                        completed.push(CompletedBlob {
-                            contour,
-                            all_pixels,
-                            center_spoke,
-                            center_pixel,
-                            size_meters: size,
-                            in_guard_zones,
-                            has_doppler_approaching: blob.has_doppler_approaching,
-                        });
-                    }
-                    to_remove.push(idx);
+                    None
                 }
-            }
-        }
+            })
+            .collect();
 
-        // Remove completed blobs (in reverse order to preserve indices)
-        to_remove.sort_unstable();
-        to_remove.reverse();
-        for idx in to_remove {
-            self.active_blobs.remove(idx);
+        let mut completed: Vec<CompletedBlob> = Vec::new();
+        for id in completed_ids {
+            let blob = self
+                .active_blobs
+                .remove(&id)
+                .expect("completed blob must exist");
+            let size = self.calculate_size(&blob);
+            let pixel_count = blob.pixels.len();
+            let valid = pixel_count >= MIN_TARGET_PIXELS
+                && size >= MIN_TARGET_SIZE_M
+                && size <= MAX_TARGET_SIZE_M;
+            log::debug!(
+                "BlobDetector: completed blob with {} pixels, size {:.1}m (valid: {})",
+                pixel_count,
+                size,
+                valid
+            );
+            if valid {
+                let contour = self.calculate_contour(&blob);
+                let all_pixels: Vec<(u16, usize)> =
+                    blob.pixels.iter().map(|p| (p.spoke, p.pixel)).collect();
+                let center_spoke = if blob.max_spoke >= blob.min_spoke {
+                    ((blob.min_spoke as u32 + blob.max_spoke as u32) / 2) as u16
+                } else {
+                    // Wraparound: blob spans spoke 0
+                    let adjusted_max =
+                        blob.max_spoke as u32 + self.spokes_per_revolution as u32;
+                    let center = (blob.min_spoke as u32 + adjusted_max) / 2;
+                    (center % self.spokes_per_revolution as u32) as u16
+                };
+                let center_pixel = (blob.min_pixel + blob.max_pixel) / 2;
+                let in_guard_zones = self.check_guard_zones(center_spoke, center_pixel);
+                completed.push(CompletedBlob {
+                    contour,
+                    all_pixels,
+                    center_spoke,
+                    center_pixel,
+                    size_meters: size,
+                    in_guard_zones,
+                    has_doppler_approaching: blob.has_doppler_approaching,
+                });
+            }
+            // Drop this blob's entries from the detector-level spatial index.
+            for p in &blob.pixels {
+                self.pixel_index.remove(&(p.spoke, p.pixel));
+            }
         }
 
         completed
