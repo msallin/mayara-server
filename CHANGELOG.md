@@ -32,6 +32,7 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 ### Fixed
 
 - Target tracker pegged one CPU core on noisy feeds: the blob detector now uses a single detector-wide `(spoke, pixel) -> blob id` spatial index, so adjacency and contour lookups are O(1) in both blob size and number of active blobs
+- Target tracker reported wrong size and center for blobs spanning spoke 0: `BlobInProgress` tracked spoke extents with linear min/max, so a wrap-around blob would report a center on the opposite side of the revolution and a size covering nearly the whole circle. Replaced with on-demand smallest-covering-arc computation that handles the circular spoke domain correctly (#58)
 - Furuno DRS4D-NXT: raised FURUNO_SPOKE_LEN from 883 to 1024 — the DRS4D-NXT reports sweep_len=884, so each spoke's last sample overflowed into the next angle's slot and produced a slowly rotating ring/moiré pattern on the PPI
 - Furuno DRS4D-NXT: Reduce processor calibration now counts unique angles — the radar sends each angle twice in consecutive sweeps, so the old count was roughly 2× the true unique-angle count and left every other reduced-buffer slot empty, producing tangential striping across rendered targets
 - Furuno dual range: Route TCP report responses (Status, Gain, Sea, Rain, Tune) to the correct range (A or B) based on dual_range_id in the response

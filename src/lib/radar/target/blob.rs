@@ -39,13 +39,19 @@ struct BlobPixel {
     intensity: u8,
 }
 
-/// A blob that is still being built as spokes arrive
+/// A blob that is still being built as spokes arrive.
+///
+/// The radial extent (`min_pixel`..=`max_pixel`) is tracked incrementally
+/// because pixel indices along a spoke are linear (0..sweep_len). The
+/// angular extent is *not* tracked incrementally: spoke indices live on a
+/// circle modulo `spokes_per_revolution`, so linear min/max would give the
+/// wrong answer for blobs that straddle the 0/N-1 wrap-around point. The
+/// spoke arc is instead computed from `pixels` on demand when the blob
+/// completes; see `SpokeArc::from_blob`.
 struct BlobInProgress {
     id: u32,
     pixels: Vec<BlobPixel>,
     last_spoke_with_addition: u16,
-    min_spoke: u16,
-    max_spoke: u16,
     min_pixel: usize,
     max_pixel: usize,
     /// True if any pixel in this blob has Doppler-approaching intensity
@@ -54,15 +60,12 @@ struct BlobInProgress {
 
 impl BlobInProgress {
     fn new(id: u32, pixel: BlobPixel) -> Self {
-        let spoke = pixel.spoke;
         let pixel_idx = pixel.pixel;
         BlobInProgress {
             id,
-            min_spoke: spoke,
-            max_spoke: spoke,
             min_pixel: pixel_idx,
             max_pixel: pixel_idx,
-            last_spoke_with_addition: spoke,
+            last_spoke_with_addition: pixel.spoke,
             has_doppler_approaching: false,
             pixels: vec![pixel],
         }
@@ -71,8 +74,6 @@ impl BlobInProgress {
     fn add_pixel(&mut self, pixel: BlobPixel, current_spoke: u16) {
         self.min_pixel = self.min_pixel.min(pixel.pixel);
         self.max_pixel = self.max_pixel.max(pixel.pixel);
-        self.min_spoke = self.min_spoke.min(pixel.spoke);
-        self.max_spoke = self.max_spoke.max(pixel.spoke);
         self.last_spoke_with_addition = current_spoke;
         self.pixels.push(pixel);
     }
@@ -82,11 +83,90 @@ impl BlobInProgress {
     fn absorb(&mut self, other: BlobInProgress, current_spoke: u16) {
         self.min_pixel = self.min_pixel.min(other.min_pixel);
         self.max_pixel = self.max_pixel.max(other.max_pixel);
-        self.min_spoke = self.min_spoke.min(other.min_spoke);
-        self.max_spoke = self.max_spoke.max(other.max_spoke);
         self.last_spoke_with_addition = current_spoke;
         self.has_doppler_approaching |= other.has_doppler_approaching;
         self.pixels.extend(other.pixels);
+    }
+}
+
+/// The smallest circular arc on the spoke domain that covers every spoke a
+/// blob touches, together with its length and center. Computed once per blob
+/// at completion time, not maintained incrementally.
+#[derive(Debug, Clone, Copy)]
+struct SpokeArc {
+    /// Length of the arc in spokes (1..=spokes_per_revolution).
+    extent: u16,
+    /// Center spoke of the arc (the spoke at `floor(extent / 2)` positions
+    /// forward from the arc's starting spoke, modulo spokes_per_revolution).
+    center: u16,
+}
+
+impl SpokeArc {
+    /// Compute the smallest covering arc for the distinct spokes a blob
+    /// touches.
+    ///
+    /// Each pair of adjacent spokes on the circle delimits a "gap" — a run
+    /// of consecutive empty spoke positions between them. There are exactly
+    /// as many gaps as there are distinct spokes (one gap between each
+    /// adjacent pair going around the full circle). The sum of all gap
+    /// lengths equals `spokes_per_revolution - distinct_spoke_count`.
+    ///
+    /// The smallest arc covering all the blob's spokes is the *complement*
+    /// of the largest such gap: remove the largest run of empty positions
+    /// from the circle and what's left must contain every occupied spoke.
+    ///
+    /// This is correct for both non-wrapping blobs (where the largest gap
+    /// is the wrap-around gap via spoke 0 and the arc is the linear
+    /// [min..=max] range) and wrap-around blobs (where the largest gap sits
+    /// in the middle of the uncovered region and the arc straddles spoke 0).
+    fn from_blob(blob: &BlobInProgress, spokes_per_revolution: u16) -> SpokeArc {
+        debug_assert!(!blob.pixels.is_empty(), "blob must have at least one pixel");
+        debug_assert!(spokes_per_revolution > 0);
+
+        let mut spokes: Vec<u16> = blob.pixels.iter().map(|p| p.spoke).collect();
+        spokes.sort_unstable();
+        spokes.dedup();
+
+        if spokes.len() == 1 {
+            return SpokeArc {
+                extent: 1,
+                center: spokes[0],
+            };
+        }
+
+        // Largest run of consecutive empty spokes between occupied ones.
+        // The gap between sorted adjacent spokes `a` and `b` (a < b) holds
+        // `b - a - 1` empty positions. The wrap gap from the last spoke
+        // forward past spoke 0 to the first spoke holds
+        // `spokes_per_revolution - last + first - 1` empty positions.
+        let mut largest_gap: u16 = 0;
+        // Index in `spokes` of the arc's starting spoke (the one immediately
+        // after the largest empty gap going forward around the circle).
+        // Defaults to 0 meaning "the arc starts at spokes[0]", which is
+        // correct when the largest gap is the wrap-around gap.
+        let mut arc_start_idx: usize = 0;
+
+        for i in 0..spokes.len() - 1 {
+            let gap = spokes[i + 1] - spokes[i] - 1;
+            if gap > largest_gap {
+                largest_gap = gap;
+                arc_start_idx = i + 1;
+            }
+        }
+
+        let wrap_gap =
+            spokes_per_revolution - spokes[spokes.len() - 1] + spokes[0] - 1;
+        if wrap_gap > largest_gap {
+            largest_gap = wrap_gap;
+            arc_start_idx = 0;
+        }
+
+        let extent = spokes_per_revolution - largest_gap;
+        let arc_start = spokes[arc_start_idx];
+        let center = ((arc_start as u32 + (extent as u32 / 2))
+            % spokes_per_revolution as u32) as u16;
+
+        SpokeArc { extent, center }
     }
 }
 
@@ -278,7 +358,7 @@ impl BlobDetector {
     }
 
     /// Calculate the physical size of a blob in meters
-    fn calculate_size(&self, blob: &BlobInProgress) -> f64 {
+    fn calculate_size(&self, blob: &BlobInProgress, spoke_arc: &SpokeArc) -> f64 {
         if self.current_range == 0 || self.current_spoke_len == 0 {
             return 0.0;
         }
@@ -288,16 +368,12 @@ impl BlobDetector {
         // Radial extent
         let radial_extent = (blob.max_pixel - blob.min_pixel + 1) as f64 * meters_per_pixel;
 
-        // Angular extent (at average distance)
+        // Angular extent (at average distance). The spoke arc is the
+        // smallest circular range of spokes the blob touches — handles
+        // wrap-around correctly unlike linear min/max.
         let avg_distance = (blob.min_pixel + blob.max_pixel) as f64 / 2.0 * meters_per_pixel;
-        let spoke_extent = if blob.max_spoke >= blob.min_spoke {
-            blob.max_spoke - blob.min_spoke + 1
-        } else {
-            // Wraparound
-            self.spokes_per_revolution - blob.min_spoke + blob.max_spoke + 1
-        };
-        let angular_extent =
-            avg_distance * (spoke_extent as f64 * TAU / self.spokes_per_revolution as f64);
+        let angular_extent = avg_distance
+            * (spoke_arc.extent as f64 * TAU / self.spokes_per_revolution as f64);
 
         // Use larger dimension as "size"
         radial_extent.max(angular_extent)
@@ -476,7 +552,8 @@ impl BlobDetector {
                 .active_blobs
                 .remove(&id)
                 .expect("completed blob must exist");
-            let size = self.calculate_size(&blob);
+            let spoke_arc = SpokeArc::from_blob(&blob, self.spokes_per_revolution);
+            let size = self.calculate_size(&blob, &spoke_arc);
             let pixel_count = blob.pixels.len();
             let valid = pixel_count >= MIN_TARGET_PIXELS
                 && size >= MIN_TARGET_SIZE_M
@@ -491,15 +568,7 @@ impl BlobDetector {
                 let contour = self.calculate_contour(&blob);
                 let all_pixels: Vec<(u16, usize)> =
                     blob.pixels.iter().map(|p| (p.spoke, p.pixel)).collect();
-                let center_spoke = if blob.max_spoke >= blob.min_spoke {
-                    ((blob.min_spoke as u32 + blob.max_spoke as u32) / 2) as u16
-                } else {
-                    // Wraparound: blob spans spoke 0
-                    let adjusted_max =
-                        blob.max_spoke as u32 + self.spokes_per_revolution as u32;
-                    let center = (blob.min_spoke as u32 + adjusted_max) / 2;
-                    (center % self.spokes_per_revolution as u32) as u16
-                };
+                let center_spoke = spoke_arc.center;
                 let center_pixel = (blob.min_pixel + blob.max_pixel) / 2;
                 let in_guard_zones = self.check_guard_zones(center_spoke, center_pixel);
                 completed.push(CompletedBlob {
@@ -519,5 +588,127 @@ impl BlobDetector {
         }
 
         completed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blob_from_spokes(spokes: &[u16]) -> BlobInProgress {
+        let mut blob = BlobInProgress::new(
+            0,
+            BlobPixel {
+                spoke: spokes[0],
+                pixel: 0,
+                intensity: 15,
+            },
+        );
+        for &s in &spokes[1..] {
+            blob.add_pixel(
+                BlobPixel {
+                    spoke: s,
+                    pixel: 0,
+                    intensity: 15,
+                },
+                s,
+            );
+        }
+        blob
+    }
+
+    #[test]
+    fn spoke_arc_single_spoke() {
+        let blob = blob_from_spokes(&[42]);
+        let arc = SpokeArc::from_blob(&blob, 1024);
+        assert_eq!(arc.extent, 1);
+        assert_eq!(arc.center, 42);
+    }
+
+    #[test]
+    fn spoke_arc_contiguous_no_wrap() {
+        let blob = blob_from_spokes(&[100, 101, 102, 103, 104, 105, 106, 107, 108, 109]);
+        let arc = SpokeArc::from_blob(&blob, 1024);
+        assert_eq!(arc.extent, 10);
+        assert_eq!(arc.center, 105);
+    }
+
+    #[test]
+    fn spoke_arc_wraps_across_zero() {
+        // Blob spans spokes 1018..=1023, 0, 1, 2 in a 1024-spoke revolution.
+        // Smallest covering arc is 9 spokes long, centered ~1022.
+        let blob = blob_from_spokes(&[1018, 1019, 1020, 1021, 1022, 1023, 0, 1, 2]);
+        let arc = SpokeArc::from_blob(&blob, 1024);
+        assert_eq!(arc.extent, 9);
+        assert_eq!(arc.center, 1022);
+    }
+
+    #[test]
+    fn spoke_arc_touches_zero_without_wrap() {
+        // Blob ends exactly at spoke 1023 coming from the high side
+        // (spokes 1020..=1023, no spoke 0). This is still a non-wrapping
+        // blob: the arc is [1020, 1023].
+        let blob = blob_from_spokes(&[1020, 1021, 1022, 1023]);
+        let arc = SpokeArc::from_blob(&blob, 1024);
+        assert_eq!(arc.extent, 4);
+        assert_eq!(arc.center, 1022);
+    }
+
+    #[test]
+    fn spoke_arc_starts_at_zero() {
+        // Blob starts at spoke 0 going up. Non-wrapping: arc is [0, 3].
+        let blob = blob_from_spokes(&[0, 1, 2, 3]);
+        let arc = SpokeArc::from_blob(&blob, 1024);
+        assert_eq!(arc.extent, 4);
+        assert_eq!(arc.center, 2);
+    }
+
+    #[test]
+    fn spoke_arc_ignores_duplicate_pixels_on_same_spoke() {
+        // Two pixels on the same spoke must not inflate the arc.
+        let mut blob = blob_from_spokes(&[10, 11, 12]);
+        // Add another pixel on spoke 11 (different radial position).
+        blob.add_pixel(
+            BlobPixel {
+                spoke: 11,
+                pixel: 5,
+                intensity: 15,
+            },
+            11,
+        );
+        let arc = SpokeArc::from_blob(&blob, 1024);
+        assert_eq!(arc.extent, 3);
+        assert_eq!(arc.center, 11);
+    }
+
+    #[test]
+    fn spoke_arc_scattered_wraparound_blob() {
+        // Blob with spokes 8180, 8185, 8190, 0, 5 in an 8192-spoke
+        // revolution. Empty gaps on the circle:
+        //   8180 -> 8185:   4 empty
+        //   8185 -> 8190:   4 empty
+        //   8190 -> 0:      1 empty (spoke 8191)
+        //   0    -> 5:      4 empty
+        //   5    -> 8180:   8174 empty  <- largest, from 5 forward to 8180
+        // So the smallest covering arc starts at 8180 and has length
+        // 8192 - 8174 = 18, wrapping through 0 to 5. Center sits 9 spokes
+        // forward of 8180, which is spoke 8189.
+        let blob = blob_from_spokes(&[8180, 8185, 8190, 0, 5]);
+        let arc = SpokeArc::from_blob(&blob, 8192);
+        assert_eq!(arc.extent, 18);
+        assert_eq!(arc.center, 8189);
+    }
+
+    #[test]
+    fn spoke_arc_two_adjacent_spokes_at_wrap() {
+        // Exactly the spokes 8191 and 0 in an 8192-spoke revolution. Arc
+        // must be 2 spokes long, not 8192.
+        let blob = blob_from_spokes(&[8191, 0]);
+        let arc = SpokeArc::from_blob(&blob, 8192);
+        assert_eq!(arc.extent, 2);
+        // Arc starts at 8191 (the spoke after the largest empty gap from
+        // 0 forward to 8191, which is 8190 empty slots). Center =
+        // (8191 + 1) % 8192 = 0.
+        assert_eq!(arc.center, 0);
     }
 }
