@@ -41,6 +41,12 @@ struct FurunoSpokeMetadata {
     have_heading: u8,
     range: u32,
     radar_no: u8, // 0 = Range A, 1 = Range B (dual range)
+    /// Number of samples that cover the configured display range.
+    /// Extracted from header bytes 14-15 as `((byte[15] & 0x07) << 8) | byte[14]`.
+    /// The radar always transmits `sweep_len` total samples per spoke, but only
+    /// the first `scale` of them map to 0..range_meters. Samples beyond `scale`
+    /// are oversampled data outside the display range.
+    scale: u32,
 }
 
 pub struct FurunoReportReceiver {
@@ -51,6 +57,7 @@ pub struct FurunoReportReceiver {
     command_sender: Option<Command>,
     report_request_interval: Duration,
     model_known: bool,
+    model: RadarModel,
 
     receive_type: ReceiveAddressType,
     multicast_socket: Option<UdpSocket>,
@@ -93,6 +100,7 @@ impl FurunoReportReceiver {
             command_sender,
             report_request_interval: Duration::from_millis(5000),
             model_known: false,
+            model: RadarModel::Unknown,
             receive_type: ReceiveAddressType::Both,
             multicast_socket: None,
             broadcast_socket: None,
@@ -785,7 +793,7 @@ impl FurunoReportReceiver {
                 model,
                 version
             );
-
+            self.model = model;
             settings::update_when_model_known(&mut self.common.info, model, version);
             if let Some(cs) = &mut self.command_sender {
                 cs.set_ranges(self.common.info.ranges.clone());
@@ -995,18 +1003,35 @@ impl FurunoReportReceiver {
 
             sweep = &sweep[used..];
 
-            // The GUI buffers each angle in a slot of FURUNO_SPOKE_LEN samples and
-            // treats that whole slot as covering the spoke's reported physical range.
-            // Radars whose native sweep_len is smaller than FURUNO_SPOKE_LEN (e.g.
-            // DRS4W with sweep_len=430 vs FURUNO_SPOKE_LEN=883) would have their data
-            // confined to the inner sweep_len/FURUNO_SPOKE_LEN fraction of the screen,
-            // making targets appear much closer to own ship than they really are.
-            // Stretch shorter spokes to FURUNO_SPOKE_LEN by nearest-neighbour so that
-            // sample_i represents physical distance i/FURUNO_SPOKE_LEN * range.
-            let send_spoke: Vec<u8> = if generic_spoke.len() < FURUNO_SPOKE_LEN {
-                Self::stretch_spoke(&generic_spoke, FURUNO_SPOKE_LEN)
-            } else {
-                generic_spoke.clone()
+            // The GUI buffers each angle in a slot of FURUNO_SPOKE_LEN samples
+            // and treats that whole slot as covering the spoke's reported
+            // physical range, so sample i is drawn at
+            // `i / FURUNO_SPOKE_LEN * metadata.range`.
+            //
+            // The radar always transmits `sweep_len` total samples per spoke,
+            // but only the first `metadata.scale` of them cover the configured
+            // display range (0..range_meters). Samples beyond `scale` are
+            // oversampled data outside the display range. Verified against
+            // radar.dll disassembly and ARM MFD firmware (imoecho.c).
+            //
+            // Stretch the first `scale` samples to fill FURUNO_SPOKE_LEN so
+            // that sample i in the output represents physical distance
+            // `i / FURUNO_SPOKE_LEN * range_meters`.
+            let send_spoke: Vec<u8> = Self::stretch_spoke(
+                &generic_spoke,
+                metadata.scale as usize,
+                FURUNO_SPOKE_LEN,
+            );
+
+            // Low-power radars (DRS4W: 2.2 kW WiFi) produce raw echo values
+            // well below the encoding maximum (~124 vs 252), so the 64-color
+            // palette is only half-utilised and targets appear uniformly blue.
+            // A software gain of 2× doubles the palette spread without
+            // affecting full-power models (NXT, FAR) where values already
+            // reach the encoding ceiling.
+            let echo_gain: u8 = match self.model {
+                RadarModel::DRS4W | RadarModel::DRS => 2,
+                _ => 1,
             };
 
             if is_range_b {
@@ -1016,9 +1041,17 @@ impl FurunoReportReceiver {
                     angle,
                     heading,
                     &send_spoke,
+                    echo_gain,
                 );
             } else {
-                Self::add_spoke_to_common(&mut self.common, &metadata, angle, heading, &send_spoke);
+                Self::add_spoke_to_common(
+                    &mut self.common,
+                    &metadata,
+                    angle,
+                    heading,
+                    &send_spoke,
+                    echo_gain,
+                );
             }
 
             self.prev_angle[range_idx] = angle;
@@ -1142,24 +1175,32 @@ impl FurunoReportReceiver {
         (spoke, used)
     }
 
-    /// Stretch a decoded spoke from `src.len()` samples to `dst_len` samples
-    /// using nearest-neighbour interpolation. Used to upscale short native spokes
-    /// (e.g. DRS4W's 430) to the GUI's expected slot size (FURUNO_SPOKE_LEN=883),
-    /// so that sample i represents physical distance `i / dst_len * range`
-    /// regardless of the radar's native bin count. Without this, GUI buffers
-    /// would zero-fill the unused tail and confine real returns to the inner
-    /// `src.len() / dst_len` fraction of the screen.
-    fn stretch_spoke(src: &[u8], dst_len: usize) -> Vec<u8> {
+    /// Stretch a decoded spoke of `src_effective` meaningful samples (taken
+    /// from the front of `src`) to `dst_len` samples using nearest-neighbour
+    /// interpolation.
+    ///
+    /// On most Furuno models the native spoke length matches FURUNO_SPOKE_LEN
+    /// and `src_effective == src.len()` — the stretch becomes a no-op copy.
+    ///
+    /// The DRS4W is special: every spoke carries 430 samples on the wire, but
+    /// only the first N of those cover the configured display range (see
+    /// `docs/brand/furuno/drs4w-distance.md` for the reverse-engineering
+    /// details). N varies per wire_index because the radar changes pulse
+    /// width with range. Callers pass `src_effective = effective_samples(wi)`
+    /// for DRS4W and `src_effective = src.len()` otherwise, so sample `i` of
+    /// the output always represents physical distance
+    /// `i / dst_len * metadata.range`.
+    fn stretch_spoke(src: &[u8], src_effective: usize, dst_len: usize) -> Vec<u8> {
         if src.is_empty() || dst_len == 0 {
             return vec![0; dst_len];
         }
-        if src.len() >= dst_len {
+        let effective = src_effective.min(src.len()).max(1);
+        if effective >= dst_len {
             return src[..dst_len].to_vec();
         }
-        let src_len = src.len();
         let mut out = vec![0u8; dst_len];
         for i in 0..dst_len {
-            let j = (i * src_len) / dst_len;
+            let j = (i * effective) / dst_len;
             out[i] = src[j];
         }
         out
@@ -1171,6 +1212,7 @@ impl FurunoReportReceiver {
         angle: SpokeBearing,
         heading: SpokeBearing,
         sweep: &[u8],
+        echo_gain: u8,
     ) {
         if common.replay {
             let _ = common
@@ -1191,12 +1233,18 @@ impl FurunoReportReceiver {
             heading.map(|h| (h * FURUNO_SPOKES as f64 / TAU) as u16)
         };
 
+        let pixel_max = common.info.pixel_values.saturating_sub(1) as u16;
         let mut data = vec![0; sweep.len()];
 
-        let mut i = 0;
-        for b in sweep {
-            data[i] = b >> 2;
-            i += 1;
+        for (i, b) in sweep.iter().enumerate() {
+            // Map raw echo byte to palette index. The raw value range depends
+            // on the encoding (max 252 for encoding 3, 254 for encoding 1/2).
+            // Low-power radars (DRS4W: 2.2 kW) produce values well below the
+            // hardware maximum, so echo_gain > 1 applies software amplification
+            // before the palette mapping. Clamped to pixel_max (63 for the
+            // default 64-color palette).
+            let amplified = (*b as u16 * echo_gain as u16) >> 2;
+            data[i] = amplified.min(pixel_max) as u8;
         }
         if common.replay {
             data[sweep.len() - 1] = 64;
@@ -1308,6 +1356,17 @@ impl FurunoReportReceiver {
                 0
             });
         let range = range as u32;
+
+        // scale = effective sample count for the configured display range.
+        // Extracted from bytes 14-15: ((byte[15] & 0x07) << 8) | byte[14].
+        // The radar always transmits sweep_len total samples, but only the
+        // first `scale` map to 0..range_meters. Verified against radar.dll
+        // disassembly (DecodeImoEchoFormat) and the ARM MFD firmware
+        // (libNAVNETDLL.so, not-stripped symbols from imoecho.c).
+        let scale = (((data[15] & 0x07) as u32) << 8) | data[14] as u32;
+        // Fall back to sweep_len if scale is zero (malformed packet)
+        let scale = if scale == 0 { sweep_len } else { scale };
+
         let metadata = FurunoSpokeMetadata {
             sweep_count,
             sweep_len,
@@ -1315,9 +1374,10 @@ impl FurunoReportReceiver {
             have_heading,
             range,
             radar_no,
+            scale,
         };
         log::trace!(
-            "header {:?} -> sweep_count={} sweep_len={} encoding={} have_heading={} range={} radar_no={}",
+            "header {:?} -> sweep_count={} sweep_len={} encoding={} have_heading={} range={} radar_no={} scale={}",
             &data[0..16],
             sweep_count,
             sweep_len,
@@ -1325,6 +1385,7 @@ impl FurunoReportReceiver {
             have_heading,
             range,
             radar_no,
+            scale,
         );
 
         metadata

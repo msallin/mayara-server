@@ -91,7 +91,7 @@ impl From<u8> for CommandMode {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RadarModel {
     Unknown,
     FAR21x7,
@@ -479,7 +479,7 @@ impl FurunoLocator {
                         true,
                         true,
                     );
-                    info_b.controls.set_model_name(format!("{} B", model));
+                    info_b.controls.set_model_name(model.to_string());
                     info_b.controls.set_user_name(
                         format!("{model} {} B", serial_no.unwrap_or(""))
                             .trim()

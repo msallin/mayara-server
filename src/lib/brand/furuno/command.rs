@@ -428,7 +428,19 @@ impl CommandSender for Command {
         cv: &ControlValue,
         controls: &SharedControls,
     ) -> Result<(), RadarError> {
-        let value = cv.as_i32()?;
+        // For auto-only requests (no explicit value), use the current control
+        // value so the radar receives a valid command.
+        let value = match cv.as_i32() {
+            Ok(v) => v,
+            Err(_) if cv.auto.is_some() && cv.value.is_none() => {
+                controls
+                    .get(&cv.id)
+                    .and_then(|c| c.value)
+                    .map(|v| v as i32)
+                    .unwrap_or(0)
+            }
+            Err(e) => return Err(e),
+        };
         let auto: i32 = if cv.auto.unwrap_or(false) { 1 } else { 0 };
         let _enabled: i32 = if cv.enabled.unwrap_or(false) { 1 } else { 0 };
 
