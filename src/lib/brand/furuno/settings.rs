@@ -493,6 +493,37 @@ static RANGE_TABLE_FAR_KM: &[i32] = &[
     96000, // 96 km
 ];
 
+/// Range table for DRS4W WiFi radar (wire indices 3-13 only, 0.75-24 NM)
+/// Extracted from FEC::DRS4WRanges() static array at kiss VA 0xdda388.
+static RANGE_TABLE_DRS4W: &[i32] = &[
+    1389,  // 3/4 NM
+    1852,  // 1 NM
+    2778,  // 1.5 NM
+    3704,  // 2 NM
+    5556,  // 3 NM
+    7408,  // 4 NM
+    11112, // 6 NM
+    14816, // 8 NM
+    22224, // 12 NM
+    29632, // 16 NM
+    44448, // 24 NM
+];
+
+/// Range table for DRS4W WiFi radar in km mode (wire indices 3-13 only)
+static RANGE_TABLE_DRS4W_KM: &[i32] = &[
+    750,   // 0.75 km
+    1000,  // 1 km
+    1500,  // 1.5 km
+    2000,  // 2 km
+    3000,  // 3 km
+    4000,  // 4 km
+    6000,  // 6 km
+    8000,  // 8 km
+    12000, // 12 km
+    16000, // 16 km
+    24000, // 24 km
+];
+
 /// Range table for standard DRS series (non-NXT, up to 36 NM)
 static RANGE_TABLE_DRS: &[i32] = &[
     116,   // 1/16 NM
@@ -558,11 +589,13 @@ fn get_ranges_by_model(model: &RadarModel) -> Vec<i32> {
         | RadarModel::FAR14x6
         | RadarModel::FAR14x7 => (RANGE_TABLE_FAR, RANGE_TABLE_FAR_KM),
 
+        // DRS4W WiFi radar: restricted to wire indices 3-13 (0.75-24 NM)
+        RadarModel::DRS4W => (RANGE_TABLE_DRS4W, RANGE_TABLE_DRS4W_KM),
+
         // Standard DRS series and unknown models
         RadarModel::Unknown
         | RadarModel::DRS
         | RadarModel::DRS4DL
-        | RadarModel::DRS4W
         | RadarModel::DRS6AXCLASS => (RANGE_TABLE_DRS, RANGE_TABLE_DRS_KM),
     };
 

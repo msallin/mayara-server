@@ -8,6 +8,10 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ## [Unreleased]
 
+### Fixed
+
+- Furuno DRS4W range table restricted to wire indices 3-13 (0.75-24 NM), matching the hardware's actual supported ranges
+
 ## [3.4.1]
 
 ### Added
