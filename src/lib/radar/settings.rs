@@ -760,6 +760,20 @@ impl SharedControls {
         self.controls.write().unwrap().controls.insert(id, control);
     }
 
+    /// Replace a control's definition (auto flags, min/max, etc.) while
+    /// preserving any runtime state (value, auto, enabled, …) that has
+    /// already been set. Falls back to a plain `add` when the control
+    /// does not yet exist.
+    pub(crate) fn update_definition(&mut self, control_builder: ControlBuilder) {
+        let (id, new_control) = control_builder.take();
+        let mut locked = self.controls.write().unwrap();
+        if let Some(existing) = locked.controls.get_mut(&id) {
+            existing.item = new_control.item;
+        } else {
+            locked.controls.insert(id, new_control);
+        }
+    }
+
     fn get_command_tx(&self) -> tokio::sync::broadcast::Sender<ControlUpdate> {
         let locked = self.controls.read().unwrap();
 
