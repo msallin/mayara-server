@@ -239,7 +239,7 @@ pub const CMD_NOTRANSMIT_SECTOR: u8 = 0xC0;
 // Installation command (0xC130) tags
 // =============================================================================
 
-/// Set antenna height. Payload: u16 LE millimeters + 2 zero bytes.
+/// Set antenna height. Payload: i32 LE millimetres.
 pub const INSTALL_TAG_ANTENNA_HEIGHT: u8 = 0x01;
 
 /// Set antenna offset from GPS position. Payload: i32 LE ahead mm + i32 LE starboard mm.

@@ -308,8 +308,8 @@ struct StateFeatures {
     _u00: [u8; 4],              // 2..6
     bearing_alignment: [u8; 2], // 6..8
     _u01: [u8; 2],              // 8..10
-    antenna_height: [u8; 2],    // 10..12 = Antenna height
-    _u02: [u8; 7],              // 12..19
+    antenna_height: [u8; 4],    // 10..14 = Antenna height in mm (i32 LE)
+    _u02: [u8; 5],              // 14..19
     accent_light: u8,           // 19 = Accent light
     _u03: [u8; 46],             // 20..66
 }
@@ -1196,7 +1196,7 @@ impl NavicoReportReceiver {
         );
         self.common.set_value(
             &ControlId::AntennaHeight,
-            u16::from_le_bytes(report.antenna_height) as f64,
+            i32::from_le_bytes(report.antenna_height) as f64,
         );
         if self.model == Model::HALO {
             self.common

@@ -329,12 +329,11 @@ impl CommandSender for Command {
                 cmd.extend_from_slice(&starboard_mm.to_le_bytes());
             }
             ControlId::AntennaHeight => {
-                let value = (value * 1000.) as u16;
+                let height_mm = (value * 1000.) as i32;
                 cmd.extend_from_slice(&[
                     CMD_INSTALLATION, CATEGORY_CONTROL, INSTALL_TAG_ANTENNA_HEIGHT, 0, 0, 0,
                 ]);
-                cmd.extend_from_slice(&value.to_le_bytes());
-                cmd.extend_from_slice(&[0, 0]);
+                cmd.extend_from_slice(&height_mm.to_le_bytes());
             }
             ControlId::AccentLight => {
                 cmd.extend_from_slice(&[CMD_ACCENT_LIGHT, CATEGORY_CONTROL, value as u8]);
