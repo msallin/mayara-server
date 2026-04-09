@@ -196,12 +196,14 @@ pub struct NavicoReportReceiver {
 // Every 5 seconds we ask the radar for reports, so we can update our controls
 const REPORT_REQUEST_INTERVAL: Duration = Duration::from_millis(5000);
 
-// When others send INFO reports, we do not want to send our own INFO reports
-const INFO_BY_OTHERS_TIMEOUT: Duration = Duration::from_secs(15);
+// When another MFD or sender is broadcasting INFO reports, we suppress our
+// own transmission for this long after each received packet. radar_pi uses
+// 10 seconds.
+const INFO_BY_OTHERS_TIMEOUT: Duration = Duration::from_secs(10);
 
-// Send heading and navigation packets at ~10 Hz to match what real Navico
-// MFDs do. Each call to send_info_packets() sends both a heading and a
-// navigation packet, so the per-packet rate seen on the wire is ~20 Hz.
+// How often the info send loop wakes up. The actual per-packet rates are
+// rate-limited inside `Information::send_info_packets()`: heading at 100 ms,
+// navigation and speed at 250 ms.
 const INFO_BY_US_INTERVAL: Duration = Duration::from_millis(100);
 
 // When we are detecting ranges, we wait for 2 seconds before we send the next range

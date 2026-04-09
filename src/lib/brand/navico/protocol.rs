@@ -97,7 +97,7 @@ pub const COMMAND_SUBTYPE: u16 = 0x0011;
 pub const REPORT_SUBTYPE: u16 = 0x0012;
 
 // =============================================================================
-// HALO heading/navigation multicast address
+// HALO heading / navigation / speed multicast addresses
 // =============================================================================
 
 /// Multicast address where the MFD sends heading and navigation packets to
@@ -106,6 +106,16 @@ pub const REPORT_SUBTYPE: u16 = 0x0012;
 /// Doppler returns and tracked targets to ground-relative coordinates.
 pub const HALO_HEADING_INFO_ADDRESS: SocketAddrV4 =
     SocketAddrV4::new(Ipv4Addr::new(239, 238, 55, 73), 7527);
+
+/// Primary multicast address where the MFD sends a 23-byte speed packet
+/// (`01 d3 01 00 00 00`-prefixed) to HALO radars.
+pub const HALO_SPEED_ADDRESS_A: SocketAddrV4 =
+    SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 20), 6690);
+
+/// Alternate multicast address where the MFD also sends the speed packet.
+/// radar_pi sends an identical copy to both addresses.
+pub const HALO_SPEED_ADDRESS_B: SocketAddrV4 =
+    SocketAddrV4::new(Ipv4Addr::new(236, 6, 7, 15), 6005);
 
 // =============================================================================
 // NRP opcode category bytes
