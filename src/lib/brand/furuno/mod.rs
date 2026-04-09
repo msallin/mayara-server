@@ -21,8 +21,15 @@ mod settings;
 
 const FURUNO_SPOKES: usize = 8192;
 
-// Maximum supported Length of a spoke in pixels.
-const FURUNO_SPOKE_LEN: usize = 883;
+// Maximum supported length of a spoke in pixels. Must be at least as large
+// as any radar's native sweep_len; the DRS4D-NXT reports sweep_len=884, and
+// sizing FURUNO_SPOKE_LEN below the actual spoke length causes each spoke to
+// overflow into the next angle's slot in the GUI's per-angle render buffer,
+// producing a slowly rotating ring/moiré interference pattern across the PPI.
+// 1024 is a round upper bound that accommodates known Furuno models and
+// leaves headroom for future ones; shorter-native spokes are stretched to
+// this size by stretch_spoke so the inner/outer scale stays consistent.
+const FURUNO_SPOKE_LEN: usize = 1024;
 
 const FURUNO_BASE_PORT: u16 = 10000;
 const FURUNO_BEACON_PORT: u16 = FURUNO_BASE_PORT + 10;
