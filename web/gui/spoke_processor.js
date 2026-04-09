@@ -305,7 +305,7 @@ class ReduceSpokeProcessor extends SpokeProcessor {
 
         console.log(
           `Reduce processor: calibration revolution ${this.calibrationRevolutions} ` +
-            `had ${revolutionSpokeCount} spokes (reported ${spokesPerRevolution})`
+            `had ${revolutionSpokeCount} unique angles (reported ${spokesPerRevolution})`
         );
 
         // After 2 revolutions, calibrate
@@ -329,8 +329,15 @@ class ReduceSpokeProcessor extends SpokeProcessor {
       }
     }
 
+    // The DRS4D-NXT sends each angle twice in consecutive sweeps (observed
+    // angles step 7560, 7560, 7574, 7574, ...). Counting both copies would
+    // double the calibrated spoke count and leave every other slot empty
+    // in the reduced buffer, producing radial striping across the PPI.
+    // Only count an angle as a new spoke when it differs from the last.
+    if (angle !== this.calibrationLastAngle) {
+      this.currentRevolutionCount++;
+    }
     this.calibrationLastAngle = angle;
-    this.currentRevolutionCount++;
   }
 
   getActualSpokesPerRevolution() {
