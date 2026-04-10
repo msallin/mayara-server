@@ -798,6 +798,25 @@ impl FurunoReportReceiver {
                 }
             }
 
+            CommandId::NearSTC | CommandId::MiddleSTC | CommandId::FarSTC | CommandId::STCRange => {
+                if let Some(&value) = numbers.first() {
+                    // Single-field responses ($N85,2) have no drid — default to range A.
+                    // Multi-field responses include drid as the last field.
+                    let drid = if numbers.len() > 1 {
+                        self.extract_drid(&command_id, &numbers)
+                    } else {
+                        0
+                    };
+                    let control_id = match command_id {
+                        CommandId::NearSTC => ControlId::NearStcCurve,
+                        CommandId::MiddleSTC => ControlId::MiddleStcCurve,
+                        CommandId::FarSTC => ControlId::FarStcCurve,
+                        _ => ControlId::StcRange,
+                    };
+                    self.common_for_range(drid).set_value(&control_id, value);
+                }
+            }
+
             // Silently handled (no state to update)
             CommandId::AliveCheck
             | CommandId::Heartbeat
