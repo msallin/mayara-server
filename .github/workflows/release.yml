@@ -100,7 +100,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Append historical changelog
-      run: cat CHANGELOG.manual.md >> CHANGELOG.md
+      run: |
+        printf '\n' >> CHANGELOG.md
+        cat CHANGELOG.manual.md >> CHANGELOG.md
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
