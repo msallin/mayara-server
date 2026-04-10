@@ -750,6 +750,27 @@ impl FurunoReportReceiver {
                 }
             }
 
+            CommandId::PulseWidth => {
+                // $N68,<pulse>,<range>,<unit>,<imgNo>,<screen>
+                if let Some(&pulse) = numbers.first() {
+                    let name = match pulse as i32 {
+                        0 => "S1",
+                        1 => "S2",
+                        2 => "M1",
+                        3 => "M2",
+                        4 => "M3",
+                        5 => "L",
+                        _ => "Unknown",
+                    };
+                    let drid = self.extract_drid(&command_id, &numbers);
+                    let _ = self
+                        .common_for_range(drid)
+                        .info
+                        .controls
+                        .set_string(&ControlId::PulseWidth, name.to_string());
+                }
+            }
+
             // Silently handled (no state to update)
             CommandId::AliveCheck
             | CommandId::Heartbeat
@@ -757,7 +778,6 @@ impl FurunoReportReceiver {
             | CommandId::CustomPictureAll
             | CommandId::AntennaType
             | CommandId::DispMode
-            | CommandId::PulseWidth
             | CommandId::RingSuppression
             | CommandId::TrailMode
             | CommandId::TrailProcess

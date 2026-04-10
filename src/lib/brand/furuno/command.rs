@@ -177,6 +177,11 @@ impl Command {
         self.send(CommandMode::Request, CommandId::Range, &[])
             .await?; // $R62
 
+        if self.controls.contains_key(&ControlId::PulseWidth) {
+            self.send(CommandMode::Request, CommandId::PulseWidth, &[])
+                .await?; // $R68
+        }
+
         self.send(CommandMode::Request, CommandId::Gain, &[])
             .await?; // $R63
 
@@ -497,6 +502,10 @@ impl CommandSender for Command {
         self.send(CommandMode::Set, id, &cmd).await?;
         self.send(CommandMode::Request, CommandId::CustomPictureAll, &[])
             .await?; // $R66
+        if self.controls.contains_key(&ControlId::PulseWidth) {
+            self.send(CommandMode::Request, CommandId::PulseWidth, &[])
+                .await?; // $R68
+        }
         Ok(())
     }
 }

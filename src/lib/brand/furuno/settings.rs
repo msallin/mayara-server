@@ -65,6 +65,7 @@ struct Capabilities {
     tune: bool,
     antenna_height: bool,
     watchman: bool,
+    pulse_width: bool,
 }
 
 fn capabilities(model: &RadarModel) -> Capabilities {
@@ -90,6 +91,7 @@ fn capabilities(model: &RadarModel) -> Capabilities {
             tune: true,
             antenna_height: true,
             watchman: true,
+            pulse_width: false, // solid-state, no selectable pulse
         },
         // DRS6A X-Class: DRS + bird mode
         RadarModel::DRS6AXCLASS => Capabilities {
@@ -109,6 +111,7 @@ fn capabilities(model: &RadarModel) -> Capabilities {
             tune: true,
             antenna_height: false,
             watchman: false,
+            pulse_width: true,
         },
         // DRS4DL: limited (no auto gain, no scan speed, no dual range)
         RadarModel::DRS4DL => Capabilities {
@@ -128,6 +131,7 @@ fn capabilities(model: &RadarModel) -> Capabilities {
             tune: true,
             antenna_height: false,
             watchman: false,
+            pulse_width: true,
         },
         // Standard DRS
         RadarModel::DRS | RadarModel::DRS4W => Capabilities {
@@ -147,6 +151,7 @@ fn capabilities(model: &RadarModel) -> Capabilities {
             tune: true,
             antenna_height: false,
             watchman: false,
+            pulse_width: false, // DRS4W firmware disables pulse width
         },
         // FAR series: commercial, 4-level IR, no NXT features
         RadarModel::FAR21x7 | RadarModel::FAR14x7 | RadarModel::FAR14x6 => Capabilities {
@@ -166,6 +171,7 @@ fn capabilities(model: &RadarModel) -> Capabilities {
             tune: true,
             antenna_height: false,
             watchman: false,
+            pulse_width: true,
         },
         // FAR-15x3 / FAR-3000: auto sea/rain, noise rejection
         RadarModel::FAR15x3 | RadarModel::FAR3000 => Capabilities {
@@ -185,6 +191,7 @@ fn capabilities(model: &RadarModel) -> Capabilities {
             tune: true,
             antenna_height: false,
             watchman: false,
+            pulse_width: true,
         },
         // Unknown: basic capabilities
         RadarModel::Unknown => Capabilities {
@@ -204,6 +211,7 @@ fn capabilities(model: &RadarModel) -> Capabilities {
             tune: true,
             antenna_height: false,
             watchman: false,
+            pulse_width: false,
         },
     }
 }
@@ -260,6 +268,9 @@ pub fn update_when_model_known(info: &mut RadarInfo, model: RadarModel, version:
     info.controls
         .set_string(&ControlId::FirmwareVersion, version.to_string())
         .expect("FirmwareVersion");
+    if cap.pulse_width {
+        info.controls.add(new_string(ControlId::PulseWidth));
+    }
 
     // Tuning
     if cap.tune {

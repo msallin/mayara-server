@@ -167,6 +167,7 @@ pub enum ControlId {
     ScanAverageSensitivity,
     ParkPosition,
     TransmitChannel,
+    PulseWidth,
 }
 
 impl Display for ControlId {
@@ -250,7 +251,8 @@ impl ControlId {
             | ControlId::SerialNumber
             | ControlId::SignalStrength
             | ControlId::Spokes
-            | ControlId::SpokeLength => Category::Info,
+            | ControlId::SpokeLength
+            | ControlId::PulseWidth => Category::Info,
             ControlId::SupplyVoltage | ControlId::DeviceTemperature => Category::Info,
             ControlId::ScanAverageMode | ControlId::ScanAverageSensitivity => Category::Advanced,
             ControlId::ParkPosition => Category::Installation,
@@ -356,6 +358,7 @@ impl ControlId {
             ControlId::SpokeProcessing => "How to process spoke data for display",
             ControlId::TimedIdle => "Periodically switch between transmit and standby",
             ControlId::TimedRun => "How long the radar transmits during timed idle",
+            ControlId::PulseWidth => "Current transmit pulse width selected by the radar",
             ControlId::UserName => "User defined name for the radar",
             ControlId::SupplyVoltage => "DC supply voltage at the radar",
             ControlId::DeviceTemperature => "Internal temperature of the radar",
@@ -441,6 +444,7 @@ impl ControlId {
             ControlId::Spokes => "Spokes",
             ControlId::SpokeLength => "Spoke length",
             ControlId::SpokeProcessing => "Spoke Processing",
+            ControlId::PulseWidth => "Pulse width",
             ControlId::RangeUnits => "Range Units",
             ControlId::UserName => "Custom name",
             ControlId::WarmupTime => "Warmup time",
@@ -519,6 +523,7 @@ impl ControlId {
             ControlId::Spokes => ControlDestination::ReadOnly,
             ControlId::SpokeLength => ControlDestination::ReadOnly,
             ControlId::SpokeProcessing => ControlDestination::Internal,
+            ControlId::PulseWidth => ControlDestination::ReadOnly,
             ControlId::TimedIdle => ControlDestination::Command,
             ControlId::TimedRun => ControlDestination::Command,
             ControlId::RangeUnits => ControlDestination::Command,

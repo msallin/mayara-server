@@ -10,28 +10,13 @@ Sections can be: Added Changed Deprecated Removed Fixed Security.
 
 ### Added
 
+- Furuno pulse width display: shows current transmit pulse width (S1/S2/M1/M2/M3/L) as reported by the radar
+
 ### Fixed 
 
 ### Changed
 
 ### Deleted
-
-## [3.4.2]
-
-### Added
-
-- Garmin per-model capability detection: controls are now gated on the radar's advertised capabilities — only features the radar actually supports are exposed. Model generation (xHD, xHD2, xHD3, Fantom, Fantom Pro) is auto-detected from capability bits when the factory name isn't available.
-- Garmin radar identification: the radar's factory model name and user-customizable alias are learned from the CDM protocol. Users can rename the radar from the mayara UI and the new name persists on the radar itself.
-- Garmin dual range support: radars that support it appear as two independent instances ("A" and "B") with their own gain, sea, rain, range, and doppler controls.
-- Garmin MotionScope (Doppler) for Fantom-class radars: approaching and receding targets are rendered with distinct brightness-gradient colors (4 levels per direction).
-- Garmin no-transmit zone 2 for Fantom Pro and multi-zone radars.
-- Garmin timed transmit (sentry mode): on/off toggle and transmit period.
-- Garmin pulse expansion (xHD2+), target size mode (xHD2/Fantom), and scan average with 6-level mode and sensitivity (xHD3/Fantom Pro).
-- Garmin park position, transmit channel selection (Fantom Pro), and AFC tune (auto/manual).
-- Garmin HD FTC (target expansion) control is now writable.
-- Garmin telemetry: supply voltage, transmit current, device temperature, operating time, and transmit time are exposed as read-only controls with proper units.
-- New `Volts`, `Amps`, `Celsius`, and `Kelvin` unit types for electrical and temperature telemetry.
-- New `SupplyVoltage`, `DeviceTemperature`, `ParkPosition`, `TransmitChannel`, `ScanAverageMode`, and `ScanAverageSensitivity` control types.
 
 ### Changed
 
