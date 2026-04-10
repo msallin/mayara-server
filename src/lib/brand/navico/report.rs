@@ -141,28 +141,28 @@ fn pixel_to_blob(legend: &Legend) -> [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_L
         lookup[LookupDoppler::LowNormal as usize][j] = low;
         lookup[LookupDoppler::HighNormal as usize][j] = high;
 
-        if let Some(doppler_approaching) = legend.doppler_approaching {
-            if let Some(doppler_receding) = legend.doppler_receding {
+        if let Some((approaching_idx, _)) = legend.doppler_approaching {
+            if let Some((receding_idx, _)) = legend.doppler_receding {
                 lookup[LookupDoppler::LowBoth as usize][j] = match low {
-                    0x0f => doppler_approaching,
-                    0x0e => doppler_receding,
+                    0x0f => approaching_idx,
+                    0x0e => receding_idx,
                     0x08..=0x0d => low + 2,
                     _ => low + 1,
                 };
                 lookup[LookupDoppler::HighBoth as usize][j] = match high {
-                    0x0f => doppler_approaching,
-                    0x0e => doppler_receding,
+                    0x0f => approaching_idx,
+                    0x0e => receding_idx,
                     0x08..=0x0d => high + 2,
                     _ => high + 1,
                 };
             }
             lookup[LookupDoppler::LowApproaching as usize][j] = match low {
-                0x0f => legend.doppler_approaching.unwrap(),
+                0x0f => approaching_idx,
                 _ => low + 1,
             };
 
             lookup[LookupDoppler::HighApproaching as usize][j] = match high {
-                0x0f => doppler_approaching,
+                0x0f => approaching_idx,
                 _ => high + 1,
             };
         }

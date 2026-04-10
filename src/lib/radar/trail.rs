@@ -594,8 +594,8 @@ impl TrailBuffer {
     }
 
     fn compute_minimal_legend_value(legend: &Legend, doppler_only: bool) -> u8 {
-        if doppler_only && let Some(approaching) = legend.doppler_approaching {
-            approaching
+        if doppler_only && let Some((start, _)) = legend.doppler_approaching {
+            start
         } else {
             legend.strong_return
         }

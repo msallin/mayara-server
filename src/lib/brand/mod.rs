@@ -28,6 +28,7 @@ pub(crate) enum LocatorId {
     Gen3Plus,
     Furuno,
     Garmin,
+    GarminCdm,
     Raymarine,
 }
 

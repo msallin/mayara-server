@@ -215,8 +215,12 @@ pub struct Lookup {
 #[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Legend {
-    pub doppler_approaching: Option<u8>,
-    pub doppler_receding: Option<u8>,
+    /// Doppler approaching pixel range: `(first_index, count)`.
+    /// Navico uses 1 level (single flat color), Garmin Fantom uses 4
+    /// (brightness gradient). `None` if the radar has no Doppler.
+    pub doppler_approaching: Option<(u8, u8)>,
+    /// Doppler receding pixel range: `(first_index, count)`.
+    pub doppler_receding: Option<(u8, u8)>,
     pub history_start: u8,
     pub low_return: u8,
     pub medium_return: u8,
@@ -303,7 +307,8 @@ pub struct RadarInfo {
     pub controls: SharedControls,        // Which controls there are, not complete in beginning
     pub ranges: Ranges,                  // Ranges for this radar, empty in beginning
     pub(crate) range_detection: Option<RangeDetection>, // if Some, then ranges are flexible, detected and persisted
-    pub doppler: bool,                                  // Does it support Doppler?
+    pub doppler: bool,      // Does it support Doppler?
+    doppler_levels: u8,     // Intensity sub-levels per direction (0, 1, or 4)
     pub dual_range: bool,                               // Is it dual range capable?
     pub sparse_spokes: bool, // Does it produce fewer spokes than spokes_per_revolution?
     pub stationary: bool,    // Is radar stationary (shore-based)?
@@ -344,7 +349,8 @@ impl RadarInfo {
                 args.output.clone(),
             )
         };
-        let legend = default_legend(&targets, doppler, pixel_values);
+        let doppler_levels = if doppler { 1 } else { 0 };
+        let legend = default_legend(&targets, doppler_levels, pixel_values);
 
         let mut key = brand.to_prefix().to_string();
         if let Some(serial_no) = serial_no {
@@ -381,6 +387,7 @@ impl RadarInfo {
             range_detection: None,
             controls,
             doppler,
+            doppler_levels,
             dual_range: false,
             sparse_spokes,
             stationary: args.stationary,
@@ -421,15 +428,32 @@ impl RadarInfo {
 
     pub fn set_doppler(&mut self, doppler: bool) {
         if doppler != self.doppler {
-            self.legend = default_legend(&self.targets, doppler, self.pixel_values);
-            log::debug!("Doppler changed to {}", doppler);
             self.doppler = doppler;
+            self.doppler_levels = if doppler { 1 } else { 0 };
+            self.legend =
+                default_legend(&self.targets, self.doppler_levels, self.pixel_values);
+            log::debug!("Doppler changed to {}", doppler);
         }
+    }
+
+    /// Set the number of Doppler intensity sub-levels per direction.
+    /// Garmin Fantom uses 4 (brightness gradient); Navico uses 1 (flat).
+    pub fn set_doppler_levels(&mut self, levels: u8) {
+        self.doppler = levels > 0;
+        self.doppler_levels = levels;
+        self.legend =
+            default_legend(&self.targets, self.doppler_levels, self.pixel_values);
+        log::debug!(
+            "Doppler levels changed to {} (doppler={})",
+            levels,
+            self.doppler
+        );
     }
 
     pub fn set_pixel_values(&mut self, pixel_values: u8) {
         if pixel_values != self.pixel_values {
-            self.legend = default_legend(&self.targets, self.doppler, pixel_values);
+            self.legend =
+                default_legend(&self.targets, self.doppler_levels, pixel_values);
             log::debug!("Pixel_values changed to {}", pixel_values);
         }
         self.pixel_values = pixel_values;
@@ -833,7 +857,13 @@ impl fmt::Display for DopplerMode {
 pub const BLOB_HISTORY_COLORS: u8 = 32;
 const OPAQUE: u8 = 255;
 
-fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Legend {
+/// Build the default legend for a radar.
+///
+/// `doppler_levels` is the number of intensity sub-levels **per direction**:
+/// - `0` — no Doppler (HD, plain xHD)
+/// - `1` — single flat Doppler color per direction (Navico HALO)
+/// - `4` — 4-level brightness gradient per direction (Garmin Fantom)
+fn default_legend(targets: &TargetMode, doppler_levels: u8, pixel_values: u8) -> Legend {
     let mut legend = Legend {
         pixels: Vec::new(),
         pixel_colors: 0,
@@ -845,6 +875,8 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
         low_return: 0,
         static_background: None,
     };
+
+    let doppler_total = doppler_levels * 2; // approaching + receding
 
     // Calculate extra colors needed for special purposes
     let arpa_extra_colors: u8 = if *targets == TargetMode::Arpa {
@@ -862,7 +894,7 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
             }
             - 1 // transparent/none color
             - arpa_extra_colors
-            - if doppler { 2 } else { 0 },
+            - doppler_total,
     );
 
     // No return is transparent (black)
@@ -922,17 +954,45 @@ fn default_legend(targets: &TargetMode, doppler: bool, pixel_values: u8) -> Lege
         });
     }
 
-    if doppler {
-        legend.doppler_approaching = Some(legend.pixels.len() as u8);
-        legend.pixels.push(Lookup {
-            r#type: PixelType::DopplerApproaching,
-            color: Color::from("#ff00ff"), // Purple
-        });
-        legend.doppler_receding = Some(legend.pixels.len() as u8);
-        legend.pixels.push(Lookup {
-            r#type: PixelType::DopplerReceding,
-            color: Color::from("#00ff00"), // Green
-        });
+    if doppler_levels > 0 {
+        let approaching_start = legend.pixels.len() as u8;
+        for i in 0..doppler_levels {
+            let brightness = if doppler_levels == 1 {
+                255
+            } else {
+                // Dim → bright gradient: 64, 128, 191, 255 for 4 levels
+                64 + (i as u16 * 191 / (doppler_levels as u16 - 1)) as u8
+            };
+            legend.pixels.push(Lookup {
+                r#type: PixelType::DopplerApproaching,
+                color: Color {
+                    r: brightness,
+                    g: 0,
+                    b: brightness,
+                    a: OPAQUE,
+                }, // Purple at varying brightness
+            });
+        }
+        legend.doppler_approaching = Some((approaching_start, doppler_levels));
+
+        let receding_start = legend.pixels.len() as u8;
+        for i in 0..doppler_levels {
+            let brightness = if doppler_levels == 1 {
+                255
+            } else {
+                64 + (i as u16 * 191 / (doppler_levels as u16 - 1)) as u8
+            };
+            legend.pixels.push(Lookup {
+                r#type: PixelType::DopplerReceding,
+                color: Color {
+                    r: 0,
+                    g: brightness,
+                    b: 0,
+                    a: OPAQUE,
+                }, // Green at varying brightness
+            });
+        }
+        legend.doppler_receding = Some((receding_start, doppler_levels));
     }
 
     if *targets != TargetMode::None {
@@ -969,7 +1029,7 @@ mod tests {
     #[test]
     fn legend() {
         let targets = crate::TargetMode::Arpa;
-        let legend = default_legend(&targets, true, 16);
+        let legend = default_legend(&targets, 1, 16);
         let json = serde_json::to_string_pretty(&legend).unwrap();
         println!("{}", json);
     }

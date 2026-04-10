@@ -81,8 +81,7 @@ The following radars are fully supported right now:
 We are working on:
 
 * Furuno, many models, but certainly and primarily DRS4D-NXT. Seems to work but needs extensive testing.
-* Garmin xHD. xHD seems to work read-only, command sending to be tested.
-* Garmin HD. HD has been coded but not tested. PCAP files welcome!
+* Garmin HD, xHD, xHD2, xHD3, Fantom, and Fantom Pro. All models are supported including dual range, MotionScope/Doppler, and per-model feature detection. Needs testing with real hardware — PCAP files welcome!
 * Raymarine HD digital radars are likewise implemented but fully untested.
 
 We are actively looking for people to add new radars. If your radar is not on the "fully supported" list, contact us!

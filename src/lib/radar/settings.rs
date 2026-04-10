@@ -161,6 +161,12 @@ pub enum ControlId {
     // ControlIds stable for numeric API clients.
     TimedIdle,
     TimedRun,
+    SupplyVoltage,
+    DeviceTemperature,
+    ScanAverageMode,
+    ScanAverageSensitivity,
+    ParkPosition,
+    TransmitChannel,
 }
 
 impl Display for ControlId {
@@ -245,6 +251,10 @@ impl ControlId {
             | ControlId::SignalStrength
             | ControlId::Spokes
             | ControlId::SpokeLength => Category::Info,
+            ControlId::SupplyVoltage | ControlId::DeviceTemperature => Category::Info,
+            ControlId::ScanAverageMode | ControlId::ScanAverageSensitivity => Category::Advanced,
+            ControlId::ParkPosition => Category::Installation,
+            ControlId::TransmitChannel => Category::Advanced,
             ControlId::NoiseRejection
             | ControlId::TargetBoost
             | ControlId::TargetExpansion
@@ -347,6 +357,12 @@ impl ControlId {
             ControlId::TimedIdle => "Periodically switch between transmit and standby",
             ControlId::TimedRun => "How long the radar transmits during timed idle",
             ControlId::UserName => "User defined name for the radar",
+            ControlId::SupplyVoltage => "DC supply voltage at the radar",
+            ControlId::DeviceTemperature => "Internal temperature of the radar",
+            ControlId::ScanAverageMode => "Scan-to-scan averaging reduces noise by comparing successive sweeps",
+            ControlId::ScanAverageSensitivity => "Threshold for scan averaging filter",
+            ControlId::ParkPosition => "Antenna park position when entering standby",
+            ControlId::TransmitChannel => "Transmit frequency channel selection (auto or manual)",
         }
     }
 
@@ -428,6 +444,12 @@ impl ControlId {
             ControlId::RangeUnits => "Range Units",
             ControlId::UserName => "Custom name",
             ControlId::WarmupTime => "Warmup time",
+            ControlId::SupplyVoltage => "Supply voltage",
+            ControlId::DeviceTemperature => "Device temperature",
+            ControlId::ScanAverageMode => "Scan average",
+            ControlId::ScanAverageSensitivity => "Scan average sensitivity",
+            ControlId::ParkPosition => "Park position",
+            ControlId::TransmitChannel => "Transmit channel",
         }
     }
 
@@ -501,6 +523,12 @@ impl ControlId {
             ControlId::TimedRun => ControlDestination::Command,
             ControlId::RangeUnits => ControlDestination::Command,
             ControlId::UserName => ControlDestination::Internal,
+            ControlId::SupplyVoltage => ControlDestination::ReadOnly,
+            ControlId::DeviceTemperature => ControlDestination::ReadOnly,
+            ControlId::ScanAverageMode => ControlDestination::Command,
+            ControlId::ScanAverageSensitivity => ControlDestination::Command,
+            ControlId::ParkPosition => ControlDestination::Command,
+            ControlId::TransmitChannel => ControlDestination::Command,
         }
     }
 }

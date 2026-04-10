@@ -205,8 +205,9 @@ pub struct BlobDetector {
     spokes_per_revolution: u16,
     /// Minimum pixel intensity to be considered part of a blob (from legend.strong_return)
     threshold: u8,
-    /// Pixel intensity value for Doppler-approaching returns (from legend.doppler_approaching)
-    doppler_approaching_value: Option<u8>,
+    /// Pixel intensity range for Doppler-approaching returns: `(first, last)`
+    /// inclusive. From `legend.doppler_approaching` `(start, count)`.
+    doppler_approaching_range: Option<(u8, u8)>,
     next_blob_id: u32,
     /// Active blobs keyed by stable blob id so merges/removals don't invalidate references.
     active_blobs: HashMap<u32, BlobInProgress>,
@@ -226,17 +227,20 @@ impl BlobDetector {
     pub fn new(
         spokes_per_revolution: u16,
         threshold: u8,
-        doppler_approaching_value: Option<u8>,
+        doppler_approaching: Option<(u8, u8)>,
     ) -> Self {
         let threshold = if threshold > 0 {
             threshold
         } else {
             DEFAULT_BLOB_THRESHOLD
         };
+        // Convert (start, count) to (start, end_inclusive) for O(1) range checks.
+        let doppler_approaching_range =
+            doppler_approaching.map(|(start, count)| (start, start + count - 1));
         BlobDetector {
             spokes_per_revolution,
             threshold,
-            doppler_approaching_value,
+            doppler_approaching_range,
             next_blob_id: 0,
             active_blobs: HashMap::new(),
             pixel_index: HashMap::new(),
@@ -462,8 +466,8 @@ impl BlobDetector {
         let mut strong_pixels: Vec<BlobPixel> = Vec::new();
         for (pixel_idx, &intensity) in spoke.data.iter().enumerate() {
             let is_doppler_approaching = self
-                .doppler_approaching_value
-                .map(|v| intensity == v)
+                .doppler_approaching_range
+                .map(|(lo, hi)| intensity >= lo && intensity <= hi)
                 .unwrap_or(false);
             if intensity >= self.threshold || is_doppler_approaching {
                 strong_pixels.push(BlobPixel {
@@ -477,8 +481,8 @@ impl BlobDetector {
         // Process each strong pixel using the detector-level spatial index.
         for pixel in strong_pixels {
             let is_doppler_approaching = self
-                .doppler_approaching_value
-                .map(|v| pixel.intensity == v)
+                .doppler_approaching_range
+                .map(|(lo, hi)| pixel.intensity >= lo && pixel.intensity <= hi)
                 .unwrap_or(false);
 
             let adjacent_ids = self.adjacent_blob_ids(pixel.spoke, pixel.pixel);

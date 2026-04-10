@@ -98,6 +98,10 @@ const Units = Object.freeze({
   Seconds: "s",
   Minutes: "min",
   Hours: "h",
+  Volts: "V",
+  Amps: "A",
+  Celsius: "°C",
+  Kelvin: "K",
 });
 
 // Helper: get the short label for a unit
@@ -126,6 +130,8 @@ const TO_USER_CONVERSIONS = [
 ];
 
 function toSI(units, value) {
+  // Celsius→Kelvin is an affine transform, not a pure factor.
+  if (units === Units.Celsius) return [Units.Kelvin, value + 273.15];
   for (const [from, to, factor] of TO_SI_CONVERSIONS) {
     if (units === from) return [to, value * factor];
   }
@@ -134,6 +140,8 @@ function toSI(units, value) {
 }
 
 function toUser(units, value) {
+  // Kelvin→Celsius is an affine transform, not a pure factor.
+  if (units === Units.Kelvin) return [Units.Celsius, value - 273.15];
   for (const [to, from, factor] of TO_USER_CONVERSIONS) {
     if (units === from) return [to, value * factor];
   }

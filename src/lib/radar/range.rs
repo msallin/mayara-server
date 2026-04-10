@@ -262,7 +262,7 @@ impl Ranges {
         }
     }
 
-    pub(crate) fn new_by_distance(distances: &Vec<i32>) -> Self {
+    pub(crate) fn new_by_distance(distances: &[i32]) -> Self {
         let mut r = Vec::new();
         for (i, &value) in distances.iter().enumerate() {
             r.push(Range::new(value, i));

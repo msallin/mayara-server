@@ -34,8 +34,8 @@ pub(super) fn pixel_to_blob(legend: &Legend) -> PixelToBlobType {
     let mut lookup: [[u8; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH] =
         [[0; BYTE_LOOKUP_LENGTH]; LOOKUP_DOPPLER_LENGTH];
 
-    let doppler_approaching = legend.doppler_approaching.unwrap_or(0);
-    let doppler_receding = legend.doppler_receding.unwrap_or(0);
+    let doppler_approaching = legend.doppler_approaching.map(|(s, _)| s).unwrap_or(0);
+    let doppler_receding = legend.doppler_receding.map(|(s, _)| s).unwrap_or(0);
 
     if legend.pixel_colors >= 128 {
         for j in 0..BYTE_LOOKUP_LENGTH {
