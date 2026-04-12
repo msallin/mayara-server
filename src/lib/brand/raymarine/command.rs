@@ -70,6 +70,25 @@ impl Command {
         Ok(())
     }
 
+    /// Send the 1-second keep-alive heartbeat. Without this the radar
+    /// drops the connection after 60 seconds.
+    pub async fn send_heartbeat(&mut self) -> Result<(), RadarError> {
+        use super::protocol::*;
+        match self.model {
+            BaseModel::Quantum => self.send(&HEARTBEAT_QUANTUM_1S).await,
+            BaseModel::RD => self.send(&HEARTBEAT_RD_1S).await,
+        }
+    }
+
+    /// Send the 5-second extended keep-alive with MARPA/AIS option data.
+    pub async fn send_heartbeat_5s(&mut self) -> Result<(), RadarError> {
+        use super::protocol::*;
+        match self.model {
+            BaseModel::Quantum => self.send(&HEARTBEAT_QUANTUM_5S).await,
+            BaseModel::RD => self.send(&HEARTBEAT_RD_5S).await,
+        }
+    }
+
     fn scale_100_to_byte(a: f64) -> u8 {
         // Map range 0..100 to 0..255
         let mut r = a * 255.0 / 100.0;

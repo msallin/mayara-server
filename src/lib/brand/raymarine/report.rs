@@ -18,8 +18,10 @@ use super::command::Command;
 mod quantum;
 mod rd;
 
-// Every 5 seconds we ask the radar for reports, so we can update our controls
-const REPORT_REQUEST_INTERVAL: Duration = Duration::from_millis(5000);
+// The radar drops the connection after ~60 seconds without a heartbeat.
+// Send the 1-second keep-alive every second, and the 5-second extended
+// keep-alive every 5th cycle.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(1000);
 
 // The LookupSpokeEnum is an index into an array, really
 enum LookupDoppler {
@@ -68,14 +70,42 @@ enum ReceiverState {
     StatusRequestReceived,
 }
 
+/// Feature flags from the 0x280007 Features message. The radar
+/// broadcasts this once after connection; it tells us what the
+/// hardware actually supports.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FeatureFlags {
+    pub(super) raw: u32,
+}
+
+impl FeatureFlags {
+    fn has_flag(&self, mask: u32) -> bool {
+        (self.raw & mask) != 0
+    }
+    pub fn is_quantum(&self) -> bool { self.has_flag(super::protocol::FEATURE_QUANTUM) }
+    pub fn is_cyclone(&self) -> bool { self.has_flag(super::protocol::FEATURE_CYCLONE) }
+    pub fn has_doppler(&self) -> bool { self.has_flag(super::protocol::FEATURE_DOPPLER) }
+    pub fn has_doppler_auto_acquire(&self) -> bool { self.has_flag(super::protocol::FEATURE_DOPPLER_AUTO_ACQUIRE) }
+    pub fn has_doppler_bird_mode(&self) -> bool { self.has_flag(super::protocol::FEATURE_DOPPLER_BIRD_MODE) }
+    pub fn has_bird_mode(&self) -> bool { self.has_flag(super::protocol::FEATURE_BIRD_MODE) }
+    pub fn has_auto_rain(&self) -> bool { self.has_flag(super::protocol::FEATURE_AUTO_RAIN) }
+    pub fn has_marpa(&self) -> bool { self.has_flag(super::protocol::FEATURE_MARPA) }
+    pub fn has_dual_range_marpa(&self) -> bool { self.has_flag(super::protocol::FEATURE_DUAL_RANGE_MARPA) }
+    pub fn is_analogue(&self) -> bool { self.has_flag(super::protocol::FEATURE_ANALOGUE) }
+    pub fn is_digital(&self) -> bool { self.has_flag(super::protocol::FEATURE_DIGITAL) }
+}
+
 pub(crate) struct RaymarineReportReceiver {
     common: CommonRadar,
     report_socket: Option<UdpSocket>,
     state: ReceiverState,
     model: Option<RaymarineModel>,
     command_sender: Option<Command>,
-    report_request_timeout: Instant,
+    heartbeat_deadline: Instant,
+    heartbeat_counter: u32,
     reported_unknown: HashMap<u32, bool>,
+    features: FeatureFlags,
+    features_seen: bool,
 
     // For data (spokes)
     range_meters: u32,
@@ -120,8 +150,11 @@ impl RaymarineReportReceiver {
             state: ReceiverState::Initial,
             model: None, // We don't know this yet, it will be set when we receive the first info report
             command_sender,
-            report_request_timeout: now,
+            heartbeat_deadline: now + HEARTBEAT_INTERVAL,
+            heartbeat_counter: 0,
             reported_unknown: HashMap::new(),
+            features: FeatureFlags::default(),
+            features_seen: false,
             range_meters: 0,
             pixel_to_blob,
         }
@@ -163,15 +196,14 @@ impl RaymarineReportReceiver {
         let mut buf = Vec::with_capacity(10000);
 
         loop {
-            let timeout = self.report_request_timeout;
+            let heartbeat_deadline = self.heartbeat_deadline;
             tokio::select! {
                 _ = subsys.on_shutdown_requested() => {
                     log::debug!("{}: shutdown", self.common.key);
                     return Err(RadarError::Shutdown);
                 },
-                _ = sleep_until(timeout) => {
-                     self.send_report_requests().await?;
-
+                _ = sleep_until(heartbeat_deadline) => {
+                    self.send_heartbeat().await?;
                 },
 
                 r = self.report_socket.as_ref().unwrap().recv_buf_from(&mut buf)  => {
@@ -203,9 +235,18 @@ impl RaymarineReportReceiver {
         }
     }
 
-    async fn send_report_requests(&mut self) -> Result<(), RadarError> {
-        // self.command_sender.send_report_requests().await?;
-        self.report_request_timeout += REPORT_REQUEST_INTERVAL;
+    async fn send_heartbeat(&mut self) -> Result<(), RadarError> {
+        if let Some(ref mut cs) = self.command_sender {
+            cs.send_heartbeat().await?;
+
+            // Every 5th heartbeat (every 5 seconds), also send the
+            // extended keep-alive with MARPA/AIS option data.
+            if self.heartbeat_counter % 5 == 0 {
+                cs.send_heartbeat_5s().await?;
+            }
+            self.heartbeat_counter += 1;
+        }
+        self.heartbeat_deadline += HEARTBEAT_INTERVAL;
         Ok(())
     }
 
@@ -237,6 +278,7 @@ impl RaymarineReportReceiver {
 
         let id = u32::from_le_bytes(data[0..4].try_into().unwrap());
         match id {
+            // RD (magnetron) messages
             0x010001 | 0x018801 => {
                 rd::process_status_report(self, data);
             }
@@ -249,6 +291,7 @@ impl RaymarineReportReceiver {
             0x010006 => {
                 rd::process_info_report(self, data);
             }
+            // Quantum messages
             0x280001 => {
                 quantum::process_info_report(self, data);
             }
@@ -258,17 +301,85 @@ impl RaymarineReportReceiver {
             0x280003 => {
                 quantum::process_frame(self, data);
             }
+            0x288942 => {
+                // Database report — not spoke data. Ignore.
+                log::trace!("{}: Quantum database report len={}", self.common.key, data.len());
+            }
+            0x280005 => {
+                log::trace!("{}: Quantum radar mode report", self.common.key);
+            }
+            0x280006 => {
+                log::trace!("{}: Quantum signal strength report", self.common.key);
+            }
+            0x280007 => {
+                self.process_features(data);
+            }
+            0x280008 => {
+                log::trace!("{}: Quantum parameters report", self.common.key);
+            }
             0x280030 => {
                 quantum::process_doppler_report(self, data);
             }
+            // Guard zone messages — logged but not acted on
+            id if (id & 0xFFFF0000 == 0x28000000 || id & 0xFFFF0000 == 0x01000000)
+                && data.len() >= 8 => {
+                // Check for guard zone, alarm, MARPA, self-test, etc.
+                if self.reported_unknown.get(&id).is_none() {
+                    log::debug!(
+                        "{}: Unhandled report ID 0x{:08X} len={}",
+                        self.common.key,
+                        id,
+                        data.len()
+                    );
+                    self.reported_unknown.insert(id, true);
+                }
+            }
             _ => {
                 if self.reported_unknown.get(&id).is_none() {
-                    log::warn!("{}: Unknown report ID {:08X?}", self.common.key, id);
+                    log::debug!("{}: Unknown report ID 0x{:08X}", self.common.key, id);
                     self.reported_unknown.insert(id, true);
                 }
             }
         }
         Ok(())
+    }
+
+    fn process_features(&mut self, data: &[u8]) {
+        if data.len() < 8 {
+            return;
+        }
+        let flags = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let features = FeatureFlags { raw: flags };
+
+        if !self.features_seen {
+            log::info!(
+                "{}: Features: quantum={} cyclone={} doppler={} bird_mode={} \
+                 marpa={} auto_rain={} (raw=0x{:08x})",
+                self.common.key,
+                features.is_quantum(),
+                features.is_cyclone(),
+                features.has_doppler(),
+                features.has_bird_mode(),
+                features.has_marpa(),
+                features.has_auto_rain(),
+                flags,
+            );
+
+            // Update Doppler capability based on what the radar actually
+            // reports, overriding the hardcoded model table.
+            if features.has_doppler() != self.common.info.doppler {
+                self.common.info.set_doppler(features.has_doppler());
+                self.pixel_to_blob = pixel_to_blob(&self.common.info.get_legend());
+                log::info!(
+                    "{}: Doppler capability updated to {}",
+                    self.common.key,
+                    features.has_doppler(),
+                );
+            }
+
+            self.features = features;
+            self.features_seen = true;
+        }
     }
 
     fn set_ranges(&mut self, ranges: Ranges) {
