@@ -17,6 +17,8 @@ mod protocol;
 mod report;
 mod settings;
 
+const REPLAY_FIRMWARE_VERSION: &str = "00.00";
+
 use protocol::{
     ANNOUNCE_MAYARA_PACKET, BASE_PORT, BEACON_ADDRESS, BEACON_REPORT_HEADER,
     BEACON_REPORT_LENGTH_MIN, DATA_PORT, FurunoRadarModelReport, FurunoRadarReport,
@@ -90,6 +92,7 @@ impl FurunoLocator {
         info_b: Option<RadarInfo>,
         radars: &SharedRadars,
         subsys: &SubsystemHandle,
+        beacon_model: &str,
     ) {
         if let Some(mut info) = radars.add(info) {
             // It's new, start the RadarProcessor thread
@@ -118,17 +121,24 @@ impl FurunoLocator {
 
             info.start_forwarding_radar_messages_to_stdout(&subsys);
 
-            if self.args.is_replay() {
-                let model = RadarModel::DRS4DNXT; // Default model for replay
-                let version = "01.05";
+            // In replay mode, detect model from the original beacon string
+            // (not from controls which persistence may have overwritten).
+            let replay_model = if self.args.is_replay() {
+                let model = RadarModel::from_model_name(beacon_model);
                 log::info!(
-                    "{}: Radar model {} assumed for replay mode",
+                    "{}: Radar model {} detected for replay mode (from beacon {:?})",
                     info.key(),
                     model,
+                    beacon_model,
                 );
-                settings::update_when_model_known(&mut info, model, version);
-                radars.update(&mut info);
-            }
+                if model != RadarModel::Unknown {
+                    settings::update_when_model_known(&mut info, model, REPLAY_FIRMWARE_VERSION);
+                    radars.update(&mut info);
+                }
+                Some(model)
+            } else {
+                None
+            };
 
             // Register and configure Range B if this is a dual-range model
             let mut info_b = info_b.and_then(|ib| radars.add(ib));
@@ -136,10 +146,8 @@ impl FurunoLocator {
                 ib.send_command_addr.set_port(port);
                 ib.report_addr.set_port(port);
                 ib.start_forwarding_radar_messages_to_stdout(&subsys);
-                if self.args.is_replay() {
-                    let model = RadarModel::DRS4DNXT;
-                    let version = "01.05";
-                    settings::update_when_model_known(ib, model, version);
+                if let Some(model) = replay_model.filter(|m| *m != RadarModel::Unknown) {
+                    settings::update_when_model_known(ib, model, REPLAY_FIRMWARE_VERSION);
                     radars.update(ib);
                 }
             }
@@ -331,7 +339,7 @@ impl FurunoLocator {
                     None
                 };
 
-                self.found(radar_info, info_b, radars, subsys);
+                self.found(radar_info, info_b, radars, subsys, &model);
             }
             Err(e) => {
                 log::error!(
