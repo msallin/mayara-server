@@ -31,6 +31,16 @@ use crate::radar::settings::ControlId;
 use crate::radar::{Power, RadarError, RadarInfo};
 use crate::util::PrintableSpoke;
 
+/// Furuno wire-format decoding mode. When Target Analyzer is active on NXT
+/// radars, each echo byte encodes `[dopplerClass:2 | intensity:4 | 00:2]`
+/// rather than a plain intensity in 0..PIXEL_VALUES. The report receiver
+/// rebuilds the `wire_to_legend` table when this mode changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DopplerWireMode {
+    Off,
+    On,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ReceiveAddressType {
     Both,
@@ -76,10 +86,12 @@ pub(crate) struct FurunoReportReceiver {
     prev_angle: [u16; 2],
     guard_zone_alarm: [bool; 2],
     alarm_active: bool,
-    /// Precomputed raw-byte → palette-index lookup table. Built when the model
-    /// and legend are known. DRS4W/DRS use an 18th-root gamma curve to spread
-    /// the bottom-heavy echo distribution; other models use a linear mapping.
-    echo_lut: [u8; 256],
+    /// Precomputed raw-byte → legend-index lookup tables, one per range
+    /// (index 0 = Range A, 1 = Range B). Range A and B can have independent
+    /// Target Analyzer state in dual-range mode, so each needs its own LUT.
+    /// DRS4W/DRS use an 18th-root gamma curve to spread the bottom-heavy
+    /// echo distribution; other models use a linear mapping.
+    wire_to_legend: [[u8; 256]; 2],
 }
 
 impl FurunoReportReceiver {
@@ -99,7 +111,9 @@ impl FurunoReportReceiver {
             .map(RadarModel::from_model_name)
             .unwrap_or(RadarModel::Unknown);
         let low_power = model.is_low_power();
-        let echo_lut = Self::build_echo_lut(info.pixel_colors(), low_power);
+        let initial_lut =
+            Self::wire_to_legend(&info.get_legend(), DopplerWireMode::Off, low_power);
+        let wire_to_legend = [initial_lut, initial_lut];
 
         let control_update_rx = info.control_update_subscribe();
         let blob_tx = radars.get_blob_tx();
@@ -129,7 +143,7 @@ impl FurunoReportReceiver {
             prev_angle: [0, 0],
             guard_zone_alarm: [false, false],
             alarm_active: false,
-            echo_lut,
+            wire_to_legend,
         }
     }
 
@@ -406,10 +420,11 @@ impl FurunoReportReceiver {
                 // $N69,{status},{drid},{wman},{w_send},{w_stop},0
                 numbers.get(1).copied().unwrap_or(0.0)
             }
-            CommandId::Gain | CommandId::Range | CommandId::Tune => {
+            CommandId::Gain | CommandId::Range | CommandId::Tune | CommandId::TargetAnalyzer => {
                 // $N63,{auto},{val},{drid},{auto_val},0
                 // $N62,{wire_idx},{unit},{drid}
                 // $N75,{auto},{value},{drid}
+                // $NEF,{enabled},{mode},{screen}
                 numbers.get(2).copied().unwrap_or(0.0)
             }
             CommandId::Sea | CommandId::Rain => {
@@ -768,7 +783,36 @@ impl FurunoReportReceiver {
                     2.0 // Rain
                 };
 
-                self.common.set_value(&ControlId::Doppler, value);
+                let drid = self.extract_drid(&command_id, &numbers);
+                let range_idx = if drid == 1 && self.common_b.is_some() {
+                    1
+                } else {
+                    0
+                };
+                let old_mode = self.doppler_wire_mode_for(range_idx);
+                self.common_for_range(drid)
+                    .set_value(&ControlId::Doppler, value);
+                let new_mode = self.doppler_wire_mode_for(range_idx);
+                if old_mode != new_mode {
+                    let low_power = self.model.is_low_power();
+                    let legend = if range_idx == 1 {
+                        self.common_b.as_ref().unwrap().info.get_legend()
+                    } else {
+                        self.common.info.get_legend()
+                    };
+                    self.wire_to_legend[range_idx] =
+                        Self::wire_to_legend(&legend, new_mode, low_power);
+                    let key = if range_idx == 1 {
+                        &self.common_b.as_ref().unwrap().key
+                    } else {
+                        &self.common.key
+                    };
+                    log::debug!(
+                        "{}: Doppler wire mode changed to {:?}",
+                        key,
+                        new_mode
+                    );
+                }
             }
 
             CommandId::Tune => {
@@ -930,10 +974,18 @@ impl FurunoReportReceiver {
             );
             self.model = model;
             let low_power = model.is_low_power();
-            self.echo_lut = Self::build_echo_lut(
-                self.common.info.pixel_colors(),
+            self.wire_to_legend[0] = Self::wire_to_legend(
+                &self.common.info.get_legend(),
+                self.doppler_wire_mode_for(0),
                 low_power,
             );
+            if let Some(ref cb) = self.common_b {
+                self.wire_to_legend[1] = Self::wire_to_legend(
+                    &cb.info.get_legend(),
+                    self.doppler_wire_mode_for(1),
+                    low_power,
+                );
+            }
             if low_power {
                 log::info!("{}: using gamma echo curve for low-power radar", self.common.key);
             }
@@ -1154,7 +1206,7 @@ impl FurunoReportReceiver {
                 SPOKE_LEN,
             );
 
-            let echo_lut = &self.echo_lut;
+            let wire_to_legend = &self.wire_to_legend[range_idx];
             if is_range_b {
                 Self::add_spoke_to_common(
                     self.common_b.as_mut().unwrap(),
@@ -1162,7 +1214,7 @@ impl FurunoReportReceiver {
                     angle,
                     heading,
                     &send_spoke,
-                    echo_lut,
+                    wire_to_legend,
                 );
             } else {
                 Self::add_spoke_to_common(
@@ -1171,7 +1223,7 @@ impl FurunoReportReceiver {
                     angle,
                     heading,
                     &send_spoke,
-                    echo_lut,
+                    wire_to_legend,
                 );
             }
 
@@ -1297,7 +1349,7 @@ impl FurunoReportReceiver {
                 scale: TILE_SCALE,
             };
 
-            let echo_lut = &self.echo_lut;
+            let wire_to_legend = &self.wire_to_legend[range_idx];
             if is_range_b {
                 Self::add_spoke_to_common(
                     self.common_b.as_mut().unwrap(),
@@ -1305,7 +1357,7 @@ impl FurunoReportReceiver {
                     angle,
                     heading,
                     &send_spoke,
-                    echo_lut,
+                    wire_to_legend,
                 );
             } else {
                 Self::add_spoke_to_common(
@@ -1314,7 +1366,7 @@ impl FurunoReportReceiver {
                     angle,
                     heading,
                     &send_spoke,
-                    echo_lut,
+                    wire_to_legend,
                 );
             }
 
@@ -1477,14 +1529,34 @@ impl FurunoReportReceiver {
         out
     }
 
-    /// Build the raw-byte → palette-index lookup table.
+    /// Build the raw-byte → legend-index lookup table.
     ///
-    /// Low-power radars (DRS4W, DRS) have a bottom-heavy echo distribution
-    /// where 95% of returns are below raw value 64. An 18th-root (gamma 0.056)
-    /// curve aggressively compresses the range so that even weak returns
-    /// reach red, matching the Furuno iOS app's vivid visual output.
-    /// Full-power models (NXT, FAR) use a linear mapping.
-    fn build_echo_lut(pixel_colors: u8, low_power: bool) -> [u8; 256] {
+    /// With `doppler_mode == Off` each wire byte is a plain intensity in
+    /// `0..=PIXEL_VALUES`. Low-power radars (DRS4W, DRS) have a bottom-heavy
+    /// echo distribution where 95% of returns are below raw value 64; an
+    /// 18th-root (gamma 0.056) curve aggressively compresses the range so
+    /// that even weak returns reach red, matching the Furuno iOS app's vivid
+    /// visual output. Full-power models (NXT, FAR) use a linear mapping.
+    ///
+    /// With `doppler_mode == On` (NXT Target Analyzer active) each byte is
+    /// `[dopplerClass:2 | intensity:4 | 00:2]`. The top two bits select the
+    /// class (rain / stationary / approaching); the middle four bits are a
+    /// 16-level intensity within the band. Separator ranges `0x3D..=0x3F`,
+    /// `0x7D..=0x7F`, `0xBD..=0xBF` are never emitted by the radar and map
+    /// to transparent. See research/furuno/mfd-radar-palette.md.
+    fn wire_to_legend(
+        legend: &crate::radar::Legend,
+        doppler_mode: DopplerWireMode,
+        low_power: bool,
+    ) -> [u8; 256] {
+        match doppler_mode {
+            DopplerWireMode::Off => Self::wire_to_legend_off(legend, low_power),
+            DopplerWireMode::On => Self::wire_to_legend_on(legend, low_power),
+        }
+    }
+
+    fn wire_to_legend_off(legend: &crate::radar::Legend, low_power: bool) -> [u8; 256] {
+        let pixel_colors = legend.pixel_colors;
         let pixel_max = pixel_colors.saturating_sub(1) as u16;
         let usable = pixel_max.saturating_sub(ECHO_FLOOR);
         let mut lut = [0u8; 256];
@@ -1500,13 +1572,84 @@ impl FurunoReportReceiver {
         lut
     }
 
+    fn wire_to_legend_on(legend: &crate::radar::Legend, low_power: bool) -> [u8; 256] {
+        // Per-band constants derived from the 3-band wire encoding:
+        // high 2 bits = class, middle 4 bits = intensity, low 2 bits = 00.
+        // Valid intra-band bytes are `base..=(base + BAND_TOP_OFFSET)`, giving
+        // 16 distinct intensity levels per band.
+        const BAND_SIZE: u16 = 0x40;
+        const BAND_TOP_OFFSET: u16 = 0x3C; // 60 = 15 * 4
+        const RAIN_BASE: u16 = 0x00;
+        const STATIONARY_BASE: u16 = 0x40;
+        const APPROACHING_BASE: u16 = 0x80;
+
+        let stationary_lut = Self::wire_to_legend_off(legend, low_power);
+        let mut lut = [0u8; 256];
+
+        let (rain_start, rain_count) = legend.doppler_rain.unwrap_or((0, 0));
+        let (appr_start, appr_count) = legend.doppler_approaching.unwrap_or((0, 0));
+
+        for b in 0u16..BAND_SIZE {
+            if b > BAND_TOP_OFFSET {
+                continue; // separator bytes 0x3D..=0x3F stay 0 (transparent)
+            }
+            let sub = (b >> 2) as u8; // 0..=15 intensity within band
+            // Rain band
+            if rain_count > 0 {
+                lut[(RAIN_BASE + b) as usize] = rain_start + sub * rain_count / 16;
+            } else {
+                // No rain slot available: fall through to the low end of the
+                // stationary intensity ramp so rain is still visible.
+                lut[(RAIN_BASE + b) as usize] = stationary_lut[(STATIONARY_BASE + b) as usize];
+            }
+            // Stationary band: reuse the TA-off intensity mapping for the
+            // equivalent raw byte (b + 0x40).
+            lut[(STATIONARY_BASE + b) as usize] = stationary_lut[(STATIONARY_BASE + b) as usize];
+            // Approaching band
+            if appr_count > 0 {
+                lut[(APPROACHING_BASE + b) as usize] = appr_start + sub * appr_count / 16;
+            } else {
+                // No approaching slot available: fall through to the stationary
+                // intensity ramp so approaching targets are still visible.
+                lut[(APPROACHING_BASE + b) as usize] =
+                    stationary_lut[(STATIONARY_BASE + b) as usize];
+            }
+        }
+        // Byte 0 is always transparent; explicitly restate for clarity.
+        lut[0] = 0;
+        // The 0xC0..=0xFF band is unused in TA mode on NXT; leave as 0.
+        lut
+    }
+
+    /// Derive the wire-decoding mode from the current Doppler control value
+    /// for the given range (0 = A, 1 = B). `0` (Off) → `Off`; any non-zero
+    /// value (Target, Rain) → `On`.
+    fn doppler_wire_mode_for(&self, range_idx: usize) -> DopplerWireMode {
+        let common = if range_idx == 1 {
+            self.common_b.as_ref().unwrap_or(&self.common)
+        } else {
+            &self.common
+        };
+        let v = common
+            .info
+            .controls
+            .get(&ControlId::Doppler)
+            .and_then(|c| c.value)
+            .unwrap_or(0.0);
+        if v == 0.0 {
+            DopplerWireMode::Off
+        } else {
+            DopplerWireMode::On
+        }
+    }
+
     fn add_spoke_to_common(
         common: &mut CommonRadar,
         metadata: &FurunoSpokeMetadata,
         angle: SpokeBearing,
         heading: SpokeBearing,
         sweep: &[u8],
-        echo_lut: &[u8; 256],
+        wire_to_legend: &[u8; 256],
     ) {
         if common.replay {
             let _ = common
@@ -1530,7 +1673,7 @@ impl FurunoReportReceiver {
         let mut data = vec![0; sweep.len()];
 
         for (i, b) in sweep.iter().enumerate() {
-            data[i] = echo_lut[*b as usize];
+            data[i] = wire_to_legend[*b as usize];
         }
 
         log::trace!(
@@ -1695,5 +1838,125 @@ async fn conditional_read(
     match reader {
         Some(s) => Some(s.read_line(line).await),
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::radar::Legend;
+
+    /// Minimal `Legend` shaped like a post-TA NXT: 120 intensity slots,
+    /// 1 approaching slot, 1 receding slot, 1 rain slot, mirroring what
+    /// `default_legend(.., doppler_levels=1, has_rain_class=true, 120)`
+    /// would produce. Only the fields used by `wire_to_legend_{off,on}`
+    /// are populated.
+    fn nxt_ta_legend() -> Legend {
+        Legend {
+            pixels: Vec::new(),
+            pixel_colors: 120,
+            history_start: 0,
+            doppler_approaching: Some((120, 1)),
+            doppler_receding: Some((121, 1)),
+            doppler_rain: Some((122, 1)),
+            strong_return: 0,
+            medium_return: 0,
+            low_return: 0,
+            static_background: None,
+        }
+    }
+
+    #[test]
+    fn wire_to_legend_off_nxt_is_linear() {
+        let legend = nxt_ta_legend();
+        let lut =
+            FurunoReportReceiver::wire_to_legend(&legend, DopplerWireMode::Off, false);
+        assert_eq!(lut[0], 0, "raw 0 must be transparent");
+        // raw 252 (PIXEL_VALUES) should reach the top of the intensity ramp.
+        assert_eq!(lut[PIXEL_VALUES as usize], legend.pixel_colors - 1);
+    }
+
+    #[test]
+    fn wire_to_legend_off_drs4w_is_nonlinear() {
+        let legend = nxt_ta_legend();
+        let lut_linear =
+            FurunoReportReceiver::wire_to_legend(&legend, DopplerWireMode::Off, false);
+        let lut_gamma =
+            FurunoReportReceiver::wire_to_legend(&legend, DopplerWireMode::Off, true);
+        // 18th-root curve must lift low raw values above the linear mapping.
+        assert!(lut_gamma[4] > lut_linear[4]);
+    }
+
+    #[test]
+    fn wire_to_legend_on_maps_three_bands() {
+        let legend = nxt_ta_legend();
+        let lut =
+            FurunoReportReceiver::wire_to_legend(&legend, DopplerWireMode::On, false);
+
+        let rain_start = legend.doppler_rain.unwrap().0;
+        let appr_start = legend.doppler_approaching.unwrap().0;
+
+        // Transparent / separators
+        assert_eq!(lut[0], 0, "byte 0 is transparent");
+        assert_eq!(lut[0x3D], 0, "rain/stationary separator is transparent");
+        assert_eq!(lut[0x3F], 0);
+        assert_eq!(lut[0x7D], 0, "stationary/approaching separator");
+        assert_eq!(lut[0x7F], 0);
+        assert_eq!(lut[0xBD], 0, "approaching/unused separator");
+        assert_eq!(lut[0xBF], 0);
+        assert_eq!(lut[0xFC], 0, "unused band stays transparent");
+
+        // Rain band: 0x00..=0x3C with single-slot rain legend
+        assert_eq!(lut[0x04], rain_start);
+        assert_eq!(lut[0x3C], rain_start);
+
+        // Stationary band: reuses the TA-off intensity ramp for the same
+        // raw byte value.
+        let off = FurunoReportReceiver::wire_to_legend(&legend, DopplerWireMode::Off, false);
+        assert_eq!(lut[0x40], off[0x40]);
+        assert_eq!(lut[0x7C], off[0x7C]);
+
+        // Approaching band
+        assert_eq!(lut[0x80], appr_start);
+        assert_eq!(lut[0xBC], appr_start);
+    }
+
+    #[test]
+    fn wire_to_legend_on_uses_16_level_gradient_per_band() {
+        // Legend with 16 sub-levels per Doppler band, mirroring what
+        // set_doppler_levels(16) + set_has_rain_class(true) produces.
+        let legend = Legend {
+            pixels: Vec::new(),
+            pixel_colors: 120,
+            history_start: 0,
+            doppler_approaching: Some((120, 16)),
+            doppler_receding: Some((136, 16)),
+            doppler_rain: Some((152, 16)),
+            strong_return: 0,
+            medium_return: 0,
+            low_return: 0,
+            static_background: None,
+        };
+        let lut =
+            FurunoReportReceiver::wire_to_legend(&legend, DopplerWireMode::On, false);
+        // Each step of 4 in the raw byte moves one slot in the legend.
+        assert_eq!(lut[0x80], 120, "approaching lowest intensity");
+        assert_eq!(lut[0x84], 121);
+        assert_eq!(lut[0xBC], 135, "approaching highest intensity");
+        assert_eq!(lut[0x00], 0, "raw byte 0 is transparent");
+        assert_eq!(lut[0x04], 153, "rain second-lowest intensity");
+        assert_eq!(lut[0x3C], 167, "rain highest intensity");
+    }
+
+    #[test]
+    fn wire_to_legend_on_without_rain_slot_falls_back_to_intensity() {
+        let mut legend = nxt_ta_legend();
+        legend.doppler_rain = None;
+        let lut =
+            FurunoReportReceiver::wire_to_legend(&legend, DopplerWireMode::On, false);
+        let off = FurunoReportReceiver::wire_to_legend(&legend, DopplerWireMode::Off, false);
+        // Without a rain slot, rain-range bytes reuse the stationary
+        // intensity mapping at (b + 0x40).
+        assert_eq!(lut[0x04], off[0x44]);
     }
 }
