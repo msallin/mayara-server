@@ -185,29 +185,23 @@ function convertControlToUserUnits(id, control) {
 }
 
 /**
- * Rounds a number to a limited number of decimals, for user pleasure.
+ * Rounds a number to the nearest multiple of stepValue and trims trailing
+ * float artifacts (e.g. 0.30000000000000004 -> 0.3) for display.
  */
 function roundToStep(value, stepValue) {
   value = Number(value);
   if (!Number.isFinite(value) || !Number.isFinite(stepValue)) return NaN;
+  if (stepValue <= 0) return value;
 
-  if (Math.abs(stepValue - 0.1) < Number.EPSILON) {
-    return Number((value + stepValue / 2).toFixed(1));
-  }
-  if (stepValue < 0.02) {
-    return Number((value + stepValue / 2).toFixed(2));
-  }
-  if (stepValue <= 1) {
-    return Number((value + stepValue / 2).toFixed(1));
-  }
+  const rounded = Math.round(value / stepValue) * stepValue;
 
-  const scale = 1 / stepValue;
-  const scaledVal = Math.round(value * scale);
-  const scaledStep = Math.round(stepValue * scale);
-  const roundedInt = Math.round(scaledVal / scaledStep) * scaledStep;
-  const rounded = roundedInt / scale;
+  let decimals;
+  if (stepValue >= 1) decimals = 0;
+  else if (stepValue >= 0.1) decimals = 1;
+  else if (stepValue >= 0.01) decimals = 2;
+  else decimals = 3;
 
-  return rounded;
+  return Number(rounded.toFixed(decimals));
 }
 
 // V1-style control builders adapted with v3 CSS classes
@@ -226,8 +220,19 @@ const StringValue = (id, name) =>
     button({ type: "button", onclick: (e) => do_button(e) }, "Set")
   );
 
-const NumericValue = (id, name) =>
-  div(
+const NumericValue = (id, name, control = {}) => {
+  const attrs = {
+    type: "number",
+    id: control_prefix + id,
+    onchange: (e) => do_change(e.target),
+    oninput: (e) => do_input(e),
+  };
+  if (Number.isFinite(control.minValue)) attrs.min = control.minValue;
+  if (Number.isFinite(control.maxValue)) attrs.max = control.maxValue;
+  if (Number.isFinite(control.stepValue) && control.stepValue > 0) {
+    attrs.step = control.stepValue;
+  }
+  return div(
     { class: "myr_control myr_number_control" },
     div(
       { class: "myr_control_header" },
@@ -237,13 +242,9 @@ const NumericValue = (id, name) =>
         id: control_prefix + id + "_display",
       })
     ),
-    input({
-      type: "number",
-      id: control_prefix + id,
-      onchange: (e) => do_change(e.target),
-      oninput: (e) => do_input(e),
-    })
+    input(attrs)
   );
+};
 
 const RangeValue = (id, name, min, max, def) =>
   div(
@@ -1341,7 +1342,7 @@ function buildSingleControl(k, v) {
     }
     return RangeValue(k, v.name, min, max, 0);
   } else {
-    return NumericValue(k, v.name);
+    return NumericValue(k, v.name, v);
   }
 }
 
