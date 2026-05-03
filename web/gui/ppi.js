@@ -1764,15 +1764,20 @@ class PPI {
 
       // Only treat as click if mouse didn't move much (not a drag)
       if (clickDistance < 5) {
+        const status = document.getElementById("myr_acquire_target_status");
         // MARPA requires true bearing, which needs ship heading
         if (this.trueHeading === null) {
           console.warn("Acquire target: no heading data, cannot compute true bearing");
-          const status = document.getElementById("myr_acquire_target_status");
           if (status) {
             status.textContent = "No heading data, cannot acquire";
             status.style.display = "block";
           }
         } else {
+          // Clear any prior error so a successful click doesn't leave the
+          // stale "No heading data" message visible.
+          if (status) {
+            status.textContent = "Click in PPI to acquire";
+          }
           const radarCoords = this.#pixelToRadarCoords(coords.x, coords.y);
           // Keep bearing in radians, add true heading to get bearing true
           let bearingRad = radarCoords.angle + this.trueHeading;
